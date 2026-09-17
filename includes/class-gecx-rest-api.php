@@ -545,7 +545,7 @@ class GECX_Rest_API {
             return $webhook;
         } catch ( \Exception $e ) {
             if ( function_exists( 'error_log' ) ) {
-                error_log( '[GECX] Failed to register WooCommerce order webhook: ' . $e->getMessage() );
+                error_log( '[GECX] Failed to register WooCommerce order webhook: ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
             }
             return new \WP_Error(
                 'webhook_registration_failed',

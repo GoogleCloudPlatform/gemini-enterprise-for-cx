@@ -215,7 +215,7 @@ class GECX_Auth {
             do_action( 'gecx_cart_token_refused', $token_user_id, $refusal['code'], $refusal['capability'] );
 
             if ( defined( 'WP_DEBUG' ) && WP_DEBUG && function_exists( 'error_log' ) ) {
-                error_log(
+                error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
                     sprintf(
                         '[GECX] Cart-Token refused for user %d: %s.',
                         $token_user_id,
@@ -382,7 +382,7 @@ class GECX_Auth {
                 if ( function_exists( 'set_transient' ) ) {
                     set_transient( $transient_key, 1, defined( 'HOUR_IN_SECONDS' ) ? HOUR_IN_SECONDS : 3600 );
                 }
-                error_log(
+                error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
                     sprintf(
                         '[GECX] Cart-Token refused: unrecognised issuer %s. Check the WooCommerce version against the accepted issuers.',
                         wp_json_encode( $reported )
@@ -582,7 +582,7 @@ class GECX_Auth {
         // otherwise silent: this returns before any token is read, so the
         // 'gecx_cart_token_refused' action never fires for it.
         if ( defined( 'WP_DEBUG' ) && WP_DEBUG && function_exists( 'error_log' ) ) {
-            error_log(
+            error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
                 sprintf(
                     '[GECX] Cart-Token scope check skipped: entry point is "%s", not index.php.',
                     $script
@@ -642,7 +642,13 @@ class GECX_Auth {
         if ( isset( $GLOBALS['wp']->extra_query_vars ) && is_array( $GLOBALS['wp']->extra_query_vars ) ) {
             $sources[] = $GLOBALS['wp']->extra_query_vars;
         }
-        // phpcs:disable WordPress.Security.NonceVerification.Recommended
+        // Route resolution only, mirroring how WordPress itself reads these
+        // superglobals in WP::parse_request() before any handler runs. Nothing
+        // here acts on the request or writes state, and REST requests carry
+        // their own authentication rather than a nonce. $_POST raises the
+        // .Missing variant of this sniff and $_GET the .Recommended one, so
+        // the exception has to name the sniff rather than either code.
+        // phpcs:disable WordPress.Security.NonceVerification
         $sources[] = $_POST;
         $sources[] = $_GET;
 
@@ -653,7 +659,7 @@ class GECX_Auth {
                 return is_string( $route ) ? sanitize_text_field( $route ) : $route;
             }
         }
-        // phpcs:enable WordPress.Security.NonceVerification.Recommended
+        // phpcs:enable WordPress.Security.NonceVerification
 
         $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
 
@@ -900,7 +906,7 @@ class GECX_Auth {
             }
 
             if ( function_exists( 'error_log' ) ) {
-                error_log( '[GECX] RS256 signing failed, falling back to HS256: ' . self::get_last_openssl_error() );
+                error_log( '[GECX] RS256 signing failed, falling back to HS256: ' . self::get_last_openssl_error() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
             }
         }
 
@@ -1133,7 +1139,7 @@ class GECX_Auth {
             }
             // Decryption failed on existing keys. Log critical error and do not overwrite.
             if ( function_exists( 'error_log' ) ) {
-                error_log( '[GECX] Failed to decrypt RSA private key. Salt may have changed or key is corrupted.' );
+                error_log( '[GECX] Failed to decrypt RSA private key. Salt may have changed or key is corrupted.' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
             }
             return null;
         }
@@ -1141,7 +1147,7 @@ class GECX_Auth {
         // If one key exists but not the other, state is corrupted. Do not silently overwrite.
         if ( $has_pub || $has_priv ) {
             if ( function_exists( 'error_log' ) ) {
-                error_log( '[GECX] Keypair state desynchronized in database. Public or private key is missing.' );
+                error_log( '[GECX] Keypair state desynchronized in database. Public or private key is missing.' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
             }
             return null;
         }
@@ -1187,7 +1193,7 @@ class GECX_Auth {
             $res = openssl_pkey_new( $config );
             if ( false === $res ) {
                 if ( function_exists( 'error_log' ) ) {
-                    error_log( '[GECX] openssl_pkey_new failed: ' . self::get_last_openssl_error() );
+                    error_log( '[GECX] openssl_pkey_new failed: ' . self::get_last_openssl_error() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
                 }
                 return null;
             }
@@ -1196,7 +1202,7 @@ class GECX_Auth {
             $exported        = openssl_pkey_export( $res, $private_key_pem );
             if ( ! $exported || empty( $private_key_pem ) ) {
                 if ( function_exists( 'error_log' ) ) {
-                    error_log( '[GECX] openssl_pkey_export failed: ' . self::get_last_openssl_error() );
+                    error_log( '[GECX] openssl_pkey_export failed: ' . self::get_last_openssl_error() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
                 }
                 return null;
             }
