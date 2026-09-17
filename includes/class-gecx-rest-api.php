@@ -59,6 +59,8 @@ class GECX_Rest_API {
         add_action( 'woocommerce_checkout_create_order', [ $this, 'attach_session_to_order_metadata' ], 10, 2 );
         add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'attach_session_to_order_metadata_store_api' ], 10, 2 );
         add_action( 'rest_api_init', [ $this, 'register_session_rest_field' ] );
+        add_filter( 'woocommerce_webhook_should_deliver', [ $this, 'gate_order_webhook_delivery' ], 10, 3 );
+        add_filter( 'woocommerce_webhook_payload', [ $this, 'minimize_order_webhook_payload' ], 10, 4 );
 
         // Restore Store API post-dispatch cart token injection, SQL sync, and cache invalidation.
         add_filter( 'rest_post_dispatch', [ $this, 'inject_cart_token_into_body' ], 10, 3 );
@@ -218,6 +220,24 @@ class GECX_Rest_API {
     }
 
     /**
+     * Checks whether a session ID matches a valid GECX session format.
+     *
+     * @param string $session_id           Candidate session ID.
+     * @param bool   $strict_resource_name When true, requires the canonical 6-part GCP resource name
+     *                                     with numeric project number required by the backend.
+     * @return bool True if valid.
+     */
+    public static function is_valid_session_id( string $session_id, bool $strict_resource_name = false ): bool {
+        if ( '' === $session_id || strlen( $session_id ) > 256 ) {
+            return false;
+        }
+        if ( $strict_resource_name ) {
+            return 1 === preg_match( '#^projects/[0-9]+/locations/[a-zA-Z0-9_\-]+/commerceSessions/[a-zA-Z0-9_\-:]+$#', $session_id );
+        }
+        return 1 === preg_match( '#^(projects/[0-9]+/locations/[a-zA-Z0-9_\-]+/commerceSessions/[a-zA-Z0-9_\-:]+|[a-zA-Z0-9_\-:]+)$#', $session_id );
+    }
+
+    /**
      * Handle the POST request to save the session ID in the WooCommerce customer session.
      */
     public function save_session_handler( \WP_REST_Request $request ) {
@@ -225,7 +245,7 @@ class GECX_Rest_API {
         if ( empty( $session_id ) ) {
             return new \WP_Error( 'missing_session_id', __( 'Session ID is required.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
-        if ( strlen( $session_id ) > 256 || ! preg_match( '#^(projects/[a-zA-Z0-9_\-]+/locations/[a-zA-Z0-9_\-]+/commerceSessions/[a-zA-Z0-9_\-:]+|[a-zA-Z0-9_\-:]+)$#', $session_id ) ) {
+        if ( ! self::is_valid_session_id( $session_id ) ) {
             return new \WP_Error( 'invalid_session_id', __( 'Session ID is invalid.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 
@@ -358,6 +378,7 @@ class GECX_Rest_API {
             update_option( 'gecx_token_broker_name', $token_broker );
         }
         delete_option( 'gecx_dismiss_activation_notice' );
+        self::set_order_webhook_status( 'active' );
 
         return new \WP_REST_Response( [
             'success'    => true,
@@ -485,25 +506,27 @@ class GECX_Rest_API {
                 }
             }
 
-            if ( empty( $webhook ) || ! $webhook->get_id() ) {
-                if ( function_exists( 'wc_get_webhooks' ) ) {
-                    $existing_webhooks = wc_get_webhooks( [
-                        'status' => 'any',
-                        'search' => 'GECX Agent Order Created',
-                        'limit'  => 25,
-                    ] );
-                    if ( is_array( $existing_webhooks ) ) {
-                        foreach ( $existing_webhooks as $candidate ) {
-                            if ( $candidate instanceof \WC_Webhook && 'order.created' === $candidate->get_topic() && 'GECX Agent Order Created' === $candidate->get_name() ) {
+            if ( function_exists( 'wc_get_webhooks' ) ) {
+                $existing_webhooks = wc_get_webhooks( [
+                    'status' => 'any',
+                    'search' => 'GECX Agent Order Created',
+                    'limit'  => 25,
+                ] );
+                if ( is_array( $existing_webhooks ) ) {
+                    foreach ( $existing_webhooks as $candidate ) {
+                        if ( $candidate instanceof \WC_Webhook && 'order.created' === $candidate->get_topic() && 'GECX Agent Order Created' === $candidate->get_name() ) {
+                            if ( empty( $webhook ) || ! $webhook->get_id() ) {
                                 $webhook = $candidate;
                                 update_option( 'gecx_webhook_id', $webhook->get_id() );
-                                break;
+                            } elseif ( $candidate->get_id() !== $webhook->get_id() ) {
+                                $candidate->delete( true );
                             }
                         }
                     }
                 }
             }
 
+            $desired_status  = ( 1 === (int) get_option( 'gecx_agent_enabled', 1 ) ) ? 'active' : 'paused';
             $current_user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
             if ( empty( $webhook ) || ! $webhook->get_id() ) {
                 $webhook = new \WC_Webhook();
@@ -512,7 +535,7 @@ class GECX_Rest_API {
                 $webhook->set_topic( 'order.created' );
                 $webhook->set_delivery_url( $delivery_url );
                 $webhook->set_api_version( 'wp_api_v3' );
-                $webhook->set_status( 'active' );
+                $webhook->set_status( $desired_status );
                 $webhook->set_secret( $secret );
                 $webhook->save();
                 update_option( 'gecx_webhook_id', $webhook->get_id() );
@@ -534,8 +557,8 @@ class GECX_Rest_API {
                     $webhook->set_api_version( 'wp_api_v3' );
                     $needs_update = true;
                 }
-                if ( 'active' !== $webhook->get_status() ) {
-                    $webhook->set_status( 'active' );
+                if ( $desired_status !== $webhook->get_status() ) {
+                    $webhook->set_status( $desired_status );
                     $needs_update = true;
                 }
                 if ( $needs_update ) {
@@ -725,5 +748,325 @@ class GECX_Rest_API {
                 'context'     => [ 'view', 'edit' ],
             ],
         ] );
+    }
+
+    /**
+     * Updates the status of the GECX order webhook (e.g. 'active' or 'paused')
+     * and sweeps any duplicate/orphaned 'GECX Agent Order Created' webhooks.
+     *
+     * @param string $status Target WooCommerce webhook status ('active', 'paused', or 'disabled').
+     */
+    public static function set_order_webhook_status( string $status ): void {
+        $wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+        if ( ! $wc_available ) {
+            return;
+        }
+
+        $stored_id = (int) get_option( 'gecx_webhook_id', 0 );
+        $primary   = null;
+
+        if ( $stored_id > 0 ) {
+            try {
+                $candidate = new \WC_Webhook( $stored_id );
+                if ( $candidate->get_id() > 0 && 'order.created' === $candidate->get_topic() && 'GECX Agent Order Created' === $candidate->get_name() ) {
+                    $primary = $candidate;
+                }
+            } catch ( \Exception $e ) {
+                $primary = null;
+            }
+        }
+
+        if ( function_exists( 'wc_get_webhooks' ) ) {
+            try {
+                $webhooks = wc_get_webhooks( [
+                    'status' => 'any',
+                    'search' => 'GECX Agent Order Created',
+                    'limit'  => 25,
+                ] );
+                if ( is_array( $webhooks ) ) {
+                    foreach ( $webhooks as $candidate ) {
+                        if ( $candidate instanceof \WC_Webhook && 'order.created' === $candidate->get_topic() && 'GECX Agent Order Created' === $candidate->get_name() ) {
+                            if ( null === $primary ) {
+                                $primary = $candidate;
+                                update_option( 'gecx_webhook_id', $primary->get_id() );
+                            } elseif ( $candidate->get_id() !== $primary->get_id() ) {
+                                try {
+                                    $candidate->delete( true );
+                                } catch ( \Throwable $e ) {
+                                    // Suppress candidate delete error.
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch ( \Throwable $e ) {
+                // Suppress webhook query error.
+            }
+        }
+
+        if ( null !== $primary && $primary->get_id() > 0 ) {
+            if ( $primary->get_status() !== $status ) {
+                $primary->set_status( $status );
+                try {
+                    $primary->save();
+                } catch ( \Throwable $e ) {
+                    // Suppress save error to prevent fatal during lifecycle hooks.
+                }
+            }
+        }
+    }
+
+    /**
+     * Deletes the GECX order webhook (both via WC_Webhook API and direct $wpdb fallback)
+     * and removes the gecx_webhook_id option.
+     */
+    public static function delete_order_webhook(): void {
+        $stored_id    = (int) get_option( 'gecx_webhook_id', 0 );
+        $wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+
+        if ( $wc_available ) {
+            if ( $stored_id > 0 ) {
+                try {
+                    $webhook = new \WC_Webhook( $stored_id );
+                    if ( $webhook->get_id() > 0 ) {
+                        $webhook->delete( true );
+                    }
+                } catch ( \Throwable $e ) {
+                    // Continue cleanup.
+                }
+            }
+            if ( function_exists( 'wc_get_webhooks' ) ) {
+                try {
+                    $webhooks = wc_get_webhooks( [
+                        'status' => 'any',
+                        'search' => 'GECX Agent Order Created',
+                        'limit'  => 25,
+                    ] );
+                    if ( is_array( $webhooks ) ) {
+                        foreach ( $webhooks as $candidate ) {
+                            if ( $candidate instanceof \WC_Webhook && 'order.created' === $candidate->get_topic() && 'GECX Agent Order Created' === $candidate->get_name() ) {
+                                try {
+                                    $candidate->delete( true );
+                                } catch ( \Throwable $e ) {
+                                    // Continue candidate cleanup.
+                                }
+                            }
+                        }
+                    }
+                } catch ( \Throwable $e ) {
+                    // Suppress query error.
+                }
+            }
+        } else {
+            global $wpdb;
+            if ( isset( $wpdb ) && is_object( $wpdb ) && method_exists( $wpdb, 'delete' ) ) {
+                $table_name   = $wpdb->prefix . 'wc_webhooks';
+                $table_exists = true;
+                if ( method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) ) {
+                    $escaped_like = method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( $table_name ) : $table_name;
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+                    $table_exists = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $escaped_like ) ) === $table_name );
+                }
+                if ( $table_exists ) {
+                    if ( $stored_id > 0 ) {
+                        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+                        $wpdb->delete( $table_name, [ 'webhook_id' => $stored_id ], [ '%d' ] );
+                        if ( function_exists( 'wp_cache_delete' ) ) {
+                            wp_cache_delete( $stored_id, 'webhooks' );
+                        }
+                    }
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+                    $wpdb->delete(
+                        $table_name,
+                        [
+                            'name'  => 'GECX Agent Order Created',
+                            'topic' => 'order.created',
+                        ],
+                        [ '%s', '%s' ]
+                    );
+                    if ( function_exists( 'delete_transient' ) ) {
+                        delete_transient( 'woocommerce_webhook_ids' );
+                        delete_transient( 'woocommerce_webhook_ids_status_active' );
+                        delete_transient( 'woocommerce_webhook_ids_status_paused' );
+                        delete_transient( 'woocommerce_webhook_ids_status_disabled' );
+                    }
+                }
+            }
+        }
+
+        delete_option( 'gecx_webhook_id' );
+    }
+
+    /**
+     * Reconciles the order webhook on plugin activation:
+     * - If no agent is linked, sweeps and deletes any orphaned GECX webhooks.
+     * - If an agent is linked, adopts/deduplicates the webhook and sets its status
+     *   to match gecx_agent_enabled ('active' when enabled, 'paused' when disabled).
+     */
+    public static function reconcile_webhook_on_activation(): void {
+        $agent_name = (string) get_option( 'gecx_agent_name', '' );
+        if ( '' === $agent_name ) {
+            $has_stored_webhook = ! empty( get_option( 'gecx_webhook_id' ) );
+            $wc_available       = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+            if ( $has_stored_webhook || $wc_available ) {
+                self::delete_order_webhook();
+            }
+            return;
+        }
+        $enabled = ( 1 === (int) get_option( 'gecx_agent_enabled', 0 ) );
+        self::set_order_webhook_status( $enabled ? 'active' : 'paused' );
+    }
+
+    /**
+     * Checks whether the given webhook instance or ID belongs to GECX order attribution.
+     *
+     * @param mixed $webhook_or_id WC_Webhook instance or integer webhook ID.
+     * @return bool
+     */
+    private function is_gecx_order_webhook( $webhook_or_id ): bool {
+        $stored_id = (int) get_option( 'gecx_webhook_id', 0 );
+        $webhook   = null;
+
+        if ( $webhook_or_id instanceof \WC_Webhook ) {
+            $webhook = $webhook_or_id;
+            if ( $stored_id > 0 && $webhook->get_id() === $stored_id ) {
+                return true;
+            }
+        } elseif ( is_numeric( $webhook_or_id ) ) {
+            $id = (int) $webhook_or_id;
+            if ( $stored_id > 0 && $id === $stored_id ) {
+                return true;
+            }
+            if ( $id > 0 && class_exists( 'WC_Webhook' ) ) {
+                try {
+                    $webhook = new \WC_Webhook( $id );
+                } catch ( \Exception $e ) {
+                    $webhook = null;
+                }
+            }
+        }
+
+        if ( $webhook instanceof \WC_Webhook && $webhook->get_id() > 0 ) {
+            return 'order.created' === $webhook->get_topic()
+                && 'GECX Agent Order Created' === $webhook->get_name();
+        }
+
+        return false;
+    }
+
+    /**
+     * Suppresses delivery of the GECX order webhook when:
+     * - the agent is unlinked or storefront chat widget is disabled, or
+     * - the order does not carry a valid _gecx_session_id meta value.
+     *
+     * @param bool  $should_deliver Whether WooCommerce intends to deliver the webhook.
+     * @param mixed $webhook        WC_Webhook instance or webhook ID.
+     * @param mixed $arg            Hook argument (order ID or WC_Order).
+     * @return bool
+     */
+    public function gate_order_webhook_delivery( $should_deliver, $webhook, $arg ): bool {
+        if ( ! $should_deliver || ! $this->is_gecx_order_webhook( $webhook ) ) {
+            return (bool) $should_deliver;
+        }
+
+        if ( empty( get_option( 'gecx_agent_name', '' ) ) || 1 !== (int) get_option( 'gecx_agent_enabled', 0 ) ) {
+            return false;
+        }
+
+        $order = null;
+        if ( $arg instanceof \WC_Order ) {
+            $order = $arg;
+        } elseif ( is_numeric( $arg ) && function_exists( 'wc_get_order' ) ) {
+            $order = wc_get_order( (int) $arg );
+        }
+
+        if ( ! $order instanceof \WC_Order ) {
+            return false;
+        }
+
+        $session_id = (string) $order->get_meta( '_gecx_session_id' );
+        return self::is_valid_session_id( $session_id, true );
+    }
+
+    /**
+     * Replaces the full wp_api_v3 order record with only the minimal fields
+     * required by the Gemini Enterprise backend. Strips all customer PII
+     * (billing/shipping addresses, email, phone, IP, payment details, notes).
+     *
+     * @param mixed  $payload     Original webhook payload array.
+     * @param string $resource    Resource type (e.g. 'order').
+     * @param mixed  $resource_id Resource ID (order ID).
+     * @param mixed  $webhook_id  Webhook ID.
+     * @return mixed Minimized payload array for GECX webhooks, or original payload.
+     */
+    public function minimize_order_webhook_payload( $payload, $resource, $resource_id, $webhook_id ) {
+        if ( ! is_array( $payload ) || ! $this->is_gecx_order_webhook( $webhook_id ) ) {
+            return $payload;
+        }
+
+        $order = null;
+        if ( is_numeric( $resource_id ) && function_exists( 'wc_get_order' ) ) {
+            $order = wc_get_order( (int) $resource_id );
+        }
+
+        $session_id = '';
+        if ( $order instanceof \WC_Order ) {
+            $session_id = (string) $order->get_meta( '_gecx_session_id' );
+        }
+        if ( '' === $session_id && isset( $payload['meta_data'] ) && is_array( $payload['meta_data'] ) ) {
+            foreach ( $payload['meta_data'] as $meta ) {
+                if ( is_array( $meta ) && isset( $meta['key'] ) && '_gecx_session_id' === $meta['key'] ) {
+                    $session_id = isset( $meta['value'] ) ? (string) $meta['value'] : '';
+                    break;
+                } elseif ( is_object( $meta ) && isset( $meta->key ) && '_gecx_session_id' === $meta->key ) {
+                    $session_id = isset( $meta->value ) ? (string) $meta->value : '';
+                    break;
+                }
+            }
+        }
+
+        $line_items = [];
+        if ( isset( $payload['line_items'] ) && is_array( $payload['line_items'] ) ) {
+            foreach ( $payload['line_items'] as $item ) {
+                if ( is_array( $item ) ) {
+                    $line_items[] = [
+                        'product_id'   => isset( $item['product_id'] ) ? (int) $item['product_id'] : 0,
+                        'variation_id' => isset( $item['variation_id'] ) ? (int) $item['variation_id'] : 0,
+                        'name'         => isset( $item['name'] ) ? (string) $item['name'] : '',
+                        'price'        => isset( $item['price'] ) ? $item['price'] : 0,
+                        'quantity'     => isset( $item['quantity'] ) ? (int) $item['quantity'] : 0,
+                    ];
+                }
+            }
+        } elseif ( $order instanceof \WC_Order && method_exists( $order, 'get_items' ) ) {
+            foreach ( $order->get_items() as $item ) {
+                if ( is_object( $item ) ) {
+                    $qty   = method_exists( $item, 'get_quantity' ) ? max( 1, (int) $item->get_quantity() ) : 1;
+                    $total = method_exists( $item, 'get_total' ) ? (float) $item->get_total() : 0.0;
+                    $line_items[] = [
+                        'product_id'   => method_exists( $item, 'get_product_id' ) ? (int) $item->get_product_id() : 0,
+                        'variation_id' => method_exists( $item, 'get_variation_id' ) ? (int) $item->get_variation_id() : 0,
+                        'name'         => method_exists( $item, 'get_name' ) ? (string) $item->get_name() : '',
+                        'price'        => method_exists( $order, 'get_item_total' ) ? (float) $order->get_item_total( $item, false, false ) : round( $total / $qty, 4 ),
+                        'quantity'     => method_exists( $item, 'get_quantity' ) ? (int) $item->get_quantity() : 0,
+                    ];
+                }
+            }
+        }
+
+        return [
+            'id'             => isset( $payload['id'] ) ? (int) $payload['id'] : ( $order instanceof \WC_Order ? (int) $order->get_id() : (int) $resource_id ),
+            'currency'       => isset( $payload['currency'] ) ? (string) $payload['currency'] : ( $order instanceof \WC_Order && method_exists( $order, 'get_currency' ) ? (string) $order->get_currency() : 'USD' ),
+            'total'          => isset( $payload['total'] ) ? (string) $payload['total'] : ( $order instanceof \WC_Order && method_exists( $order, 'get_total' ) ? (string) $order->get_total() : '0.00' ),
+            'total_tax'      => isset( $payload['total_tax'] ) ? (string) $payload['total_tax'] : ( $order instanceof \WC_Order && method_exists( $order, 'get_total_tax' ) ? (string) $order->get_total_tax() : '0.00' ),
+            'shipping_total' => isset( $payload['shipping_total'] ) ? (string) $payload['shipping_total'] : ( $order instanceof \WC_Order && method_exists( $order, 'get_shipping_total' ) ? (string) $order->get_shipping_total() : '0.00' ),
+            'meta_data'      => '' !== $session_id ? [
+                [
+                    'key'   => '_gecx_session_id',
+                    'value' => $session_id,
+                ],
+            ] : [],
+            'line_items'     => $line_items,
+        ];
     }
 }
