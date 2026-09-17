@@ -809,9 +809,11 @@ class RestApiTest extends GECX_TestCase {
     public function test_enable_wc_auth_handles_subdirectory_install_and_renamed_prefix(): void {
         $rest_api = new GECX_Rest_API();
 
-        $_SERVER['REQUEST_URI'] = '/shop/wp-json/gecx/v1/public-key';
+        $GLOBALS['gecx_test_home_url'] = 'https://example.com/shop';
+        $_SERVER['REQUEST_URI']        = '/shop/wp-json/gecx/v1/public-key';
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
+        $GLOBALS['gecx_test_home_url']        = 'https://example.com';
         $GLOBALS['gecx_test_rest_url_prefix'] = 'api';
         $_SERVER['REQUEST_URI']               = '/api/gecx/v1/public-key';
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );

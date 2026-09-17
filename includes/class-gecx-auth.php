@@ -26,7 +26,14 @@ class GECX_Auth {
     ];
 
     /**
-     * Refusal reasons that are not a held capability.
+     * Stable refusal codes for cart token authentication.
+     */
+    public const REFUSAL_CODE_CAPABILITY_HELD  = 'capability_held';
+    public const REFUSAL_CODE_USER_UNRESOLVED  = 'user_unresolved';
+    public const REFUSAL_CODE_CAPS_UNAVAILABLE = 'caps_api_unavailable';
+
+    /**
+     * Refusal reasons that are not a held capability (for logging).
      *
      * A cart token is refused either because the named user holds something
      * privileged, or because the question could not be answered at all. The
@@ -99,7 +106,7 @@ class GECX_Auth {
 
         return new \WP_Error(
             'rest_forbidden',
-            __( 'Unauthorized.', 'gemini-enterprise-for-cx' ),
+            __( 'Sorry, you are not allowed to do that.', 'gemini-enterprise-for-cx' ),
             [ 'status' => 403 ]
         );
     }
@@ -133,6 +140,22 @@ class GECX_Auth {
     }
 
     /**
+     * Registers diagnostic or error messages in the WooCommerce log (WooCommerce > Status > Logs)
+     * under the 'gecx' log source.
+     *
+     * @param string $message Log message.
+     * @param string $level   Log level ('error', 'warning', 'info', 'debug').
+     */
+    public static function log( string $message, string $level = 'error' ): void {
+        if ( function_exists( 'wc_get_logger' ) ) {
+            $logger = wc_get_logger();
+            if ( is_object( $logger ) && method_exists( $logger, $level ) ) {
+                $logger->{$level}( $message, [ 'source' => 'gecx' ] );
+            }
+        }
+    }
+
+    /**
      * Authenticate REST API requests from the GECX agent backend using the Cart-Token header
      * so that the agent can read and write the cart on behalf of a logged-in user.
      *
@@ -150,15 +173,15 @@ class GECX_Auth {
             return $user_id;
         }
 
+        $cart_token = isset( $_SERVER['HTTP_CART_TOKEN'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_CART_TOKEN'] ) ) : '';
+        if ( empty( $cart_token ) ) {
+            return $user_id;
+        }
+
         // Restrict to the WooCommerce Store API. This plugin's own /gecx/ routes
         // carry administrative capability and authenticate via WooCommerce API
         // keys instead; a shopper credential must never reach them.
         if ( ! self::is_store_api_request() ) {
-            return $user_id;
-        }
-
-        $cart_token = isset( $_SERVER['HTTP_CART_TOKEN'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_CART_TOKEN'] ) ) : '';
-        if ( empty( $cart_token ) ) {
             return $user_id;
         }
 
@@ -185,38 +208,39 @@ class GECX_Auth {
 
         self::$resolving_cart_token = true;
         try {
-            $refusal_reason = self::cart_token_refusal_reason( $token_user_id );
-            if ( null !== $refusal_reason ) {
-                // Note this also catches shoppers who happen to be contributors
-                // or authors on the same site, a common blog-plus-store setup.
-                // Their cart is unaffected: StoreApi\SessionHandler keys the
-                // session off the token's own user_id claim, not off the user
-                // this filter resolves. What they lose is the WordPress
-                // identity for this request, so anything reading
-                // get_current_user_id() sees a guest, including
-                // StoreApi\Utilities\OrderController::update_order_from_cart(),
-                // which means an order placed through the agent is not
-                // attached to their account. Name the user and the reason,
-                // otherwise an operator cannot tell that case apart from their
-                // own admin account.
-                //
-                // Fired unconditionally: production stores run with WP_DEBUG
-                // off, which is exactly when this needs diagnosing.
-                do_action( 'gecx_cart_token_refused', $token_user_id, $refusal_reason );
-
-                if ( defined( 'WP_DEBUG' ) && WP_DEBUG && function_exists( 'error_log' ) ) {
-                    error_log(
-                        sprintf(
-                            '[GECX] Cart-Token refused for user %d: %s.',
-                            $token_user_id,
-                            $refusal_reason
-                        )
-                    );
-                }
-                return $user_id;
-            }
+            $refusal = self::cart_token_refusal_reason( $token_user_id );
         } finally {
             self::$resolving_cart_token = false;
+        }
+
+        if ( null !== $refusal ) {
+            // Note this also catches shoppers who happen to be contributors
+            // or authors on the same site, a common blog-plus-store setup.
+            // Their cart is unaffected: StoreApi\SessionHandler keys the
+            // session off the token's own user_id claim, not off the user
+            // this filter resolves. What they lose is the WordPress
+            // identity for this request, so anything reading
+            // get_current_user_id() sees a guest, including
+            // StoreApi\Utilities\OrderController::update_order_from_cart(),
+            // which means an order placed through the agent is not
+            // attached to their account.
+            //
+            // Fired unconditionally outside the re-entrancy guard: production
+            // stores run with WP_DEBUG off, which is exactly when this needs
+            // diagnosing.
+            do_action( 'gecx_cart_token_refused', $token_user_id, $refusal['code'], $refusal['capability'] );
+
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                self::log(
+                    sprintf(
+                        'Cart-Token refused for user %d: %s.',
+                        $token_user_id,
+                        $refusal['reason']
+                    ),
+                    'debug'
+                );
+            }
+            return $user_id;
         }
 
         // Deliberately sticky for the rest of the request. If something later
@@ -275,7 +299,18 @@ class GECX_Auth {
             return null;
         }
 
-        if ( ! property_exists( $payload, 'exp' ) || time() > (int) $payload->exp ) {
+        if ( ! property_exists( $payload, 'exp' ) ) {
+            return null;
+        }
+
+        $exp = $payload->exp;
+        if ( ! is_int( $exp ) && ! is_string( $exp ) ) {
+            return null;
+        }
+        if ( ! ctype_digit( (string) $exp ) ) {
+            return null;
+        }
+        if ( time() >= (int) $exp ) {
             return null;
         }
 
@@ -341,6 +376,9 @@ class GECX_Auth {
      * something holding wp_salt() rather than from a caller. Malformed and
      * badly signed tokens stay silent and cannot be used to fill the log.
      *
+     * Action is fired on every request; logging is throttled via transient to
+     * once per hour per issuer value.
+     *
      * @param mixed $iss Rejected claim, or null when the token carried none.
      */
     private static function report_unknown_cart_token_issuer( $iss ): void {
@@ -354,26 +392,34 @@ class GECX_Auth {
          */
         do_action( 'gecx_cart_token_unknown_issuer', $reported );
 
-        if ( defined( 'WP_DEBUG' ) && WP_DEBUG && function_exists( 'error_log' ) ) {
-            error_log(
-                sprintf(
-                    '[GECX] Cart-Token refused: unrecognised issuer %s. Check the WooCommerce version against the accepted issuers.',
-                    wp_json_encode( $reported )
-                )
-            );
+        if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+            $transient_key = 'gecx_unknown_iss_' . md5( $reported );
+            $throttled     = function_exists( 'get_transient' ) && false !== get_transient( $transient_key );
+            if ( ! $throttled ) {
+                if ( function_exists( 'set_transient' ) ) {
+                    set_transient( $transient_key, 1, defined( 'HOUR_IN_SECONDS' ) ? HOUR_IN_SECONDS : 3600 );
+                }
+                self::log(
+                    sprintf(
+                        'Cart-Token refused: unrecognised issuer %s. Check the WooCommerce version against the accepted issuers.',
+                        wp_json_encode( $reported )
+                    ),
+                    'warning'
+                );
+            }
         }
     }
 
     /**
-     * Returns the first capability the user holds that must not be reachable
-     * from a shopper credential, or null when they hold none.
+     * Returns the refusal details when the user holds a capability that must
+     * not be reachable from a shopper credential or cannot be checked,
+     * or null when they hold nothing privileged.
      *
      * Fails closed when capability APIs are unavailable, and when the user
      * cannot be resolved at all: a token naming a deleted user should not
      * authenticate anything.
      *
-     * Two sources are consulted and the answer is their union, because neither
-     * is complete on its own:
+     * Two sources are consulted and the answer is their union:
      *
      * - WP_User::$allcaps is the raw role/user grant. It misses capabilities a
      *   plugin only grants dynamically through the 'user_has_cap' filter.
@@ -382,33 +428,51 @@ class GECX_Auth {
      *   wp_get_current_user() sees user 0. A plugin that grants capabilities
      *   conditionally on the current user will therefore under-report.
      *
-     * The second gap means this check can fail open for exotic capability
-     * plugins. It cannot be closed from inside 'determine_current_user', which
-     * is why GECX_Auth::is_cart_token_request() exists: privileged endpoints
-     * reject cart-token requests outright regardless of what this returns.
+     * The two capability loops look redundant because user_can() consults
+     * allcaps internally, but they are not: checking allcaps first ensures that
+     * static role capabilities are caught even if a user_has_cap hook calls
+     * wp_get_current_user() and suffers from guard-induced under-reporting.
+     *
+     * Privileged endpoints reject cart-token requests outright via
+     * GECX_Auth::is_cart_token_request() regardless of what this returns.
      *
      * @param int $user_id User ID to inspect.
-     * @return string|null Reason the token must be refused, or null when the
-     *                     user holds nothing privileged. The reason is for
-     *                     logging only; callers must treat any non-null value
-     *                     as a refusal and must not parse it.
+     * @return array{code: string, capability: ?string, reason: string}|null
+     *                     Refusal details or null when the user holds nothing privileged.
      */
-    private static function cart_token_refusal_reason( int $user_id ): ?string {
+    private static function cart_token_refusal_reason( int $user_id ): ?array {
         if ( ! function_exists( 'user_can' ) || ! function_exists( 'get_userdata' ) ) {
-            return self::REFUSAL_CAPS_UNAVAILABLE;
+            return [
+                'code'       => self::REFUSAL_CODE_CAPS_UNAVAILABLE,
+                'capability' => null,
+                'reason'     => self::REFUSAL_CAPS_UNAVAILABLE,
+            ];
         }
 
         $user = get_userdata( $user_id );
         if ( ! $user ) {
-            return self::REFUSAL_USER_UNRESOLVED;
+            return [
+                'code'       => self::REFUSAL_CODE_USER_UNRESOLVED,
+                'capability' => null,
+                'reason'     => self::REFUSAL_USER_UNRESOLVED,
+            ];
         }
 
         $privileged_caps = self::privileged_caps();
 
+        // Check raw allcaps first: user_can() consults allcaps internally, but
+        // user_can() also applies the 'user_has_cap' filter under our re-entrancy
+        // guard. A filter callback calling wp_get_current_user() sees user 0 and
+        // may under-report or clear capabilities. Checking allcaps directly first
+        // avoids this under-reporting for static grants.
         if ( ! empty( $user->allcaps ) && is_array( $user->allcaps ) ) {
             foreach ( $privileged_caps as $capability ) {
                 if ( ! empty( $user->allcaps[ $capability ] ) ) {
-                    return self::held_capability_reason( $capability );
+                    return [
+                        'code'       => self::REFUSAL_CODE_CAPABILITY_HELD,
+                        'capability' => $capability,
+                        'reason'     => self::held_capability_reason( $capability ),
+                    ];
                 }
             }
         }
@@ -417,7 +481,11 @@ class GECX_Auth {
         // above rather than making it look the user up again per capability.
         foreach ( $privileged_caps as $capability ) {
             if ( user_can( $user, $capability ) ) {
-                return self::held_capability_reason( $capability );
+                return [
+                    'code'       => self::REFUSAL_CODE_CAPABILITY_HELD,
+                    'capability' => $capability,
+                    'reason'     => self::held_capability_reason( $capability ),
+                ];
             }
         }
 
@@ -458,7 +526,9 @@ class GECX_Auth {
             return self::PRIVILEGED_CAPS;
         }
 
-        $caps = array_filter( $caps, 'is_string' );
+        $caps = array_filter( $caps, function( $cap ): bool {
+            return is_string( $cap ) && '' !== trim( $cap );
+        } );
 
         return empty( $caps ) ? self::PRIVILEGED_CAPS : array_values( $caps );
     }
@@ -490,11 +560,38 @@ class GECX_Auth {
      * only exist because parse_request() already ran.
      */
     private static function is_front_controller_request(): bool {
+        if ( ( function_exists( 'wp_doing_ajax' ) && wp_doing_ajax() ) ||
+             ( function_exists( 'wp_doing_cron' ) && wp_doing_cron() ) ||
+             ( function_exists( 'is_admin' ) && is_admin() ) ) {
+            return false;
+        }
+
+        if ( ! empty( $_SERVER['SCRIPT_FILENAME'] ) && defined( 'ABSPATH' ) && is_string( ABSPATH ) ) {
+            $normalize = function_exists( 'wp_normalize_path' ) ? 'wp_normalize_path' : static function( $p ) {
+                return str_replace( '\\', '/', (string) $p );
+            };
+            if ( $normalize( $_SERVER['SCRIPT_FILENAME'] ) !== $normalize( rtrim( ABSPATH, '/\\' ) . '/index.php' ) ) {
+                return false;
+            }
+        }
+
         $script = isset( $_SERVER['SCRIPT_NAME'] )
-            ? basename( sanitize_text_field( wp_unslash( $_SERVER['SCRIPT_NAME'] ) ) )
+            ? sanitize_text_field( wp_unslash( $_SERVER['SCRIPT_NAME'] ) )
             : '';
 
-        if ( 'index.php' === $script ) {
+        $home_path = '';
+        if ( function_exists( 'home_url' ) ) {
+            $home_path = (string) wp_parse_url( home_url(), PHP_URL_PATH );
+        }
+        $home_path = trim( $home_path, '/' );
+        if ( '' !== $home_path ) {
+            $home_path = '/' . $home_path;
+            if ( strpos( $script, $home_path . '/' ) === 0 ) {
+                $script = substr( $script, strlen( $home_path ) );
+            }
+        }
+
+        if ( '/index.php' === $script || 'index.php' === $script ) {
             return true;
         }
 
@@ -502,12 +599,13 @@ class GECX_Auth {
         // authentication site-wide. That is the safe direction, but it is
         // otherwise silent: this returns before any token is read, so the
         // 'gecx_cart_token_refused' action never fires for it.
-        if ( defined( 'WP_DEBUG' ) && WP_DEBUG && function_exists( 'error_log' ) ) {
-            error_log(
+        if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+            self::log(
                 sprintf(
-                    '[GECX] Cart-Token scope check skipped: entry point is "%s", not index.php.',
+                    'Cart-Token scope check skipped: entry point is "%s", not index.php.',
                     $script
-                )
+                ),
+                'debug'
             );
         }
 
@@ -557,10 +655,19 @@ class GECX_Auth {
         }
 
         $sources = [];
+        // WP::$extra_query_vars is assigned inside parse_request(), so in the
+        // pre-parse_request path it is always the empty default. Correctly
+        // ordered and harmless; defence in depth rather than a live tier.
         if ( isset( $GLOBALS['wp']->extra_query_vars ) && is_array( $GLOBALS['wp']->extra_query_vars ) ) {
             $sources[] = $GLOBALS['wp']->extra_query_vars;
         }
-        // phpcs:disable WordPress.Security.NonceVerification.Recommended
+        // Route resolution only, mirroring how WordPress itself reads these
+        // superglobals in WP::parse_request() before any handler runs. Nothing
+        // here acts on the request or writes state, and REST requests carry
+        // their own authentication rather than a nonce. $_POST raises the
+        // .Missing variant of this sniff and $_GET the .Recommended one, so
+        // the exception has to name the sniff rather than either code.
+        // phpcs:disable WordPress.Security.NonceVerification
         $sources[] = $_POST;
         $sources[] = $_GET;
 
@@ -571,7 +678,7 @@ class GECX_Auth {
                 return is_string( $route ) ? sanitize_text_field( $route ) : $route;
             }
         }
-        // phpcs:enable WordPress.Security.NonceVerification.Recommended
+        // phpcs:enable WordPress.Security.NonceVerification
 
         $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
 
@@ -609,24 +716,35 @@ class GECX_Auth {
     /**
      * Extracts the REST route from a request path, as WordPress does.
      *
-     * The rewrite rule WordPress installs strips the REST url prefix and hands
-     * the remainder to the server as the route, so the prefix is located and
-     * removed here rather than pattern-matching the path as a whole.
-     * A path with no prefix in it is not a pretty-permalink REST request at
-     * all.
-     *
-     * The first occurrence of the prefix wins, rather than the one at
-     * home_url()'s path. That is correct for subdirectory installs without
-     * having to reconstruct the site path here, and it fails closed against a
-     * planted second prefix: '/wp-json/x/wp-json/wc/store/v1/y' yields
-     * '/x/wp-json/wc/store/v1/y', which is not a Store API route, so the token
-     * is refused.
+     * The rewrite rule WordPress installs strips the home path and REST url
+     * prefix and hands the remainder to the server as the route, so the home path
+     * is stripped and the prefix is required at offset 0.
+     * A path with no prefix at the site root is not a pretty-permalink REST request
+     * at all.
      *
      * @param string $request_uri Raw request URI.
      * @return string Route with a leading slash, or '' when none was found.
      */
     private static function route_from_path( string $request_uri ): string {
-        $path = (string) wp_parse_url( $request_uri, PHP_URL_PATH );
+        // Strip query string first without using parse_url to preserve the leading
+        // path structure and avoid treating //host as a protocol-relative authority.
+        $path = explode( '?', $request_uri, 2 )[0];
+
+        $home_path = '';
+        if ( function_exists( 'home_url' ) ) {
+            $home_path = (string) wp_parse_url( home_url(), PHP_URL_PATH );
+        }
+        $home_path = trim( $home_path, '/' );
+        if ( '' !== $home_path ) {
+            $home_path = '/' . $home_path;
+            if ( strpos( $path, $home_path . '/' ) === 0 ) {
+                $path = substr( $path, strlen( $home_path ) );
+            } elseif ( $path === $home_path ) {
+                $path = '';
+            } else {
+                return '';
+            }
+        }
 
         $prefix = function_exists( 'rest_get_url_prefix' ) ? rest_get_url_prefix() : 'wp-json';
         $prefix = trim( (string) $prefix, '/' );
@@ -634,23 +752,24 @@ class GECX_Auth {
             return '';
         }
 
-        $needle = '/' . $prefix . '/';
-        $offset = strpos( $path, $needle );
-        if ( false === $offset ) {
+        $expected_prefix = '/' . $prefix . '/';
+        if ( strpos( $path, $expected_prefix ) !== 0 ) {
             return '';
         }
 
         // Keep the separator's trailing slash so the route is returned in the
         // '/wc/store/v1/cart' form WordPress resolves it to.
-        return substr( $path, $offset + strlen( $needle ) - 1 );
+        return substr( $path, strlen( $expected_prefix ) - 1 );
     }
 
     /**
-     * Whether a resolved REST route names a versioned Store API namespace.
+     * Whether a resolved REST route names a versioned Store API cart or batch endpoint.
      *
-     * The trailing slash in the pattern means the namespace index route,
-     * '/wc/store/v1', does not match. That is deliberate: it carries no cart
-     * and needs no shopper identity, so refusing it costs nothing.
+     * Cart-Token authentication is strictly restricted to cart management routes
+     * ('/wc/store/v1/cart', '/wc/store/v1/cart/...', and '/wc/store/v1/batch').
+     * Non-cart Store API endpoints such as '/wc/store/v1/order/...' and
+     * '/wc/store/v1/checkout/...' are deliberately excluded so a Cart-Token
+     * cannot be used to enumerate orders or bypass guest order verification.
      *
      * @param mixed $route Route as WordPress would resolve it. A rest_route[]=
      *                     query parameter arrives as an array, which cannot
@@ -661,7 +780,7 @@ class GECX_Auth {
             return false;
         }
 
-        return 1 === preg_match( '#^/wc/store/v\d+/#', $route );
+        return 1 === preg_match( '#^/wc/store/v\d+/(cart(/.*)?|batch)$#', $route );
     }
 
     /**
@@ -805,9 +924,7 @@ class GECX_Auth {
                 return $signing_input . '.' . self::to_base_64_url( $raw_signature );
             }
 
-            if ( function_exists( 'error_log' ) ) {
-                error_log( '[GECX] RS256 signing failed, falling back to HS256: ' . self::get_last_openssl_error() );
-            }
+            self::log( 'RS256 signing failed, falling back to HS256: ' . self::get_last_openssl_error(), 'warning' );
         }
 
         // Fallback / standard HS256 path
@@ -1038,17 +1155,13 @@ class GECX_Auth {
                 }
             }
             // Decryption failed on existing keys. Log critical error and do not overwrite.
-            if ( function_exists( 'error_log' ) ) {
-                error_log( '[GECX] Failed to decrypt RSA private key. Salt may have changed or key is corrupted.' );
-            }
+            self::log( 'Failed to decrypt RSA private key. Salt may have changed or key is corrupted.', 'error' );
             return null;
         }
 
         // If one key exists but not the other, state is corrupted. Do not silently overwrite.
         if ( $has_pub || $has_priv ) {
-            if ( function_exists( 'error_log' ) ) {
-                error_log( '[GECX] Keypair state desynchronized in database. Public or private key is missing.' );
-            }
+            self::log( 'Keypair state desynchronized in database. Public or private key is missing.', 'error' );
             return null;
         }
 
@@ -1092,18 +1205,14 @@ class GECX_Auth {
             ];
             $res = openssl_pkey_new( $config );
             if ( false === $res ) {
-                if ( function_exists( 'error_log' ) ) {
-                    error_log( '[GECX] openssl_pkey_new failed: ' . self::get_last_openssl_error() );
-                }
+                self::log( 'openssl_pkey_new failed: ' . self::get_last_openssl_error(), 'error' );
                 return null;
             }
 
             $private_key_pem = '';
             $exported        = openssl_pkey_export( $res, $private_key_pem );
             if ( ! $exported || empty( $private_key_pem ) ) {
-                if ( function_exists( 'error_log' ) ) {
-                    error_log( '[GECX] openssl_pkey_export failed: ' . self::get_last_openssl_error() );
-                }
+                self::log( 'openssl_pkey_export failed: ' . self::get_last_openssl_error(), 'error' );
                 return null;
             }
 
