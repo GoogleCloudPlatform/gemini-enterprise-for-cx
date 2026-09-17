@@ -178,7 +178,7 @@ class GECX_Admin {
             return;
         }
 
-        $admin_js_ver = defined( 'GECX_VERSION' ) ? GECX_VERSION : '0.3.4';
+        $admin_js_ver = defined( 'GECX_VERSION' ) ? GECX_VERSION : '0.3.5';
 
         wp_register_style( 'gecx-admin-css', false, [], $admin_js_ver );
         wp_enqueue_style( 'gecx-admin-css' );

@@ -60,13 +60,13 @@ class GECX_Rest_API {
         add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'attach_session_to_order_metadata_store_api' ], 10, 2 );
         add_action( 'rest_api_init', [ $this, 'register_session_rest_field' ] );
 
-        // Restore Store API post-dispatch cart token injection, SQL sync, and cache invalidation from CL 955424649
+        // Store API post-dispatch cart token injection, SQL sync, and cache invalidation.
         add_filter( 'rest_post_dispatch', [ $this, 'inject_cart_token_into_body' ], 10, 3 );
     }
 
     /**
      * Injects the Cart-Token header value into the JSON response body as 'id'
-     * and guarantees MySQL session sync + cache eviction as verified in CL 955424649.
+     * and guarantees MySQL session sync + cache eviction.
      */
     public function inject_cart_token_into_body( $response, $server, $request ) {
         $route = $request->get_route();

@@ -13,8 +13,6 @@ class AuthTest extends GECX_TestCase {
     use GECX_CartTokenMinting;
 
     private GECX_Auth $auth;
-    private ?string $original_cart_token = null;
-    private bool $cart_token_was_set = false;
 
     protected function setUp(): void {
         parent::setUp();
@@ -28,22 +26,6 @@ class AuthTest extends GECX_TestCase {
             123 => new WP_User( 123, 'shopper123@example.com', [ 'customer' ] ),
             456 => new WP_User( 456, 'shopper456@example.com', [ 'customer' ] ),
         ];
-
-        if ( isset( $_SERVER['HTTP_CART_TOKEN'] ) ) {
-            $this->original_cart_token = sanitize_text_field( wp_unslash( $_SERVER['HTTP_CART_TOKEN'] ) );
-            $this->cart_token_was_set  = true;
-        } else {
-            $this->cart_token_was_set = false;
-        }
-    }
-
-    protected function tearDown(): void {
-        if ( $this->cart_token_was_set ) {
-            $_SERVER['HTTP_CART_TOKEN'] = $this->original_cart_token;
-        } else {
-            unset( $_SERVER['HTTP_CART_TOKEN'] );
-        }
-        parent::tearDown();
     }
 
     public function test_bypass_if_no_token(): void {
@@ -251,6 +233,7 @@ class AuthTest extends GECX_TestCase {
      * subdirectory, which is still index.php.
      */
     public function test_front_controller_gate_allows_a_subdirectory_install(): void {
+        $GLOBALS['gecx_test_home_url'] = 'https://example.com/blog';
         $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
         $_SERVER['SCRIPT_NAME']     = '/blog/index.php';
         $_SERVER['REQUEST_URI']     = '/blog/wp-json/wc/store/v1/cart';
@@ -287,7 +270,7 @@ class AuthTest extends GECX_TestCase {
         $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertSame(
-            [ [ 'gecx_cart_token_refused', [ 456, 'user could not be resolved' ] ] ],
+            [ [ 'gecx_cart_token_refused', [ 456, GECX_Auth::REFUSAL_CODE_USER_UNRESOLVED, null ] ] ],
             $GLOBALS['gecx_test_actions']
         );
 
@@ -296,7 +279,7 @@ class AuthTest extends GECX_TestCase {
         $_SERVER['HTTP_CART_TOKEN']   = $this->generate_jwt( 7 );
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertSame(
-            [ [ 'gecx_cart_token_refused', [ 7, 'holds privileged capability "manage_options"' ] ] ],
+            [ [ 'gecx_cart_token_refused', [ 7, GECX_Auth::REFUSAL_CODE_CAPABILITY_HELD, 'manage_options' ] ] ],
             $GLOBALS['gecx_test_actions']
         );
     }
@@ -440,9 +423,11 @@ class AuthTest extends GECX_TestCase {
      * subdirectory install resolves the same route a root install does.
      */
     public function test_store_api_path_is_matched_in_a_subdirectory_install(): void {
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $GLOBALS['gecx_test_home_url'] = 'https://example.com/blog/shop';
+        $_SERVER['HTTP_CART_TOKEN']    = $this->generate_jwt( 456 );
+        $_SERVER['SCRIPT_NAME']        = '/blog/shop/index.php';
+        $_SERVER['REQUEST_URI']        = '/blog/shop/wp-json/wc/store/v1/cart';
 
-        $_SERVER['REQUEST_URI'] = '/blog/shop/wp-json/wc/store/v1/cart';
         $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
     }
 
@@ -1110,6 +1095,160 @@ class AuthTest extends GECX_TestCase {
             GECX_Auth::get_encryption_key()
         );
         $this->assertEquals( 32, strlen( (string) GECX_Auth::get_encryption_key() ) );
+    }
+
+    public function test_route_prefix_mid_path_and_double_slash_host_rejected(): void {
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+
+        // Prefix appearing mid-path
+        $_SERVER['REQUEST_URI'] = '/other/wp-json/wc/store/v1/cart';
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+
+        // Leading double-slash protocol-relative / host confusion
+        $_SERVER['REQUEST_URI'] = '//evil.com/wp-json/wc/store/v1/cart';
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+    }
+
+    public function test_block_cart_token_off_store_api_with_non_request_returns_forbidden(): void {
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $this->auth->authenticate_via_cart_token( 0 );
+
+        $result = $this->auth->block_cart_token_off_store_api( null, [], null );
+        $this->assertTrue( is_wp_error( $result ) );
+        $this->assertSame( 'rest_forbidden', $result->get_error_code() );
+        $this->assertSame( 'Sorry, you are not allowed to do that.', $result->get_error_message() );
+        $this->assertSame( 403, $result->get_error_data()['status'] );
+    }
+
+    public function test_cart_token_rejected_when_query_vars_rest_route_is_an_array(): void {
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $GLOBALS['wp']              = new stdClass();
+        $GLOBALS['wp']->query_vars  = [ 'rest_route' => [ '/wc/store/v1/cart' ] ];
+
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+    }
+
+    public function test_non_integral_and_invalid_exp_claims_are_rejected(): void {
+        $invalid_exps = [
+            '1.5e9',
+            '1e9',
+            [ 'nested' ],
+            null,
+            (object) [ 'exp' => time() + 3600 ],
+            time() - 1,
+            time(), // Expired at exact second
+        ];
+
+        foreach ( $invalid_exps as $exp ) {
+            $payload = [
+                'sub' => 456,
+                'iss' => 'woocommerce/store-api',
+                'exp' => $exp,
+            ];
+            $_SERVER['HTTP_CART_TOKEN'] = $this->mint_token_with_payload( $payload );
+            $this->assertSame(
+                0,
+                $this->auth->authenticate_via_cart_token( 0 ),
+                'Failed asserting rejection for exp: ' . var_export( $exp, true )
+            );
+        }
+    }
+
+    public function test_reset_cart_token_state_clears_flag(): void {
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
+        $this->assertTrue( GECX_Auth::is_cart_token_request() );
+
+        GECX_Auth::reset_cart_token_state();
+        $this->assertFalse( GECX_Auth::is_cart_token_request() );
+    }
+
+    public function test_non_front_controller_index_php_is_rejected(): void {
+        $_SERVER['SCRIPT_FILENAME'] = ABSPATH . 'wp-content/plugins/gecx/index.php';
+        $_SERVER['REQUEST_URI']     = '/wp-json/wc/store/v1/cart';
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+    }
+
+    public function test_reentrant_user_has_cap_filter_does_not_loop(): void {
+        add_filter(
+            'user_has_cap',
+            function ( $allcaps ) {
+                wp_get_current_user();
+                return $allcaps;
+            }
+        );
+
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
+    }
+
+    public function test_unknown_issuer_logging_is_throttled_by_transient(): void {
+        $payload = [
+            'sub' => 456,
+            'iss' => 'https://unknown.issuer.example.com',
+            'exp' => time() + 3600,
+        ];
+        $token = $this->mint_token_with_payload( $payload );
+
+        // First verification: fires action and sets throttling transient
+        $_SERVER['HTTP_CART_TOKEN'] = $token;
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+
+        $issuer_actions = array_filter(
+            $GLOBALS['gecx_test_actions'],
+            fn( $a ) => $a[0] === 'gecx_cart_token_unknown_issuer'
+        );
+        $this->assertCount( 1, $issuer_actions );
+        $this->assertTrue( ! empty( get_transient( 'gecx_unknown_iss_' . md5( 'https://unknown.issuer.example.com' ) ) ) );
+
+        // Second verification: fires action, but error log is throttled by transient
+        $GLOBALS['gecx_test_actions'] = [];
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+
+        $issuer_actions2 = array_filter(
+            $GLOBALS['gecx_test_actions'],
+            fn( $a ) => $a[0] === 'gecx_cart_token_unknown_issuer'
+        );
+        $this->assertCount( 1, $issuer_actions2 );
+    }
+
+    /**
+     * Cart-Token authentication must only resolve WordPress user identity on
+     * cart and batch routes (/wc/store/v1/cart, /wc/store/v1/cart/*, /wc/store/v1/batch).
+     * Order, checkout, and catalog endpoints must remain anonymous so a stolen
+     * or guest cart token cannot enumerate orders or bypass guest order verification.
+     */
+    public function test_cart_token_only_authenticates_cart_and_batch_routes(): void {
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123 );
+
+        $allowed = [
+            '/wp-json/wc/store/v1/cart',
+            '/wp-json/wc/store/v1/cart/add-item',
+            '/wp-json/wc/store/v1/cart/update-item',
+            '/wp-json/wc/store/v1/cart/remove-item',
+            '/wp-json/wc/store/v1/batch',
+        ];
+        foreach ( $allowed as $uri ) {
+            GECX_Auth::reset_cart_token_state();
+            $_SERVER['REQUEST_URI'] = $uri;
+            $this->assertSame( 123, $this->auth->authenticate_via_cart_token( 0 ), 'Expected acceptance on ' . $uri );
+        }
+
+        $rejected = [
+            '/wp-json/wc/store/v1/order/999',
+            '/wp-json/wc/store/v1/checkout',
+            '/wp-json/wc/store/v1/checkout/999',
+            '/wp-json/wc/store/v1/products',
+            '/wp-json/wc/store/v1/products/42',
+            '/wp-json/wc/store/v1/cart-extensions',
+        ];
+        foreach ( $rejected as $uri ) {
+            GECX_Auth::reset_cart_token_state();
+            $_SERVER['REQUEST_URI'] = $uri;
+            $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ), 'Expected rejection on ' . $uri );
+        }
     }
 }
 
