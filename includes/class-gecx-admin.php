@@ -359,23 +359,26 @@ class GECX_Admin {
         $oauth_callback_url = $console_base . self::CONSOLE_WOO_AUTH_WEBHOOK_PATH;
         $oauth_url = add_query_arg(
             [
-                'app_name'     => 'Gemini Enterprise For CX',
+                'app_name'     => rawurlencode( 'Gemini Enterprise For CX' ),
                 'scope'        => 'read_write',
-                'user_id'      => home_url(),
-                'return_url'   => $oauth_return_url,
-                'callback_url' => $oauth_callback_url,
+                'user_id'      => rawurlencode( home_url() ),
+                'return_url'   => rawurlencode( $oauth_return_url ),
+                'callback_url' => rawurlencode( $oauth_callback_url ),
             ],
             home_url( '/wc-auth/v1/authorize' )
         );
 
-        // No rawurlencode(): add_query_arg() encodes via http_build_query(),
-        // so pre-encoding here double-encodes the URL. The oauth_return_url
-        // above is passed raw for the same reason.
+        // rawurlencode() is required here: WordPress core's add_query_arg()
+        // delegates to _http_build_query(..., false), which does NOT URL-encode
+        // parameter values (unlike PHP's http_build_query()). Without
+        // rawurlencode(), the '&' separators inside $return_url are interpreted
+        // as outer query parameters by the console URL parser, truncating
+        // return_url and losing gecx_action and state.
         $connect_params = [
-            'return_url' => $return_url,
+            'return_url' => rawurlencode( $return_url ),
         ];
         if ( ! empty( $admin_jwt ) ) {
-            $connect_params['admin_jwt'] = $admin_jwt;
+            $connect_params['admin_jwt'] = rawurlencode( $admin_jwt );
         }
 
         $connect_url = add_query_arg(
@@ -447,12 +450,17 @@ class GECX_Admin {
                             <?php esc_html_e( 'Drive sales with an AI agent powered by Google Gemini that understands your store products and brand. Authenticate with Google to configure and activate your storefront agent.', 'gemini-enterprise-for-cx' ); ?>
                         </p>
 
-                        <div style="margin: 24px 0;">
+                        <div style="margin: 24px 0; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
                             <a href="<?php echo esc_url( $connect_url ); ?>"
                                 id="gecx-connect-btn"
                                 class="button button-primary button-hero"
                                 style="display: inline-flex; align-items: center; gap: 8px;">
                                 <?php esc_html_e( 'Connect with Google Cloud', 'gemini-enterprise-for-cx' ); ?>
+                            </a>
+                            <a href="<?php echo esc_url( $oauth_url ); ?>"
+                                id="gecx-reauthorize-btn"
+                                class="button button-secondary">
+                                <?php esc_html_e( 'Re-authorize Store', 'gemini-enterprise-for-cx' ); ?>
                             </a>
                         </div>
 

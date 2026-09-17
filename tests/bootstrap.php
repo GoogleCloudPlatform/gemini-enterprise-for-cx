@@ -723,20 +723,39 @@ if ( ! function_exists( 'add_query_arg' ) ) {
     /**
      * Array-and-URL form only, which is the only form the plugin uses.
      *
-     * WordPress runs the merged arguments through urlencode_deep() before
-     * building the query string, so a value that arrives already encoded comes
-     * back encoded twice. That is the behaviour under test, so the stub has to
-     * reproduce it rather than concatenate raw values.
+     * WordPress core's add_query_arg() delegates to build_query() ->
+     * _http_build_query( $data, null, '&', '', false ), which does NOT
+     * URL-encode keys or values ($urlencode = false). Callers must rawurlencode()
+     * embedded URLs (such as return_url) themselves.
      */
     function add_query_arg( array $args, string $url ): string {
         $base     = $url;
         $existing = [];
         if ( strpos( $url, '?' ) !== false ) {
             [ $base, $query ] = explode( '?', $url, 2 );
-            parse_str( $query, $existing );
+            foreach ( explode( '&', $query ) as $pair ) {
+                if ( '' === $pair ) {
+                    continue;
+                }
+                if ( strpos( $pair, '=' ) !== false ) {
+                    [ $k, $v ] = explode( '=', $pair, 2 );
+                    $existing[ $k ] = $v;
+                } else {
+                    $existing[ $pair ] = '';
+                }
+            }
         }
 
-        return $base . '?' . http_build_query( array_merge( $existing, $args ), '', '&', PHP_QUERY_RFC1738 );
+        $merged = array_merge( $existing, $args );
+        $pairs  = [];
+        foreach ( $merged as $k => $v ) {
+            if ( false === $v || null === $v ) {
+                continue;
+            }
+            $pairs[] = $k . '=' . $v;
+        }
+
+        return empty( $pairs ) ? $base : $base . '?' . implode( '&', $pairs );
     }
 }
 
