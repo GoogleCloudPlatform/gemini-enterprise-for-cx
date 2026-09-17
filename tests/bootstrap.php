@@ -7,7 +7,13 @@
 declare(strict_types=1);
 
 if ( ! defined( 'ABSPATH' ) ) {
-    define( 'ABSPATH', true );
+    define( 'ABSPATH', '/var/www/html/' );
+}
+if ( ! defined( 'WP_DEBUG' ) ) {
+    define( 'WP_DEBUG', true );
+}
+if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
+    define( 'HOUR_IN_SECONDS', 3600 );
 }
 if ( ! defined( 'GECX_TESTING' ) ) {
     define( 'GECX_TESTING', true );
@@ -70,6 +76,8 @@ function gecx_reset_test_globals(): void {
     // GECX_Auth::is_store_api_request() runs.
     unset( $GLOBALS['wp'] );
 
+    $GLOBALS['gecx_test_home_url'] = 'https://example.com';
+
     $_GET  = [];
     $_POST = [];
     // $_COOKIE drives the CSRF branch of check_admin_permissions(), so it is
@@ -80,10 +88,12 @@ function gecx_reset_test_globals(): void {
     // front controller, which is what a REST request reports.
     $_SERVER = array_merge(
         [
-            'REQUEST_URI' => '/',
-            'SCRIPT_NAME' => '/index.php',
+            'REQUEST_URI'    => '/',
+            'SCRIPT_NAME'    => '/index.php',
+            'HTTP_HOST'      => 'example.com',
+            'REQUEST_METHOD' => 'GET',
         ],
-        array_intersect_key( $_SERVER, [ 'argv' => 1, 'argc' => 1 ] )
+        array_intersect_key( $_SERVER, [ 'argv' => 1, 'argc' => 1, 'HTTP_HOST' => 1, 'REQUEST_METHOD' => 1 ] )
     );
 
     if ( class_exists( 'GECX_Auth' ) ) {
@@ -426,12 +436,15 @@ if ( ! function_exists( 'apply_filters' ) ) {
         usort(
             $hooks,
             static function ( array $a, array $b ): int {
+                if ( $a['priority'] === $b['priority'] ) {
+                    return ( $a['insertion_index'] ?? 0 ) <=> ( $b['insertion_index'] ?? 0 );
+                }
                 return $a['priority'] <=> $b['priority'];
             }
         );
 
         foreach ( $hooks as $hook ) {
-            $params = array_slice( array_merge( [ $value ], $args ), 0, max( 1, $hook['accepted_args'] ) );
+            $params = array_slice( array_merge( [ $value ], $args ), 0, $hook['accepted_args'] );
             $value  = call_user_func_array( $hook['callback'], $params );
         }
 
@@ -457,6 +470,13 @@ if ( ! function_exists( 'untrailingslashit' ) ) {
     }
 }
 
+if ( ! function_exists( 'wp_normalize_path' ) ) {
+    function wp_normalize_path( $path ): string {
+        $path = str_replace( '\\', '/', (string) $path );
+        return (string) preg_replace( '|(?<=.)/+|', '/', $path );
+    }
+}
+
 if ( ! function_exists( 'esc_attr' ) ) {
     function esc_attr( string $text ): string {
         return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' );
@@ -465,7 +485,7 @@ if ( ! function_exists( 'esc_attr' ) ) {
 
 if ( ! function_exists( 'home_url' ) ) {
     function home_url(): string {
-        return 'https://example.com';
+        return (string) ( $GLOBALS['gecx_test_home_url'] ?? 'https://example.com' );
     }
 }
 
@@ -584,10 +604,12 @@ if ( ! function_exists( '__' ) ) {
 
 if ( ! function_exists( 'add_filter' ) ) {
     function add_filter( string $hook_name, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
+        static $filter_insertion_index = 0;
         $GLOBALS['gecx_test_filter_callbacks'][ $hook_name ][] = [
-            'callback'      => $callback,
-            'priority'      => $priority,
-            'accepted_args' => $accepted_args,
+            'callback'        => $callback,
+            'priority'        => $priority,
+            'accepted_args'   => $accepted_args,
+            'insertion_index' => ++$filter_insertion_index,
         ];
         return true;
     }
@@ -1038,6 +1060,32 @@ trait GECX_CartTokenMinting {
             $claims['iss'] = $iss;
         }
 
+        $header  = json_encode( [ 'typ' => 'JWT', 'alg' => 'HS256' ] );
+        $payload = json_encode( $claims );
+
+        $to_base_64_url = static function ( string $string ) {
+            return str_replace( [ '+', '/', '=' ], [ '-', '_', '' ], base64_encode( $string ) );
+        };
+
+        $header_encoded  = $to_base_64_url( $header );
+        $payload_encoded = $to_base_64_url( $payload );
+
+        $secret            = '@' . $salt;
+        $signature         = hash_hmac( 'sha256', $header_encoded . '.' . $payload_encoded, $secret, true );
+        $signature_encoded = $to_base_64_url( $signature );
+
+        if ( ! $valid_sig ) {
+            $signature_encoded .= 'invalid';
+        }
+
+        return $header_encoded . '.' . $payload_encoded . '.' . $signature_encoded;
+    }
+
+    protected function mint_token_with_payload(
+        array $claims,
+        string $salt = 'secret_salt',
+        bool $valid_sig = true
+    ): string {
         $header  = json_encode( [ 'typ' => 'JWT', 'alg' => 'HS256' ] );
         $payload = json_encode( $claims );
 

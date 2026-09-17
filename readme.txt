@@ -3,9 +3,9 @@ Contributors: google
 Tags: woocommerce, marketing, ai, agent, gecx
 Requires at least: 5.9
 WC requires at least: 7.1
-Tested up to: 7.1
+Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 0.3.4
+Stable tag: 0.3.5
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -73,6 +73,13 @@ During merchant setup, store URL and WooCommerce API credentials are authenticat
 Yes. You need a Google account with access to Gemini Enterprise for CX to configure and activate the agent on your store.
 
 == Changelog ==
+
+= 0.3.5 =
+* Accept a Cart-Token only on requests WordPress is actually about to dispatch to the WooCommerce Store API. The REST prefix must now sit at the site root rather than anywhere in the path, so a crafted path can no longer present a non-Store-API request as a Store API one.
+* Refuse a Cart-Token on anything that is not the site's front controller, including admin, cron and AJAX requests, and on an `index.php` that is not WordPress's own.
+* Reject tokens carrying a non-numeric or non-integer expiry, and treat the expiry second itself as expired.
+* Report a refused Cart-Token with a stable machine-readable code and the capability that caused it, so a store can alert on refusals.
+* Log an unrecognised token issuer at most once an hour per issuer instead of on every request.
 
 = 0.3.4 =
 * Receive the linked agent from Google Cloud over the store's own WooCommerce API credentials, on a new authenticated `POST /wp-json/gecx/v1/link-agent` route, instead of reading it out of the browser redirect back from the console.
