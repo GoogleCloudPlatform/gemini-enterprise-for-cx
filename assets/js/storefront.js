@@ -1,0 +1,363 @@
+/**
+ * Copyright 2026 Google LLC
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/**
+ * @fileoverview Gemini Enterprise for CX Storefront JS
+ * @suppress {missingProperties}
+ */
+(function() {
+'use strict';
+
+function handleCartUpdate(e) {
+  const cartId = (e.detail && (e.detail.cartId || e.detail.cart_id)) ?
+      (e.detail.cartId || e.detail.cart_id) :
+      '';
+  const totalQuantity = (e.detail && e.detail.totalQuantity !== undefined) ?
+      e.detail.totalQuantity :
+      null;
+  const directCart = (e.detail && e.detail.cart) ? e.detail.cart : null;
+
+  // 1. React/Gutenberg Block Cart Refresh (WooCommerce Blocks)
+  if (window.wp && window.wp.data && window.wp.data.dispatch) {
+    try {
+      const coreStore = window.wp.data.dispatch('core/data');
+      if (coreStore && coreStore.invalidateResolution) {
+        coreStore.invalidateResolution('wc/store/cart', 'getCartData', []);
+      }
+      const cartStore = window.wp.data.dispatch('wc/store/cart');
+      if (cartStore && cartStore.setIsCartDataStale) {
+        cartStore.setIsCartDataStale(true);
+      }
+      if (directCart && cartStore && cartStore.receiveCart) {
+        cartStore.receiveCart(directCart);
+      }
+
+      const headers = {};
+      if (cartId) {
+        headers['Cart-Token'] = cartId;
+      }
+
+      if (window.wp.apiFetch) {
+        window.wp
+            .apiFetch({
+              path: '/wc/store/v1/cart',
+              headers: headers,
+              credentials: 'include'
+            })
+            .then(function(cart) {
+              if (cartStore && cartStore.receiveCart) {
+                cartStore.receiveCart(cart);
+              }
+              if (window.location &&
+                  (window.location.pathname.indexOf('/cart') !== -1 ||
+                   window.location.pathname.indexOf('/checkout') !== -1)) {
+                window.location.reload();
+              }
+            })
+            .catch(function(err) {});
+      } else {
+        fetch('/wp-json/wc/store/v1/cart', {
+          method: 'GET',
+          headers: Object.assign({'Content-Type': 'application/json'}, headers),
+          credentials: 'include'
+        })
+            .then(function(res) {
+              return res.json();
+            })
+            .then(function(cart) {
+              if (cartStore && cartStore.receiveCart) {
+                cartStore.receiveCart(cart);
+              }
+              if (window.location &&
+                  (window.location.pathname.indexOf('/cart') !== -1 ||
+                   window.location.pathname.indexOf('/checkout') !== -1)) {
+                window.location.reload();
+              }
+            })
+            .catch(function(err) {});
+      }
+    } catch (err) {
+    }
+  }
+
+  // 2. Fallback to trigger jQuery fragments in case traditional theme fallback exists.
+  if (window.jQuery && window.jQuery(document.body).trigger) {
+    window.jQuery(document.body).trigger('wc_fragment_refresh');
+    window.jQuery(document.body).trigger('added_to_cart');
+  }
+
+  // 3. Fallback to update DOM badge count directly for classic/non-Gutenberg themes.
+  if ((!window.wp || !window.wp.data) && totalQuantity !== null) {
+    let badge = document.querySelector(
+        '.wc-block-mini-cart__badge, .wc-block-components-mini-cart__badge');
+    if (badge) {
+      badge.textContent = totalQuantity;
+      if (totalQuantity > 0) {
+        badge.removeAttribute('hidden');
+        badge.style.display = '';
+      } else {
+        badge.setAttribute('hidden', '');
+        badge.style.display = 'none';
+      }
+    } else if (totalQuantity > 0) {
+      const wrapper = document.querySelector(
+          '.wc-block-mini-cart__quantity-badge, .wc-block-mini-cart__button, .wc-block-components-mini-cart__button, .wc-block-mini-cart button');
+      if (wrapper) {
+        badge = document.createElement('span');
+        badge.className = 'wc-block-mini-cart__badge';
+        badge.textContent = totalQuantity;
+        wrapper.appendChild(badge);
+      }
+    } else if (badge && totalQuantity === 0) {
+      badge.setAttribute('hidden', '');
+      badge.style.display = 'none';
+    }
+  }
+}
+
+// Helper to check if an element is visible in the viewport layout.
+function isElementVisible(el) {
+  if (!el) {
+    return false;
+  }
+  const style = window.getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden') {
+    return false;
+  }
+  return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+}
+
+// Helper to locate candidate anchor for mobile header button.
+function findMobileHeaderAnchor() {
+  const toggleSelectors = [
+    // Block Themes (FSE)
+    '.wp-block-navigation__responsive-container-open',
+    // Accessible ARIA toggles
+    'header button[aria-label*="menu" i]',
+    'header button[aria-controls*="nav" i]',
+    'header button[aria-controls*="menu" i]',
+    // Frameworks & Popular Themes (Bootstrap, Astra, GeneratePress, Elementor, Divi, Storefront)
+    '.navbar-toggle',
+    '.off-canvas-toggle',
+    '.menu-toggle',
+    '.mobile-menu-toggle',
+    '.site-header .menu-toggle',
+    '.elementor-menu-toggle',
+    '#et_mobile_nav_menu',
+    '[data-toggle="offcanvas"]'
+  ];
+
+  // 1. Inspect all matching mobile navigation toggle elements.
+  for (let i = 0; i < toggleSelectors.length; i++) {
+    const elements = document.querySelectorAll(toggleSelectors[i]);
+    for (let j = 0; j < elements.length; j++) {
+      if (isElementVisible(elements[j])) {
+        return elements[j];
+      }
+    }
+  }
+
+  // 2. Only consider cart selectors on mobile viewports (< 768px).
+  // On desktop viewports, cart elements are visible in standard themes and
+  // must not be treated as mobile-only anchors.
+  if (window.innerWidth < 768) {
+    const cartSelectors = [
+      'header .wc-block-mini-cart',
+      'header .header-cart',
+      'header .cart-contents'
+    ];
+    for (let i = 0; i < cartSelectors.length; i++) {
+      const elements = document.querySelectorAll(cartSelectors[i]);
+      for (let j = 0; j < elements.length; j++) {
+        if (isElementVisible(elements[j])) {
+          return elements[j];
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+// Client-side DOM check for mobile header button placement.
+function initMobileHeaderPlacement() {
+  if (typeof gecxStorefrontConfig === 'undefined' || !gecxStorefrontConfig.isWidgetEnabled) {
+    return;
+  }
+  if (gecxStorefrontConfig.placement !== 'nav_menu') {
+    return;
+  }
+
+  const anchor = findMobileHeaderAnchor();
+  const existing = document.querySelector('.gecx-mobile-header-button');
+  const navItems = document.querySelectorAll('.gecx-nav-menu-item');
+
+  if (anchor && anchor.parentNode) {
+    // Mobile navigation toggle is VISIBLE! Show mobile header button next to toggle.
+    if (existing) {
+      existing.style.display = 'inline-flex';
+      if (existing.classList.contains('gecx-mobile-header-button--floating')) {
+        existing.classList.remove('gecx-mobile-header-button--floating');
+        anchor.parentNode.insertBefore(existing, anchor);
+      }
+    } else {
+      const container = document.createElement('div');
+      container.className = 'gecx-mobile-header-button';
+      container.innerHTML = gecxStorefrontConfig.buttonHtml;
+      anchor.parentNode.insertBefore(container, anchor);
+    }
+    // Hide all in-menu items so they do not duplicate inside the opened drawer.
+    for (let i = 0; i < navItems.length; i++) {
+      navItems[i].style.setProperty('display', 'none', 'important');
+    }
+  } else {
+    // Mobile toggle is NOT visible (expanded/desktop/tablet mode, e.g. iPad Mini 768px or desktop).
+    if (existing && !existing.classList.contains('gecx-mobile-header-button--floating')) {
+      existing.style.display = 'none';
+    }
+    // Ensure in-menu items are visible and vertically aligned.
+    for (let i = 0; i < navItems.length; i++) {
+      navItems[i].style.removeProperty('display');
+      navItems[i].style.display = 'inline-flex';
+    }
+    if (window.innerWidth < 600 && !document.querySelector('header nav, nav.main-navigation, .wp-block-navigation')) {
+      // Tier 3: Floating Action Button (FAB) safety net only on small screens without any navigation.
+      if (!existing) {
+        const container = document.createElement('div');
+        container.className = 'gecx-mobile-header-button gecx-mobile-header-button--floating';
+        container.innerHTML = gecxStorefrontConfig.buttonHtml;
+        document.body.appendChild(container);
+      }
+    }
+  }
+}
+
+// Client-side DOM check for desktop navigation placement.
+function initNavPlacement() {
+  if (typeof gecxStorefrontConfig === 'undefined' || !gecxStorefrontConfig.isWidgetEnabled) {
+    return;
+  }
+  if (gecxStorefrontConfig.placement !== 'nav_menu') {
+    return;
+  }
+  if (document.querySelector('.gecx-nav-menu-item')) {
+    return;
+  }
+
+  // Desktop nav injection
+  const navContainer = document.querySelector(
+    'header nav ul, nav.main-navigation ul, nav.primary-navigation ul, #site-navigation ul, header .wp-block-navigation__container, header .nav-menu'
+  );
+  if (navContainer && gecxStorefrontConfig.buttonHtml) {
+    const li = document.createElement('li');
+    li.className = 'menu-item gecx-nav-menu-item wp-block-navigation-item';
+    li.style.display = 'inline-flex';
+    li.style.alignItems = 'center';
+    li.style.justifyContent = 'center';
+    li.style.verticalAlign = 'middle';
+    li.innerHTML = gecxStorefrontConfig.buttonHtml;
+    navContainer.appendChild(li);
+  }
+}
+
+// Client-side DOM check for PDP suggested prompts placement (Page builders & non-standard templates fallback).
+function initPdpPlacement() {
+  if (typeof gecxStorefrontConfig === 'undefined' || !gecxStorefrontConfig.isWidgetEnabled) {
+    return;
+  }
+  if (!gecxStorefrontConfig.isPdp || !gecxStorefrontConfig.pdpPromptsHtml) {
+    return;
+  }
+  if (document.querySelector('gecx-suggested-prompts')) {
+    return;
+  }
+
+  // Scope search to the main product container to avoid matching carousels, sidebars, or mini-carts.
+  const productScope = document.querySelector('.product, .single-product, main, article') || document;
+  const pdpTarget = productScope.querySelector(
+    '.summary.entry-summary form.cart, .single-product-summary form.cart, form.cart, .elementor-widget-woocommerce-product-add-to-cart, .et_pb_wc_add_to_cart, .wp-block-woocommerce-add-to-cart-form, .summary.entry-summary, .single-product-summary'
+  );
+  if (pdpTarget) {
+    pdpTarget.insertAdjacentHTML('afterend', gecxStorefrontConfig.pdpPromptsHtml);
+  }
+}
+
+// Keep floating button centered relative to remaining page content when chat panel opens.
+function updateFloatingWidgetCentering() {
+  const container = document.querySelector('.gecx-floating-button-container');
+  if (!container) {
+    return;
+  }
+  const isChatOpen = document.body.classList.contains('gecx-chat-open') ||
+      !!document.querySelector('chat-messenger:not(.messenger-hidden)');
+
+  if (!isChatOpen) {
+    document.documentElement.style.removeProperty('--gecx-chat-panel-width');
+    return;
+  }
+
+  const chatMessenger = document.querySelector('chat-messenger');
+  let panelWidth = 0;
+  if (chatMessenger && chatMessenger.offsetWidth) {
+    panelWidth = chatMessenger.offsetWidth;
+  } else {
+    const bodyPadding = parseFloat(window.getComputedStyle(document.body).paddingRight) || 0;
+    if (bodyPadding > 0) {
+      panelWidth = bodyPadding;
+    }
+  }
+
+  if (panelWidth > 0 && panelWidth < window.innerWidth) {
+    document.documentElement.style.setProperty('--gecx-chat-panel-width', panelWidth + 'px');
+  }
+}
+
+function initStorefront() {
+  initNavPlacement();
+  initMobileHeaderPlacement();
+  initPdpPlacement();
+  updateFloatingWidgetCentering();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initStorefront);
+} else {
+  initStorefront();
+}
+
+let resizeTimer = null;
+window.addEventListener('resize', function() {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(function() {
+    initNavPlacement();
+    initMobileHeaderPlacement();
+    updateFloatingWidgetCentering();
+  }, 150);
+});
+
+window.addEventListener('chat-messenger-update-cart', handleCartUpdate);
+document.addEventListener('chat-messenger-update-cart', handleCartUpdate);
+
+window.addEventListener('chat-messenger-visibility-changed', updateFloatingWidgetCentering);
+document.addEventListener('chat-messenger-visibility-changed', updateFloatingWidgetCentering);
+
+if (typeof MutationObserver !== 'undefined') {
+  const chatObserver = new MutationObserver(function(mutations) {
+    for (let i = 0; i < mutations.length; i++) {
+      if (mutations[i].attributeName === 'class') {
+        updateFloatingWidgetCentering();
+        break;
+      }
+    }
+  });
+  chatObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+}
+})();
