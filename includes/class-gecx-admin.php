@@ -101,6 +101,14 @@ class GECX_Admin {
      * Handle return redirect from Google Cloud onboarding application.
      */
     public function handle_connection_callback(): void {
+        // This is the return leg of an off-site redirect from the Google Cloud
+        // onboarding console, so no nonce can survive the round trip. The
+        // request is authorized instead by the administrator capability check
+        // below and by the one-time state token, which is issued by this site
+        // and validated against its transient/option record before anything
+        // acts on the request. Every read below is sanitized at the point of
+        // use.
+        // phpcs:disable WordPress.Security.NonceVerification.Recommended
         if ( ! isset( $_GET['page'] ) || 'gemini-enterprise-for-cx' !== $_GET['page'] ) {
             return;
         }
@@ -119,6 +127,7 @@ class GECX_Admin {
         } elseif ( isset( $_GET['oauth_state'] ) ) {
             $state = sanitize_text_field( wp_unslash( $_GET['oauth_state'] ) );
         }
+        // phpcs:enable WordPress.Security.NonceVerification.Recommended
 
         $transient_valid = ! empty( $state ) && false !== get_transient( 'gecx_oauth_state_' . $state );
         $states          = (array) get_option( 'gecx_pending_oauth_states', [] );
@@ -721,7 +730,8 @@ class GECX_Admin {
             return;
         }
         if ( function_exists( 'error_log' ) ) {
-            error_log( '[GECX] sync-state: ' . $message );
+            // Diagnostic output, emitted only when the site runs with WP_DEBUG on.
+            error_log( '[GECX] sync-state: ' . $message ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
         }
     }
 
