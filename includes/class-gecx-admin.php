@@ -729,10 +729,7 @@ class GECX_Admin {
         if ( ! defined( 'WP_DEBUG' ) || ! WP_DEBUG ) {
             return;
         }
-        if ( function_exists( 'error_log' ) ) {
-            // Diagnostic output, emitted only when the site runs with WP_DEBUG on.
-            error_log( '[GECX] sync-state: ' . $message ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-        }
+        GECX_Auth::log( 'sync-state: ' . $message, 'debug' );
     }
 
     /**

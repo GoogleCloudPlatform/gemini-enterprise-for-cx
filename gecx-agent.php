@@ -12,7 +12,7 @@
  * License URI:      https://www.gnu.org/licenses/gpl-3.0.html
  * Text Domain:      gemini-enterprise-for-cx
  * WC requires at least: 7.1
- * WC tested up to: 11.1.0
+ * WC tested up to: 11.1
  */
 
 declare(strict_types=1);
