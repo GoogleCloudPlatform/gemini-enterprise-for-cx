@@ -54,18 +54,18 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         }
 
         if ( function_exists( 'wc_get_webhooks' ) ) {
-            $webhooks = wc_get_webhooks( [
+            $gecx_webhooks = wc_get_webhooks( [
                 'status' => 'any',
                 'search' => 'GECX Agent Order Created',
                 'limit'  => 25,
             ] );
-            if ( is_array( $webhooks ) ) {
-                foreach ( $webhooks as $candidate ) {
-                    if ( $candidate instanceof \WC_Webhook && 'order.created' === $candidate->get_topic() && 'GECX Agent Order Created' === $candidate->get_name() ) {
+            if ( is_array( $gecx_webhooks ) ) {
+                foreach ( $gecx_webhooks as $gecx_candidate ) {
+                    if ( $gecx_candidate instanceof \WC_Webhook && 'order.created' === $gecx_candidate->get_topic() && 'GECX Agent Order Created' === $gecx_candidate->get_name() ) {
                         if ( empty( $gecx_secret ) ) {
-                            $gecx_secret = $candidate->get_secret();
+                            $gecx_secret = $gecx_candidate->get_secret();
                         }
-                        $candidate->delete( true );
+                        $gecx_candidate->delete( true );
                     }
                 }
             }
