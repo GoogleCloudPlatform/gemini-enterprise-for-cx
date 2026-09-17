@@ -5,14 +5,14 @@
  * Requires Plugins: woocommerce
  * Requires at least: 5.9
  * Requires PHP:     7.4
- * Version:          0.3.4
+ * Version:          0.3.5
  * Author:           Google LLC
  * Author URI:       https://cloud.google.com/gemini
  * License:          GPLv3
  * License URI:      https://www.gnu.org/licenses/gpl-3.0.html
  * Text Domain:      gemini-enterprise-for-cx
  * WC requires at least: 7.1
- * WC tested up to: 9.2.0
+ * WC tested up to: 11.1.0
  */
 
 declare(strict_types=1);
@@ -22,7 +22,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 if ( ! defined( 'GECX_VERSION' ) ) {
-    define( 'GECX_VERSION', '0.3.4' );
+    define( 'GECX_VERSION', '0.3.5' );
 }
 
 
