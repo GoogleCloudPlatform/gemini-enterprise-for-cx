@@ -925,7 +925,28 @@ class GECX_Auth {
                 return $signing_input . '.' . self::to_base_64_url( $raw_signature );
             }
 
-            self::log( 'RS256 signing failed, falling back to HS256: ' . self::get_last_openssl_error(), 'warning' );
+            // The key decrypted but will not sign, so it is corrupt rather than
+            // merely unreadable. Dropping straight to HS256 here is close to
+            // useless: a backend that has pinned this store's RSA public key
+            // rejects an HS256 token outright. Replacing the key is the only
+            // move that can restore signing, so discard it and try once more.
+            self::log(
+                'RS256 signing failed: ' . self::get_last_openssl_error() . ' Discarding the keypair and retrying once with a freshly generated one.',
+                'warning'
+            );
+            self::discard_keypair();
+
+            $private_key = self::get_private_key();
+            if ( ! empty( $private_key ) ) {
+                $raw_signature = '';
+                if ( @openssl_sign( $signing_input, $raw_signature, $private_key, OPENSSL_ALGO_SHA256 ) && ! empty( $raw_signature ) ) {
+                    return $signing_input . '.' . self::to_base_64_url( $raw_signature );
+                }
+                self::log(
+                    'RS256 signing failed again on a freshly generated keypair, falling back to HS256: ' . self::get_last_openssl_error(),
+                    'warning'
+                );
+            }
         }
 
         // Fallback / standard HS256 path
@@ -1133,6 +1154,20 @@ class GECX_Auth {
     }
 
     /**
+     * Drop a stored keypair that can no longer be used.
+     *
+     * Both options are removed together so the caller falls through to the
+     * generator on the "neither key exists" path, rather than tripping the
+     * desynchronized-state check on the way out.
+     */
+    private static function discard_keypair(): void {
+        if ( function_exists( 'delete_option' ) ) {
+            delete_option( 'gecx_public_key' );
+            delete_option( 'gecx_private_key' );
+        }
+    }
+
+    /**
      * Retrieves the active RSA keypair or generates and stores a new 2048-bit RSA keypair.
      *
      * @return array|null Array with 'public_key' and 'private_key' strings, or null on failure.
@@ -1155,18 +1190,36 @@ class GECX_Auth {
                     ];
                 }
             }
-            // Decryption failed on existing keys. Log critical error and do not overwrite.
-            self::log( 'Failed to decrypt RSA private key. Salt may have changed or key is corrupted.', 'error' );
-            return null;
+
+            // Decryption failed. In practice this means the WordPress salts were
+            // rotated, which makes the stored private key permanently
+            // unreadable -- nothing recovers it. Returning null here used to
+            // leave the store bricked: every JWT silently downgraded to HS256,
+            // the public-key endpoint 500'd, and a backend holding the old RSA
+            // key rejected every token forever, with a single error_log line as
+            // the only signal.
+            //
+            // Discarding the dead keypair and minting a new one is recoverable
+            // by comparison. The backend re-reads the store's public key when it
+            // stops verifying, and SyncState surfaces JWT_AUTH_INVALID and sends
+            // the merchant back to authorize if it does not.
+            self::log(
+                'Failed to decrypt RSA private key; salts were most likely rotated. Discarding the unusable keypair and generating a new one.',
+                'error'
+            );
+            self::discard_keypair();
+        } elseif ( $has_pub || $has_priv ) {
+            // Half a keypair is not usable for anything, and the missing half
+            // cannot be derived from the half that survived.
+            self::log(
+                'Keypair state desynchronized in database; public or private key is missing. Discarding the remaining half and generating a new keypair.',
+                'error'
+            );
+            self::discard_keypair();
         }
 
-        // If one key exists but not the other, state is corrupted. Do not silently overwrite.
-        if ( $has_pub || $has_priv ) {
-            self::log( 'Keypair state desynchronized in database. Public or private key is missing.', 'error' );
-            return null;
-        }
-
-        // Neither key exists. Generate a new keypair with atomic lock.
+        // No usable keypair, either because the store never had one or because
+        // the one it had was just discarded. Generate under an atomic lock.
         $lock_acquired = function_exists( 'add_option' ) ? add_option( 'gecx_keypair_lock', time(), '', 'no' ) : true;
         if ( ! $lock_acquired && function_exists( 'get_option' ) ) {
             $lock_time = (int) get_option( 'gecx_keypair_lock', 0 );

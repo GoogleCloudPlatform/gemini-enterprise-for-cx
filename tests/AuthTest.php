@@ -747,28 +747,34 @@ class AuthTest extends GECX_TestCase {
         $this->assertEquals( 'fallback@example.com', $payload['user_email'] );
     }
 
-    public function test_generate_jwt_hs256_fallback_when_openssl_sign_fails_on_corrupted_key(): void {
+    public function test_corrupt_private_key_is_replaced_and_signing_recovers_to_rs256(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 77, 'corrupt_key@example.com', [ 'customer' ] );
 
-        // Encrypt an invalid PEM string as the private key
+        // Encrypt an invalid PEM string as the private key. It decrypts fine but
+        // will not sign, which is the corrupt-key case rather than salt rotation.
         $corrupt_pem = '-----BEGIN RSA PRIVATE KEY----- INVALID NOT A REAL KEY -----END RSA PRIVATE KEY-----';
         $encrypted   = GECX_Auth::encrypt_private_key( $corrupt_pem );
         update_option( 'gecx_public_key', '-----BEGIN PUBLIC KEY-----\nMIIB...\n-----END PUBLIC KEY-----' );
         update_option( 'gecx_private_key', $encrypted );
 
-        $secret = 'fallback_secret_789';
-        update_option( 'gecx_api_secret', $secret );
+        update_option( 'gecx_api_secret', 'fallback_secret_789' );
 
         $jwt = GECX_Auth::generate_customer_jwt();
         $this->assertNotNull( $jwt );
 
+        // Falling back to HS256 here would be pointless: a backend holding this
+        // store's RSA public key rejects it. Replacing the key is what restores
+        // signing, so the token must come back RS256.
         $parts  = explode( '.', $jwt );
         $header = json_decode( $this->base64_url_decode( $parts[0] ), true );
-        $this->assertEquals( 'HS256', $header['alg'] );
-        $this->assertTrue( $this->verify_jwt_signature( $jwt, $secret ) );
+        $this->assertEquals( 'RS256', $header['alg'] );
 
         $payload = $this->decode_jwt_payload( $jwt );
         $this->assertEquals( 77, $payload['user_id'] );
+
+        // The corrupt key is gone, not left in place to fail again next time.
+        $this->assertTrue( $encrypted !== get_option( 'gecx_private_key' ) );
+        $this->assertTrue( false === strpos( (string) get_option( 'gecx_public_key' ), 'MIIB...' ) );
     }
 
     public function test_generate_admin_jwt_returns_null_when_no_user(): void {
@@ -1033,43 +1039,51 @@ class AuthTest extends GECX_TestCase {
         $this->assertNull( GECX_Auth::decrypt_private_key( [ 'iv' => 123, 'ciphertext' => 'abc', 'tag' => 'def' ] ) );
     }
 
-    public function test_salt_rotation_or_corrupt_private_key_does_not_silently_overwrite(): void {
+    public function test_salt_rotation_replaces_the_unreadable_keypair(): void {
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
 
-        $keypair = GECX_Auth::get_or_generate_keypair();
-        $original_pub = $keypair['public_key'];
+        $keypair              = GECX_Auth::get_or_generate_keypair();
+        $original_pub         = $keypair['public_key'];
         $original_priv_option = get_option( 'gecx_private_key' );
 
         // Simulate salt rotation: changing the salt causes decryption to fail.
         $GLOBALS['gecx_test_wp_salt'] = 'new_rotated_salt';
 
-        // Fetching keypair should fail rather than silently overwriting options.
-        $this->assertNull( GECX_Auth::get_private_key() );
-        $this->assertNull( GECX_Auth::get_public_key() );
-        $this->assertNull( GECX_Auth::get_or_generate_keypair() );
+        // Nothing can recover the old private key, so the store has to be given
+        // a working one instead of being left unable to sign anything.
+        $recovered = GECX_Auth::get_or_generate_keypair();
+        $this->assertNotNull( $recovered );
+        $this->assertFalse( empty( $recovered['public_key'] ) );
+        $this->assertFalse( empty( $recovered['private_key'] ) );
+        $this->assertTrue( null !== GECX_Auth::get_private_key() );
+        $this->assertTrue( null !== GECX_Auth::get_public_key() );
 
-        // Confirm database options were NOT overwritten.
-        $this->assertEquals( $original_pub, get_option( 'gecx_public_key' ) );
-        $this->assertEquals( $original_priv_option, get_option( 'gecx_private_key' ) );
+        // The dead keypair is gone, replaced rather than kept alongside.
+        $this->assertTrue( $original_pub !== get_option( 'gecx_public_key' ) );
+        $this->assertTrue( $original_priv_option !== get_option( 'gecx_private_key' ) );
     }
 
-    public function test_desynchronized_public_or_private_key_does_not_silently_overwrite(): void {
+    public function test_desynchronized_public_or_private_key_is_regenerated(): void {
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
 
-        // Case 1: Only public key exists
+        // Case 1: Only public key exists. The matching private key cannot be
+        // derived from it, so the orphan is discarded and a pair is generated.
         update_option( 'gecx_public_key', '-----BEGIN PUBLIC KEY-----\nMIIB...\n-----END PUBLIC KEY-----' );
-        $this->assertNull( GECX_Auth::get_or_generate_keypair() );
-        $this->assertNull( GECX_Auth::get_public_key() );
-        $this->assertNull( GECX_Auth::get_private_key() );
+        $keypair = GECX_Auth::get_or_generate_keypair();
+        $this->assertNotNull( $keypair );
+        $this->assertFalse( empty( $keypair['private_key'] ) );
+        $this->assertTrue( false === strpos( (string) get_option( 'gecx_public_key' ), 'MIIB...' ) );
 
-        // Case 2: Only private key exists
+        // Case 2: Only private key exists.
         delete_option( 'gecx_public_key' );
+        delete_option( 'gecx_private_key' );
         update_option( 'gecx_private_key', [ 'version' => 1, 'iv' => 'abc', 'ciphertext' => 'def', 'tag' => 'ghi' ] );
-        $this->assertNull( GECX_Auth::get_or_generate_keypair() );
-        $this->assertNull( GECX_Auth::get_public_key() );
-        $this->assertNull( GECX_Auth::get_private_key() );
+        $keypair = GECX_Auth::get_or_generate_keypair();
+        $this->assertNotNull( $keypair );
+        $this->assertFalse( empty( $keypair['public_key'] ) );
+        $this->assertTrue( null !== GECX_Auth::get_private_key() );
     }
 
     public function test_stale_lock_is_broken_and_allows_generation(): void {
