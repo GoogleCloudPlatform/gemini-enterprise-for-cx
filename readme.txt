@@ -4,7 +4,7 @@ Tags: woocommerce, marketing, ai, agent, gecx
 Requires at least: 5.9
 WC requires at least: 7.1
 WC tested up to: 11.1
-Tested up to: 6.7
+Tested up to: 7.1
 Requires PHP: 7.4
 Stable tag: 0.3.5
 License: GPLv3
