@@ -374,6 +374,7 @@ class GECX_Rest_API {
 
         update_option( 'gecx_agent_name', $agent_name );
         update_option( 'gecx_agent_enabled', 1 );
+        update_option( 'gecx_auth_complete', 1, 'no' );
         if ( '' !== $token_broker ) {
             update_option( 'gecx_token_broker_name', $token_broker );
         }
@@ -613,7 +614,8 @@ class GECX_Rest_API {
         }
 
         // New credentials are in place, so clear any invalidation recorded by
-        // a previous SyncState reconciliation.
+        // a previous SyncState reconciliation and mark store auth complete.
+        update_option( 'gecx_auth_complete', 1, 'no' );
         if ( class_exists( 'GECX_Admin' ) ) {
             delete_option( GECX_Admin::STORE_AUTH_INVALID_OPTION );
         }
@@ -639,6 +641,7 @@ class GECX_Rest_API {
         if ( is_wp_error( $webhook ) ) {
             return $webhook;
         }
+        update_option( 'gecx_auth_complete', 1, 'no' );
 
         return new \WP_REST_Response( [
             'success'    => true,

@@ -49,6 +49,16 @@ class GECX_Admin {
     public const STORE_AUTH_INVALID_OPTION = 'gecx_store_auth_invalid';
 
     /**
+     * Option set once the merchant has authorized or connected the store.
+     *
+     * Gating sync_agent_state() on this option ensures no outbound SyncState
+     * calls or admin JWT transmissions occur before the merchant grants consent
+     * on a fresh activation, while still allowing an already-authorized store
+     * to recover its binding via SyncState if gecx_agent_name is deleted.
+     */
+    public const AUTH_COMPLETE_OPTION = 'gecx_auth_complete';
+
+    /**
      * Triggered upon plugin activation.
      */
     public static function activate_plugin(): void {
@@ -167,6 +177,7 @@ class GECX_Admin {
             }
         );
         update_option( 'gecx_pending_oauth_states', $states, 'no' );
+        update_option( self::AUTH_COMPLETE_OPTION, 1, 'no' );
 
         // Release the sync throttle window so the landing page reconciles
         // immediately with Cloud if the direct webhook has not arrived yet.
@@ -356,12 +367,12 @@ class GECX_Admin {
             admin_url( 'admin.php?page=gemini-enterprise-for-cx' )
         );
 
-        $admin_jwt = GECX_Auth::generate_admin_jwt();
         $has_store_credentials = ! empty( get_option( 'gecx_webhook_id' ) ) || ! empty( get_option( 'gecx_api_secret', '' ) );
         // SyncState can report that Google can no longer use this store's
         // credentials. Treat that as unauthorized so the merchant is offered
         // the authorize step again instead of a dead end.
         $is_authorized = $has_store_credentials && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
+        $admin_jwt     = $is_authorized ? GECX_Auth::generate_admin_jwt() : '';
 
         $oauth_return_url = add_query_arg(
             [
@@ -813,6 +824,21 @@ class GECX_Admin {
      *                response was obtained.
      */
     private function sync_agent_state( string $current_agent ): string {
+        $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
+        if ( ! $auth_complete ) {
+            $has_existing_state = '' !== $current_agent
+                || ! empty( get_option( 'gecx_api_secret', '' ) )
+                || ! empty( get_option( 'gecx_webhook_id' ) );
+            if ( $has_existing_state ) {
+                update_option( self::AUTH_COMPLETE_OPTION, 1, 'no' );
+                $auth_complete = true;
+            }
+        }
+        if ( ! $auth_complete ) {
+            $this->log_sync( 'skipped, store has not completed authorization' );
+            return '';
+        }
+
         $admin_jwt = GECX_Auth::generate_admin_jwt();
         if ( empty( $admin_jwt ) ) {
             $this->log_sync( 'skipped, admin JWT unavailable' );
