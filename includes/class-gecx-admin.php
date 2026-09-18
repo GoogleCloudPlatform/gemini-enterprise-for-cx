@@ -964,9 +964,25 @@ class GECX_Admin {
             return;
         }
 
+        $actual        = (string) ( $data['actualLinkedAgentId'] ?? $data['actual_linked_agent_id'] ?? '' );
+        $actual_broker = (string) ( $data['tokenBrokerName'] ?? $data['token_broker_name'] ?? '' );
+
         if ( 'WOOCOMMERCE_SYNC_STATUS_SYNCED' === $status ) {
             // Whatever the backend objected to before is resolved.
             delete_option( self::STORE_AUTH_INVALID_OPTION );
+
+            // SYNCED is decided by comparing the bare agent id, so a store that
+            // was linked before the backend started returning canonical
+            // resource names still matches here while holding the short form
+            // locally. The backend reports the canonical name and the broker on
+            // this path too, and a SYNCED store never reaches the adopt branch
+            // below, so this is the only chance to pick them up.
+            if ( '' !== $actual && $actual !== $current_agent ) {
+                update_option( 'gecx_agent_name', $actual );
+            }
+            if ( '' !== $actual_broker ) {
+                update_option( 'gecx_token_broker_name', $actual_broker );
+            }
             return;
         }
 
@@ -975,31 +991,50 @@ class GECX_Admin {
         }
 
         // LINK_REQUIRED only means the local binding disagrees with the
-        // backend, not that the store is unlinked. The backend reports the
-        // agent it actually holds, so adopt it when there is one.
-        $actual = (string) ( $data['actualLinkedAgentId'] ?? $data['actual_linked_agent_id'] ?? '' );
-        $actual_broker = (string) ( $data['tokenBrokerName'] ?? $data['token_broker_name'] ?? '' );
+        // backend, not that the store is unlinked. Reaching this point means
+        // the backend already accepted the JWT and the API keys, so whatever it
+        // objected to previously is resolved.
+        delete_option( self::STORE_AUTH_INVALID_OPTION );
 
+        // The backend reports the agent it actually holds, so adopt it when
+        // there is one.
         if ( '' !== $actual ) {
-            $current_broker = (string) get_option( 'gecx_token_broker_name', '' );
-            if ( $actual === $current_agent && $actual_broker === $current_broker ) {
+            $current_broker  = (string) get_option( 'gecx_token_broker_name', '' );
+            $current_enabled = (int) get_option( 'gecx_agent_enabled', 0 );
+            if ( $actual === $current_agent && $actual_broker === $current_broker && 1 === $current_enabled ) {
                 return;
             }
 
             update_option( 'gecx_agent_name', $actual );
+
+            // An automatic unlink disables the widget. Adopting a link the
+            // backend still holds has to undo that, or the store looks
+            // connected in wp-admin while the storefront stays dark.
+            update_option( 'gecx_agent_enabled', 1 );
+            delete_option( 'gecx_dismiss_activation_notice' );
+
             if ( '' !== $actual_broker ) {
                 update_option( 'gecx_token_broker_name', $actual_broker );
+            } else {
+                // The broker belonged to the previous agent. Keeping it would
+                // hand the storefront widget a token broker for an agent this
+                // store is no longer linked to.
+                delete_option( 'gecx_token_broker_name' );
             }
 
-            add_settings_error(
-                'gecx_messages',
-                'gecx_agent_adopted',
-                __(
-                    'This store is connected to a different agent than the one saved here, so the saved agent was updated to match Google.',
-                    'gemini-enterprise-for-cx'
-                ),
-                'warning'
-            );
+            // Only a genuine swap is worth warning about. Recovering a binding
+            // the store had lost is not something the merchant did wrong.
+            if ( '' !== $current_agent && $current_agent !== $actual ) {
+                add_settings_error(
+                    'gecx_messages',
+                    'gecx_agent_adopted',
+                    __(
+                        'This store is connected to a different agent than the one saved here, so the saved agent was updated to match Google.',
+                        'gemini-enterprise-for-cx'
+                    ),
+                    'warning'
+                );
+            }
             return;
         }
 

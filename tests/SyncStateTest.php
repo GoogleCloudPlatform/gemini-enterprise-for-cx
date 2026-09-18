@@ -81,6 +81,19 @@ class SyncStateTest extends GECX_TestCase {
         );
     }
 
+    /**
+     * Assert that a settings notice with the given code was NOT raised.
+     *
+     * @param string $code Notice code.
+     */
+    private function assert_no_notice_code( string $code ): void {
+        $codes = array_column( $GLOBALS['gecx_test_settings_errors'], 'code' );
+        $this->assertFalse(
+            in_array( $code, $codes, true ),
+            'Did not expect notice ' . $code . ', got: ' . implode( ',', $codes )
+        );
+    }
+
     /** Assert that the local agent binding is intact. */
     private function assert_still_linked( string $agent = 'agents/agent_a' ): void {
         $this->assertEquals( $agent, get_option( 'gecx_agent_name' ) );
@@ -159,7 +172,12 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertEquals( self::LINK_REQUIRED, $status );
         $this->assertEquals( 'agents/agent_b', get_option( 'gecx_agent_name' ) );
         $this->assertEquals( 'broker-2', get_option( 'gecx_token_broker_name' ) );
-        $this->assert_notice_code( 'gecx_agent_adopted' );
+        // The store had no agent saved, so nothing was swapped out from under
+        // the merchant and there is nothing to warn about.
+        $this->assert_no_notice_code( 'gecx_agent_adopted' );
+        // Recovering the binding has to bring the storefront widget back with
+        // it, otherwise wp-admin shows connected while the storefront is dark.
+        $this->assertEquals( 1, (int) get_option( 'gecx_agent_enabled' ) );
         $this->assertTrue( false !== get_option( 'gecx_sync_last_attempt' ) ); // Throttle is not released
     }
 
@@ -182,6 +200,102 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
         $this->assertFalse( get_option( 'gecx_private_key' ) );
         $this->assertFalse( get_option( 'gecx_sync_last_attempt' ) );
+    }
+
+    public function test_synced_upgrades_a_bare_agent_id_to_the_canonical_name(): void {
+        // A store linked before the backend returned canonical names holds the
+        // bare id. The backend still matches it and answers SYNCED, so this is
+        // the only path on which the canonical name can ever be picked up.
+        update_option( 'gecx_agent_name', 'agent_a' );
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::SYNCED,
+                        'actualLinkedAgentId' => 'projects/123/locations/global/agents/agent_a',
+                        'tokenBrokerName'     => 'broker-1',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( 'agent_a' );
+
+        $this->assertEquals( 'projects/123/locations/global/agents/agent_a', get_option( 'gecx_agent_name' ) );
+        $this->assertEquals( 'broker-1', get_option( 'gecx_token_broker_name' ) );
+    }
+
+    public function test_synced_adopts_a_token_broker_the_store_is_missing(): void {
+        update_option( 'gecx_agent_name', 'agents/agent_a' );
+        delete_option( 'gecx_token_broker_name' );
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::SYNCED,
+                        'actualLinkedAgentId' => 'agents/agent_a',
+                        'tokenBrokerName'     => 'broker-1',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( 'agents/agent_a' );
+
+        $this->assertEquals( 'broker-1', get_option( 'gecx_token_broker_name' ) );
+    }
+
+    public function test_adopting_an_agent_without_a_broker_clears_the_stale_one(): void {
+        $this->seed_linked_store();
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => 'agents/agent_b',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( 'agents/agent_a' );
+
+        $this->assertEquals( 'agents/agent_b', get_option( 'gecx_agent_name' ) );
+        // broker-1 belonged to agent_a. Keeping it would hand the storefront a
+        // broker for an agent this store is no longer linked to.
+        $this->assertFalse( get_option( 'gecx_token_broker_name' ) );
+        // A genuine swap, so the merchant does get told.
+        $this->assert_notice_code( 'gecx_agent_adopted' );
+    }
+
+    public function test_link_required_clears_a_previous_authorization_failure(): void {
+        // Reaching LINK_REQUIRED means the backend accepted both the JWT and
+        // the API keys, so the store is no longer in an auth-invalid state.
+        $this->seed_linked_store();
+        update_option( 'gecx_store_auth_invalid', 1 );
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => 'agents/agent_a',
+                        'tokenBrokerName'     => 'broker-1',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( 'agents/agent_a' );
+
+        $this->assertFalse( get_option( 'gecx_store_auth_invalid' ) );
     }
 
     public function test_synced_is_a_no_op(): void {
