@@ -3,7 +3,7 @@
  * Plugin Name: Gemini Enterprise for CX
  * Description: Drive sales with an AI agent that's already an expert on your brand and products. Go live instantly on your WooCommerce storefront.
  * Requires Plugins: woocommerce
- * Requires at least: 5.9
+ * Requires at least: 6.2
  * Requires PHP:     7.4
  * Version:          0.3.5
  * Author:           Google LLC

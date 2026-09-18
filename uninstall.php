@@ -41,11 +41,11 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         $gecx_store_url   = function_exists( 'home_url' ) ? home_url() : '';
 
         // 1. Retrieve secret from webhook if available, then delete the webhook.
-        $gecx_webhook_id = get_option( 'gecx_webhook_id' );
-        $gecx_secret     = '';
-        $wc_available    = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+        $gecx_webhook_id   = get_option( 'gecx_webhook_id' );
+        $gecx_secret       = '';
+        $gecx_wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
 
-        if ( $wc_available ) {
+        if ( $gecx_wc_available ) {
             if ( ! empty( $gecx_webhook_id ) ) {
                 try {
                     $gecx_webhook = new \WC_Webhook( (int) $gecx_webhook_id );
@@ -84,31 +84,31 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             // so the webhook row does not survive and resume firing when WooCommerce
             // is re-activated later.
             if ( isset( $wpdb ) && is_object( $wpdb ) ) {
-                $table_name   = $wpdb->prefix . 'wc_webhooks';
-                $table_exists = true;
+                $gecx_table_name   = $wpdb->prefix . 'wc_webhooks';
+                $gecx_table_exists = true;
                 if ( method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) ) {
-                    $escaped_like = method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( $table_name ) : $table_name;
+                    $gecx_escaped_like = method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( $gecx_table_name ) : $gecx_table_name;
                     // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                    $table_exists = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $escaped_like ) ) === $table_name );
+                    $gecx_table_exists = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $gecx_escaped_like ) ) === $gecx_table_name );
                 }
-                if ( $table_exists ) {
+                if ( $gecx_table_exists ) {
                     if ( ! empty( $gecx_webhook_id ) ) {
                         if ( empty( $gecx_secret ) && method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) ) {
                             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                            $found_secret = $wpdb->get_var(
+                            $gecx_found_secret = $wpdb->get_var(
                                 $wpdb->prepare(
                                     'SELECT secret FROM %i WHERE webhook_id = %d',
-                                    $table_name,
+                                    $gecx_table_name,
                                     (int) $gecx_webhook_id
                                 )
                             );
-                            if ( ! empty( $found_secret ) ) {
-                                $gecx_secret = (string) $found_secret;
+                            if ( ! empty( $gecx_found_secret ) ) {
+                                $gecx_secret = (string) $gecx_found_secret;
                             }
                         }
                         if ( method_exists( $wpdb, 'delete' ) ) {
                             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                            $wpdb->delete( $table_name, [ 'webhook_id' => (int) $gecx_webhook_id ], [ '%d' ] );
+                            $wpdb->delete( $gecx_table_name, [ 'webhook_id' => (int) $gecx_webhook_id ], [ '%d' ] );
                         }
                         if ( function_exists( 'wp_cache_delete' ) ) {
                             wp_cache_delete( (int) $gecx_webhook_id, 'webhooks' );
@@ -117,22 +117,22 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
 
                     if ( empty( $gecx_secret ) && method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) ) {
                         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                        $found_secret = $wpdb->get_var(
+                        $gecx_found_secret = $wpdb->get_var(
                             $wpdb->prepare(
                                 'SELECT secret FROM %i WHERE name = %s AND topic = %s LIMIT 1',
-                                $table_name,
+                                $gecx_table_name,
                                 'GECX Agent Order Created',
                                 'order.created'
                             )
                         );
-                        if ( ! empty( $found_secret ) ) {
-                            $gecx_secret = (string) $found_secret;
+                        if ( ! empty( $gecx_found_secret ) ) {
+                            $gecx_secret = (string) $gecx_found_secret;
                         }
                     }
                     if ( method_exists( $wpdb, 'delete' ) ) {
                         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
                         $wpdb->delete(
-                            $table_name,
+                            $gecx_table_name,
                             [
                                 'name'  => 'GECX Agent Order Created',
                                 'topic' => 'order.created',
