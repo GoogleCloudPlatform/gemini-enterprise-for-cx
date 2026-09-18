@@ -194,7 +194,6 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
         delete_option( 'gecx_keypair_lock' );
-        delete_option( 'gecx_agent_id' );
         delete_option( 'gecx_agent_name' );
         delete_option( 'gecx_token_broker_name' );
         delete_option( 'gecx_agent_enabled' );

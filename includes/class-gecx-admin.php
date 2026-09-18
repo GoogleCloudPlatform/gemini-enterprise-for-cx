@@ -1035,7 +1035,6 @@ class GECX_Admin {
         }
         delete_option( 'gecx_api_secret' );
         delete_option( self::STORE_AUTH_INVALID_OPTION );
-        delete_option( 'gecx_agent_id' );
         delete_option( 'gecx_agent_name' );
         delete_option( 'gecx_token_broker_name' );
         update_option( 'gecx_agent_enabled', 0 );
@@ -1049,7 +1048,7 @@ class GECX_Admin {
      * Release this store's agent link on Google's side via POST /woocommerce/unlink-agent.
      *
      * @param string $agent_id Agent the store currently believes it is linked to.
-     * @return bool True when Google returns 200 OK.
+     * @return bool True when Google confirms the store is no longer linked.
      */
     private function unlink_agent_remotely( string $agent_id ): bool {
         $admin_jwt = GECX_Auth::generate_admin_jwt();
@@ -1090,7 +1089,15 @@ class GECX_Admin {
         }
 
         $code = (int) wp_remote_retrieve_response_code( $response );
-        if ( 200 !== $code ) {
+
+        // 404 means Google has no installation to unlink, which is the state
+        // this call is trying to reach. Treat it as done rather than stranding
+        // the merchant on a link only WordPress still believes in.
+        if ( 404 === $code ) {
+            return true;
+        }
+
+        if ( $code < 200 || $code > 299 ) {
             $this->log_sync( 'unlink got unexpected HTTP status ' . $code );
             return false;
         }
@@ -1108,10 +1115,6 @@ class GECX_Admin {
         }
 
         $agent_id = (string) get_option( 'gecx_agent_name', '' );
-        if ( '' === $agent_id ) {
-            $agent_id = (string) get_option( 'gecx_agent_id', '' );
-        }
-
         if ( '' !== $agent_id && ! $this->unlink_agent_remotely( $agent_id ) ) {
             wp_send_json_error(
                 [
