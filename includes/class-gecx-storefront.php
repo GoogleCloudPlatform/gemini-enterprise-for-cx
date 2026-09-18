@@ -243,8 +243,6 @@ class GECX_Storefront {
 
         $store_url     = esc_url( home_url() );
         $token_broker  = $this->get_token_broker();
-        $nonce         = wp_create_nonce( 'wp_rest' );
-        $customer_jwt  = GECX_Auth::generate_customer_jwt();
         $placement     = (string) get_option( 'gecx_button_placement', 'nav_menu' );
         $floating_pos  = (string) get_option( 'gecx_floating_position', 'bottom_center' );
         ?>
@@ -262,10 +260,6 @@ class GECX_Storefront {
             agent-name="<?php echo esc_attr( $agent_name ); ?>"
             store-url="<?php echo esc_attr( $store_url ); ?>"
             token-broker="<?php echo esc_attr( $token_broker ); ?>"
-            wp-nonce="<?php echo esc_attr( $nonce ); ?>"
-            <?php if ( ! empty( $customer_jwt ) ) : ?>
-            customer-jwt="<?php echo esc_attr( $customer_jwt ); ?>"
-            <?php endif; ?>
             environment="prod"
             hide-launcher
             <?php if ( is_customize_preview() ) : ?>

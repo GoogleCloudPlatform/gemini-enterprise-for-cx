@@ -1198,6 +1198,129 @@ class RestApiTest extends GECX_TestCase {
         $this->assertStringNotContainsString( 'a.cart.token', wp_json_encode( $result->get_data() ) );
     }
 
+    public function test_auth_context_handler_returns_fresh_nonce_and_customer_jwt_when_logged_in(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 77, 'buyer@shop.test' );
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+
+        $response = $rest_api->auth_context_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $response );
+        $this->assertSame( 200, $response->get_status() );
+
+        $data = $response->get_data();
+        $this->assertTrue( $data['success'] );
+        $this->assertNotEmpty( $data['nonce'] );
+        $this->assertTrue( (bool) wp_verify_nonce( $data['nonce'], 'wp_rest' ) );
+        $this->assertNotEmpty( $data['customer_jwt'] );
+
+        $headers = $response->get_headers();
+        $this->assertArrayHasKey( 'Cache-Control', $headers );
+        $this->assertStringContainsString( 'no-cache', $headers['Cache-Control'] );
+        $this->assertStringContainsString( 'no-store', $headers['Cache-Control'] );
+        $this->assertStringContainsString( 'private', $headers['Cache-Control'] );
+        $this->assertSame( 'Cookie, Origin', $headers['Vary'] );
+    }
+
+    public function test_auth_context_handler_restores_cookie_user_when_rest_cookie_check_zeroed_current_user(): void {
+        // Simulate WordPress's rest_cookie_check_errors() calling wp_set_current_user( 0 )
+        // when GET /wp-json/gecx/v1/auth-context is dispatched without X-WP-Nonce.
+        $GLOBALS['gecx_test_current_user']   = null;
+        $GLOBALS['gecx_test_cookie_user_id'] = 77;
+        $GLOBALS['gecx_test_users'][77]      = new WP_User( 77, 'buyer@shop.test' );
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+
+        $response = $rest_api->auth_context_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $response );
+        $this->assertSame( 200, $response->get_status() );
+        $this->assertSame( 0, get_current_user_id() );
+
+        $data = $response->get_data();
+        $this->assertTrue( $data['success'] );
+        $this->assertNotEmpty( $data['nonce'] );
+        $this->assertNotEmpty( $data['customer_jwt'] );
+
+        // Verify the JWT was minted for user 77 (not guest user_id=0).
+        $payload = $this->decode_jwt_payload( $data['customer_jwt'] );
+        $this->assertSame( 77, $payload['user_id'] );
+        $this->assertSame( 'buyer@shop.test', $payload['user_email'] );
+
+        // Verify the nonce validates when user 77 is active on subsequent REST requests.
+        $GLOBALS['gecx_test_current_user'] = $GLOBALS['gecx_test_users'][77];
+        $this->assertTrue( (bool) wp_verify_nonce( $data['nonce'], 'wp_rest' ) );
+    }
+
+    public function test_auth_context_permissions_enforces_same_origin_and_rejects_cross_site(): void {
+        $rest_api = new GECX_Rest_API();
+
+        // Same-origin request succeeds.
+        $same_origin_req = new WP_REST_Request();
+        $same_origin_req->set_header( 'Origin', 'https://example.com' );
+        $same_origin_req->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $this->assertTrue( true === $rest_api->check_auth_context_permissions( $same_origin_req ) );
+
+        // Cross-site Fetch Metadata is rejected.
+        $cross_site_req = new WP_REST_Request();
+        $cross_site_req->set_header( 'Sec-Fetch-Site', 'cross-site' );
+        $perm = $rest_api->check_auth_context_permissions( $cross_site_req );
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
+
+        // Cross-origin Origin header is rejected.
+        $cross_origin_req = new WP_REST_Request();
+        $cross_origin_req->set_header( 'Origin', 'https://evil.example.org' );
+        $perm = $rest_api->check_auth_context_permissions( $cross_origin_req );
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
+
+        // Cross-origin Referer header (without Origin) is rejected.
+        $cross_referer_req = new WP_REST_Request();
+        $cross_referer_req->set_header( 'Referer', 'https://evil.example.org/attack.html' );
+        $perm = $rest_api->check_auth_context_permissions( $cross_referer_req );
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
+    }
+
+    public function test_auth_context_handler_returns_guest_jwt_for_unauthenticated_user(): void {
+        $GLOBALS['gecx_test_current_user'] = null;
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+
+        $response = $rest_api->auth_context_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $response );
+        $this->assertSame( 200, $response->get_status() );
+
+        $data = $response->get_data();
+        $this->assertTrue( $data['success'] );
+        $this->assertNotEmpty( $data['nonce'] );
+        $this->assertNotEmpty( $data['customer_jwt'] );
+    }
+
+    public function test_auth_context_handler_returns_null_customer_jwt_when_no_secret(): void {
+        $GLOBALS['gecx_test_current_user'] = null;
+        delete_option( 'gecx_public_key' );
+        delete_option( 'gecx_private_key' );
+        $GLOBALS['gecx_test_wp_salt'] = '';
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+
+        $response = $rest_api->auth_context_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $response );
+        $this->assertSame( 200, $response->get_status() );
+
+        $data = $response->get_data();
+        $this->assertTrue( $data['success'] );
+        $this->assertNotEmpty( $data['nonce'] );
+        $this->assertNull( $data['customer_jwt'] );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {

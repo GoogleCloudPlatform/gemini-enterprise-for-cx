@@ -51,6 +51,8 @@ class GECX_Rest_API {
         add_action( 'rest_api_init', [ $this, 'register_public_key_rest_route' ] );
         add_action( 'rest_api_init', [ $this, 'register_link_rest_route' ] );
         add_action( 'rest_api_init', [ $this, 'register_refresh_token_rest_route' ] );
+        add_action( 'rest_api_init', [ $this, 'register_auth_context_rest_route' ] );
+        add_filter( 'rest_pre_serve_request', [ $this, 'suppress_cors_on_auth_context' ], 20, 4 );
         add_filter( 'woocommerce_rest_is_request_to_rest_api', [ $this, 'enable_wc_auth_for_custom_endpoints' ], 10, 1 );
         add_action( 'woocommerce_checkout_create_order', [ $this, 'attach_session_to_order_metadata' ], 10, 2 );
         add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'attach_session_to_order_metadata_store_api' ], 10, 2 );
@@ -413,6 +415,180 @@ class GECX_Rest_API {
             'success'      => true,
             'customer_jwt' => $customer_jwt,
         ], 200 );
+    }
+
+    /**
+     * Register API Route to fetch fresh, dynamic auth context (nonce and customer JWT)
+     * without caching.
+     */
+    public function register_auth_context_rest_route(): void {
+        register_rest_route( 'gecx/v1', '/auth-context', [
+            'methods'             => 'GET',
+            'callback'            => [ $this, 'auth_context_handler' ],
+            'permission_callback' => [ $this, 'check_auth_context_permissions' ],
+        ] );
+    }
+
+    /**
+     * Enforces strict same-origin isolation on /gecx/v1/auth-context.
+     *
+     * Because this endpoint resolves the logged-in user from the WordPress
+     * logged_in cookie without a prior X-WP-Nonce (in order to bootstrap the
+     * nonce on cached storefront pages), cross-origin and cross-site reads
+     * must be rejected so another origin cannot read the user's nonce or JWT.
+     *
+     * @param \WP_REST_Request $request REST request instance.
+     * @return true|\WP_Error
+     */
+    public function check_auth_context_permissions( \WP_REST_Request $request ) {
+        if ( GECX_Auth::is_cart_token_request() ) {
+            return new \WP_Error( 'rest_forbidden', __( 'Unauthorized.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
+        }
+
+        $fetch_site = (string) $request->get_header( 'Sec-Fetch-Site' );
+        if ( '' === $fetch_site && isset( $_SERVER['HTTP_SEC_FETCH_SITE'] ) ) {
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via sanitize_text_field.
+            $fetch_site = sanitize_text_field( wp_unslash( (string) $_SERVER['HTTP_SEC_FETCH_SITE'] ) );
+        }
+        if ( '' !== $fetch_site ) {
+            $lower_site = strtolower( trim( $fetch_site ) );
+            if ( 'same-origin' !== $lower_site && 'none' !== $lower_site ) {
+                return new \WP_Error( 'rest_forbidden', __( 'Cross-site requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
+            }
+        }
+
+        $origin = (string) $request->get_header( 'Origin' );
+        if ( '' === $origin && isset( $_SERVER['HTTP_ORIGIN'] ) ) {
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via sanitize_text_field.
+            $origin = sanitize_text_field( wp_unslash( (string) $_SERVER['HTTP_ORIGIN'] ) );
+        }
+        if ( '' !== $origin && ! self::is_same_origin( $origin ) ) {
+            return new \WP_Error( 'rest_forbidden', __( 'Cross-origin requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
+        }
+
+        $referer = (string) $request->get_header( 'Referer' );
+        if ( '' === $referer && isset( $_SERVER['HTTP_REFERER'] ) ) {
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via sanitize_text_field.
+            $referer = sanitize_text_field( wp_unslash( (string) $_SERVER['HTTP_REFERER'] ) );
+        }
+        if ( '' === $origin && '' !== $referer && ! self::is_same_origin( $referer ) ) {
+            return new \WP_Error( 'rest_forbidden', __( 'Cross-origin requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
+        }
+
+        return true;
+    }
+
+    /**
+     * Checks whether a candidate URL (Origin or Referer) shares the same
+     * scheme, host, and port as the store's home_url().
+     *
+     * @param string $candidate_url Candidate Origin or Referer URL.
+     * @return bool
+     */
+    private static function is_same_origin( string $candidate_url ): bool {
+        $site_url = function_exists( 'home_url' ) ? (string) home_url() : '';
+        if ( '' === $site_url ) {
+            return false;
+        }
+
+        $site_parts = wp_parse_url( $site_url );
+        $cand_parts = wp_parse_url( $candidate_url );
+        if ( ! is_array( $site_parts ) || ! is_array( $cand_parts ) ) {
+            return false;
+        }
+        if ( empty( $site_parts['scheme'] ) || empty( $site_parts['host'] ) || empty( $cand_parts['scheme'] ) || empty( $cand_parts['host'] ) ) {
+            return false;
+        }
+
+        $site_scheme = strtolower( (string) $site_parts['scheme'] );
+        $cand_scheme = strtolower( (string) $cand_parts['scheme'] );
+        if ( $site_scheme !== $cand_scheme ) {
+            return false;
+        }
+
+        $site_host = strtolower( (string) $site_parts['host'] );
+        $cand_host = strtolower( (string) $cand_parts['host'] );
+        if ( $site_host !== $cand_host ) {
+            return false;
+        }
+
+        $default_port = ( 'https' === $site_scheme ) ? 443 : 80;
+        $site_port    = isset( $site_parts['port'] ) ? (int) $site_parts['port'] : $default_port;
+        $cand_port    = isset( $cand_parts['port'] ) ? (int) $cand_parts['port'] : $default_port;
+
+        return $site_port === $cand_port;
+    }
+
+    /**
+     * Strips WordPress REST API CORS reflection headers on /gecx/v1/auth-context
+     * so cross-origin documents cannot read the response even if preflighted.
+     *
+     * @param bool             $served  Whether the request has already been served.
+     * @param \WP_HTTP_Response $result  Result to send to the client.
+     * @param \WP_REST_Request  $request Request used to generate the response.
+     * @param \WP_REST_Server   $server  Server instance.
+     * @return bool
+     */
+    public function suppress_cors_on_auth_context( $served, $result, $request, $server ) {
+        if ( $request instanceof \WP_REST_Request && '/gecx/v1/auth-context' === $request->get_route() ) {
+            if ( function_exists( 'header_remove' ) && ( ! function_exists( 'headers_sent' ) || ! headers_sent() ) ) {
+                header_remove( 'Access-Control-Allow-Origin' );
+                header_remove( 'Access-Control-Allow-Credentials' );
+            }
+        }
+        return $served;
+    }
+
+    /**
+     * Handle the GET request for dynamic auth context.
+     *
+     * WordPress's rest_cookie_check_errors() calls wp_set_current_user( 0 )
+     * when a REST request arrives without an X-WP-Nonce header. Because this
+     * endpoint is what mints the fresh wp_rest nonce and customer JWT after a
+     * cached page load, it restores the logged-in user from the WordPress
+     * logged_in cookie (after check_auth_context_permissions() has verified
+     * same-origin isolation) and resets the user state before returning.
+     *
+     * @param \WP_REST_Request $request REST request instance.
+     * @return \WP_REST_Response
+     */
+    public function auth_context_handler( \WP_REST_Request $request ): \WP_REST_Response {
+        $previous_user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+        $restored_user    = false;
+
+        if ( 0 === $previous_user_id && function_exists( 'wp_validate_auth_cookie' ) && function_exists( 'wp_set_current_user' ) ) {
+            $cookie_user_id = (int) wp_validate_auth_cookie( '', 'logged_in' );
+            if ( $cookie_user_id > 0 ) {
+                wp_set_current_user( $cookie_user_id );
+                $restored_user = true;
+            }
+        }
+
+        try {
+            if ( function_exists( 'nocache_headers' ) ) {
+                nocache_headers();
+            }
+
+            $nonce        = function_exists( 'wp_create_nonce' ) ? (string) wp_create_nonce( 'wp_rest' ) : '';
+            $customer_jwt = GECX_Auth::generate_customer_jwt();
+        } finally {
+            if ( $restored_user && function_exists( 'wp_set_current_user' ) ) {
+                wp_set_current_user( $previous_user_id );
+            }
+        }
+
+        $response = new \WP_REST_Response( [
+            'success'      => true,
+            'nonce'        => $nonce,
+            'customer_jwt' => $customer_jwt,
+        ], 200 );
+
+        $response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, private, max-age=0' );
+        $response->header( 'Pragma', 'no-cache' );
+        $response->header( 'Expires', 'Wed, 11 Jan 1984 05:00:00 GMT' );
+        $response->header( 'Vary', 'Cookie, Origin' );
+
+        return $response;
     }
 
     /**
