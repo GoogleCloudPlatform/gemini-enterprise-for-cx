@@ -1007,10 +1007,14 @@ class GECX_Admin {
 
             update_option( 'gecx_agent_name', $actual );
 
-            // An automatic unlink disables the widget. Adopting a link the
-            // backend still holds has to undo that, or the store looks
-            // connected in wp-admin while the storefront stays dark.
+            // An automatic unlink disables the widget and pauses/deletes the
+            // order webhook. Adopting a link the backend still holds has to
+            // re-enable both, or the store looks connected in wp-admin while
+            // the storefront stays dark and order attribution stops firing.
             update_option( 'gecx_agent_enabled', 1 );
+            if ( class_exists( 'GECX_Rest_API' ) ) {
+                GECX_Rest_API::set_order_webhook_status( 'active' );
+            }
             delete_option( 'gecx_dismiss_activation_notice' );
 
             if ( '' !== $actual_broker ) {
@@ -1114,7 +1118,9 @@ class GECX_Admin {
                         'admin_jwt' => $admin_jwt,
                     ]
                 ),
-                'timeout' => 3,
+                // Allow enough headroom for VerifyAdminJwtWithSelfHealing to
+                // fetch /wp-json/gecx/v1/public-key if the store rotated keys.
+                'timeout' => 10,
             ]
         );
 
@@ -1125,10 +1131,12 @@ class GECX_Admin {
 
         $code = (int) wp_remote_retrieve_response_code( $response );
 
-        // 404 means Google has no installation to unlink, which is the state
-        // this call is trying to reach. Treat it as done rather than stranding
-        // the merchant on a link only WordPress still believes in.
-        if ( 404 === $code ) {
+        // 404 (NotFound: installation absent), 403 (PermissionDenied: store is
+        // already linked to a different agent or unlinked in Spanner), and 400
+        // (InvalidArgument: local gecx_agent_name references a stale project)
+        // all confirm Google does not link this store to $agent_id. Treat them
+        // as unlinked rather than stranding the merchant on a 502 error.
+        if ( in_array( $code, [ 400, 403, 404 ], true ) ) {
             return true;
         }
 

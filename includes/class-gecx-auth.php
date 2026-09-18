@@ -812,6 +812,30 @@ class GECX_Auth {
      * @return string|null Signed JWT string, or null if user is unauthorized or secret is missing.
      */
     public static function generate_admin_jwt( ?int $user_id = null, int $expiration = 300, ?string $email = null ): ?string {
+        return self::build_admin_jwt( $user_id, $expiration, $email, true, true );
+    }
+
+    /**
+     * Mint an admin RS256 JWT using only an already-stored, decryptable keypair.
+     *
+     * Used during uninstall so plugin deletion never generates a new keypair,
+     * never writes options, and never falls back to HS256 (which the backend
+     * rejects when an Authorization header is present).
+     */
+    public static function generate_existing_rs256_admin_jwt( ?int $user_id = null, int $expiration = 300, ?string $email = null ): ?string {
+        return self::build_admin_jwt( $user_id, $expiration, $email, false, false );
+    }
+
+    /**
+     * Resolve and authorize the admin user, then delegate to the internal builder.
+     */
+    private static function build_admin_jwt(
+        ?int $user_id,
+        int $expiration,
+        ?string $email,
+        bool $allow_key_generation,
+        bool $allow_hs256_fallback
+    ): ?string {
         if ( null === $user_id ) {
             if ( ! function_exists( 'is_user_logged_in' ) || ! is_user_logged_in() ) {
                 return null;
@@ -834,7 +858,7 @@ class GECX_Auth {
             return null;
         }
 
-        return self::generate_jwt_internal( $user_id, true, $expiration, $email );
+        return self::generate_jwt_internal( $user_id, true, $expiration, $email, $allow_key_generation, $allow_hs256_fallback );
     }
 
     /**
@@ -854,13 +878,17 @@ class GECX_Auth {
      * @param int $expiration Expiration duration in seconds.
      * @param string|null $email Optional email. Used as given when non-empty,
      *                           which skips the user lookup entirely.
+     * @param bool $allow_key_generation Whether missing/corrupt RSA keys may be generated/replaced.
+     * @param bool $allow_hs256_fallback Whether HS256 signing is permitted when RS256 is unavailable.
      * @return string|null Signed JWT string, or null if user/secret missing.
      */
     private static function generate_jwt_internal(
         ?int $user_id,
         bool $is_admin,
         int $expiration,
-        ?string $email
+        ?string $email,
+        bool $allow_key_generation = true,
+        bool $allow_hs256_fallback = true
     ): ?string {
         if ( ! $is_admin ) {
             // Customer JWT: authenticated user or guest ($user_id = 0).
@@ -891,7 +919,7 @@ class GECX_Auth {
             }
         }
 
-        $private_key = self::get_private_key();
+        $private_key = $allow_key_generation ? self::get_private_key() : self::get_existing_private_key();
         $use_rs256   = ! empty( $private_key ) && function_exists( 'openssl_sign' );
 
         $issued_at    = time();
@@ -925,31 +953,38 @@ class GECX_Auth {
                 return $signing_input . '.' . self::to_base_64_url( $raw_signature );
             }
 
+            if ( ! $allow_key_generation ) {
+                return null;
+            }
+
             // The key decrypted but will not sign, so it is corrupt rather than
-            // merely unreadable. Dropping straight to HS256 here is close to
-            // useless: a backend that has pinned this store's RSA public key
-            // rejects an HS256 token outright. Replacing the key is the only
-            // move that can restore signing, so discard it and try once more.
+            // merely unreadable. Replace it under gecx_keypair_lock and retry once;
+            // only fall back to legacy HS256 (still used for local REST verification
+            // and legacy installations without a pinned RSA key) if OpenSSL cannot
+            // produce a usable keypair at all.
             self::log(
-                'RS256 signing failed: ' . self::get_last_openssl_error() . ' Discarding the keypair and retrying once with a freshly generated one.',
+                'RS256 signing failed: ' . self::get_last_openssl_error() . ' Replacing the keypair under lock and retrying once.',
                 'warning'
             );
-            self::discard_keypair();
-
-            $private_key = self::get_private_key();
+            $private_key = self::regenerate_keypair_locked( $private_key );
             if ( ! empty( $private_key ) ) {
                 $raw_signature = '';
                 if ( @openssl_sign( $signing_input, $raw_signature, $private_key, OPENSSL_ALGO_SHA256 ) && ! empty( $raw_signature ) ) {
                     return $signing_input . '.' . self::to_base_64_url( $raw_signature );
                 }
                 self::log(
-                    'RS256 signing failed again on a freshly generated keypair, falling back to HS256: ' . self::get_last_openssl_error(),
+                    'RS256 signing failed again on a freshly generated keypair, falling back to legacy HS256: ' . self::get_last_openssl_error(),
                     'warning'
                 );
             }
         }
 
-        // Fallback / standard HS256 path
+        if ( ! $allow_hs256_fallback ) {
+            return null;
+        }
+
+        // Legacy HS256 fallback (retained for local REST token verification and
+        // legacy installations until HS256 support is removed on the backend).
         $secret = function_exists( 'get_option' ) ? (string) get_option( 'gecx_api_secret', '' ) : '';
         if ( function_exists( 'apply_filters' ) ) {
             $secret = (string) apply_filters( 'gecx_api_secret', $secret );
@@ -1154,11 +1189,42 @@ class GECX_Auth {
     }
 
     /**
+     * Returns the existing decrypted RSA private key without generating a new keypair.
+     *
+     * @return string|null Decrypted private key PEM string, or null if missing/undecryptable.
+     */
+    private static function get_existing_private_key(): ?string {
+        $keypair = self::read_stored_keypair();
+        return $keypair['private_key'] ?? null;
+    }
+
+    /**
+     * Read and decrypt the currently stored RSA keypair without modifying options.
+     *
+     * @return array{public_key: string, private_key: string}|null
+     */
+    private static function read_stored_keypair(): ?array {
+        $public_key = function_exists( 'get_option' ) ? get_option( 'gecx_public_key', '' ) : '';
+        $encrypted  = function_exists( 'get_option' ) ? get_option( 'gecx_private_key', null ) : null;
+
+        if ( ! empty( $public_key ) && is_string( $public_key ) && is_array( $encrypted ) ) {
+            $decrypted = self::decrypt_private_key( $encrypted );
+            if ( ! empty( $decrypted ) ) {
+                return [
+                    'public_key'  => $public_key,
+                    'private_key' => $decrypted,
+                ];
+            }
+        }
+        return null;
+    }
+
+    /**
      * Drop a stored keypair that can no longer be used.
      *
-     * Both options are removed together so the caller falls through to the
-     * generator on the "neither key exists" path, rather than tripping the
-     * desynchronized-state check on the way out.
+     * Callers MUST hold gecx_keypair_lock before invoking this helper so a
+     * concurrent worker in the middle of writing or rotating a keypair does not
+     * have its newly written half deleted out from under it.
      */
     private static function discard_keypair(): void {
         if ( function_exists( 'delete_option' ) ) {
@@ -1168,58 +1234,9 @@ class GECX_Auth {
     }
 
     /**
-     * Retrieves the active RSA keypair or generates and stores a new 2048-bit RSA keypair.
-     *
-     * @return array|null Array with 'public_key' and 'private_key' strings, or null on failure.
+     * Acquire the gecx_keypair_lock mutex, reclaiming stale locks older than 30 seconds.
      */
-    public static function get_or_generate_keypair(): ?array {
-        $public_key = function_exists( 'get_option' ) ? get_option( 'gecx_public_key', '' ) : '';
-        $encrypted  = function_exists( 'get_option' ) ? get_option( 'gecx_private_key', null ) : null;
-
-        $has_pub  = ! empty( $public_key ) && is_string( $public_key );
-        $has_priv = ! empty( $encrypted );
-
-        // If both keys exist in options, attempt to decrypt.
-        if ( $has_pub && $has_priv ) {
-            if ( is_array( $encrypted ) ) {
-                $decrypted = self::decrypt_private_key( $encrypted );
-                if ( ! empty( $decrypted ) ) {
-                    return [
-                        'public_key'  => $public_key,
-                        'private_key' => $decrypted,
-                    ];
-                }
-            }
-
-            // Decryption failed. In practice this means the WordPress salts were
-            // rotated, which makes the stored private key permanently
-            // unreadable -- nothing recovers it. Returning null here used to
-            // leave the store bricked: every JWT silently downgraded to HS256,
-            // the public-key endpoint 500'd, and a backend holding the old RSA
-            // key rejected every token forever, with a single error_log line as
-            // the only signal.
-            //
-            // Discarding the dead keypair and minting a new one is recoverable
-            // by comparison. The backend re-reads the store's public key when it
-            // stops verifying, and SyncState surfaces JWT_AUTH_INVALID and sends
-            // the merchant back to authorize if it does not.
-            self::log(
-                'Failed to decrypt RSA private key; salts were most likely rotated. Discarding the unusable keypair and generating a new one.',
-                'error'
-            );
-            self::discard_keypair();
-        } elseif ( $has_pub || $has_priv ) {
-            // Half a keypair is not usable for anything, and the missing half
-            // cannot be derived from the half that survived.
-            self::log(
-                'Keypair state desynchronized in database; public or private key is missing. Discarding the remaining half and generating a new keypair.',
-                'error'
-            );
-            self::discard_keypair();
-        }
-
-        // No usable keypair, either because the store never had one or because
-        // the one it had was just discarded. Generate under an atomic lock.
+    private static function acquire_keypair_lock(): bool {
         $lock_acquired = function_exists( 'add_option' ) ? add_option( 'gecx_keypair_lock', time(), '', 'no' ) : true;
         if ( ! $lock_acquired && function_exists( 'get_option' ) ) {
             $lock_time = (int) get_option( 'gecx_keypair_lock', 0 );
@@ -1228,68 +1245,158 @@ class GECX_Auth {
                 $lock_acquired = add_option( 'gecx_keypair_lock', time(), '', 'no' );
             }
         }
-        if ( ! $lock_acquired ) {
-            // Another process is generating keys. Wait briefly and retry fetch.
-            for ( $i = 0; $i < 5; $i++ ) {
-                usleep( 100000 ); // 100ms
-                $public_key = function_exists( 'get_option' ) ? get_option( 'gecx_public_key', '' ) : '';
-                $encrypted  = function_exists( 'get_option' ) ? get_option( 'gecx_private_key', null ) : null;
-                if ( ! empty( $public_key ) && is_string( $public_key ) && is_array( $encrypted ) ) {
-                    $decrypted = self::decrypt_private_key( $encrypted );
-                    if ( ! empty( $decrypted ) ) {
-                        return [
-                            'public_key'  => $public_key,
-                            'private_key' => $decrypted,
-                        ];
-                    }
-                }
+        return (bool) $lock_acquired;
+    }
+
+    /**
+     * Wait briefly for another process holding gecx_keypair_lock to finish publishing a keypair.
+     *
+     * @return array{public_key: string, private_key: string}|null
+     */
+    private static function wait_for_concurrent_keypair(): ?array {
+        for ( $i = 0; $i < 5; $i++ ) {
+            usleep( 100000 ); // 100ms
+            $stored = self::read_stored_keypair();
+            if ( null !== $stored ) {
+                return $stored;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Generate and persist a new 2048-bit RSA keypair. Caller MUST hold gecx_keypair_lock.
+     *
+     * @return array{public_key: string, private_key: string}|null
+     */
+    private static function generate_and_store_keypair(): ?array {
+        if ( ! function_exists( 'openssl_pkey_new' ) ) {
+            return null;
+        }
+
+        $config = [
+            'digest_alg'       => 'sha256',
+            'private_key_bits' => 2048,
+            'private_key_type' => OPENSSL_KEYTYPE_RSA,
+        ];
+        $res = openssl_pkey_new( $config );
+        if ( false === $res ) {
+            self::log( 'openssl_pkey_new failed: ' . self::get_last_openssl_error(), 'error' );
+            return null;
+        }
+
+        $private_key_pem = '';
+        $exported        = openssl_pkey_export( $res, $private_key_pem );
+        if ( ! $exported || empty( $private_key_pem ) ) {
+            self::log( 'openssl_pkey_export failed: ' . self::get_last_openssl_error(), 'error' );
+            return null;
+        }
+
+        $details = openssl_pkey_get_details( $res );
+        if ( empty( $details['key'] ) ) {
+            return null;
+        }
+        $public_key_pem = $details['key'];
+
+        $encrypted_payload = self::encrypt_private_key( $private_key_pem );
+        if ( empty( $encrypted_payload ) ) {
+            return null;
+        }
+
+        if ( function_exists( 'update_option' ) ) {
+            update_option( 'gecx_public_key', $public_key_pem, 'no' );
+            update_option( 'gecx_private_key', $encrypted_payload, 'no' );
+        }
+
+        return [
+            'public_key'  => $public_key_pem,
+            'private_key' => $private_key_pem,
+        ];
+    }
+
+    /**
+     * Replace a decrypted keypair that OpenSSL rejected at sign time, serialized under gecx_keypair_lock.
+     *
+     * @param string $bad_private_key The private key PEM that failed openssl_sign().
+     * @return string|null Replacement private key PEM, or null on failure.
+     */
+    private static function regenerate_keypair_locked( string $bad_private_key ): ?string {
+        if ( ! self::acquire_keypair_lock() ) {
+            $concurrent = self::wait_for_concurrent_keypair();
+            if ( null !== $concurrent && $concurrent['private_key'] !== $bad_private_key ) {
+                return $concurrent['private_key'];
             }
             return null;
         }
 
         try {
-            if ( ! function_exists( 'openssl_pkey_new' ) ) {
-                return null;
+            // Re-read inside the lock: if another worker already rotated the corrupt
+            // keypair while we waited for gecx_keypair_lock, adopt its replacement
+            // rather than discarding and regenerating a second time.
+            $stored = self::read_stored_keypair();
+            if ( null !== $stored && $stored['private_key'] !== $bad_private_key ) {
+                return $stored['private_key'];
             }
 
-            $config = [
-                'digest_alg'       => 'sha256',
-                'private_key_bits' => 2048,
-                'private_key_type' => OPENSSL_KEYTYPE_RSA,
-            ];
-            $res = openssl_pkey_new( $config );
-            if ( false === $res ) {
-                self::log( 'openssl_pkey_new failed: ' . self::get_last_openssl_error(), 'error' );
-                return null;
+            self::discard_keypair();
+            $fresh = self::generate_and_store_keypair();
+            return $fresh['private_key'] ?? null;
+        } finally {
+            if ( function_exists( 'delete_option' ) ) {
+                delete_option( 'gecx_keypair_lock' );
+            }
+        }
+    }
+
+    /**
+     * Retrieves the active RSA keypair or generates and stores a new 2048-bit RSA keypair.
+     *
+     * @return array|null Array with 'public_key' and 'private_key' strings, or null on failure.
+     */
+    public static function get_or_generate_keypair(): ?array {
+        $stored = self::read_stored_keypair();
+        if ( null !== $stored ) {
+            return $stored;
+        }
+
+        // Acquire gecx_keypair_lock BEFORE inspecting or discarding damaged state.
+        // Without this lock, a reader arriving while another worker is between
+        // update_option('gecx_public_key') and update_option('gecx_private_key')
+        // sees half a keypair and deletes gecx_public_key mid-generation; and after
+        // a salt rotation, concurrent callers each discard and overwrite the fresh
+        // keypair produced by the first holder.
+        if ( ! self::acquire_keypair_lock() ) {
+            return self::wait_for_concurrent_keypair();
+        }
+
+        try {
+            // Re-check inside the lock in case the previous lock holder just
+            // finished generating or rotating the keypair.
+            $stored = self::read_stored_keypair();
+            if ( null !== $stored ) {
+                return $stored;
             }
 
-            $private_key_pem = '';
-            $exported        = openssl_pkey_export( $res, $private_key_pem );
-            if ( ! $exported || empty( $private_key_pem ) ) {
-                self::log( 'openssl_pkey_export failed: ' . self::get_last_openssl_error(), 'error' );
-                return null;
+            $public_key = function_exists( 'get_option' ) ? get_option( 'gecx_public_key', '' ) : '';
+            $encrypted  = function_exists( 'get_option' ) ? get_option( 'gecx_private_key', null ) : null;
+            $has_pub    = ! empty( $public_key ) && is_string( $public_key );
+            $has_priv   = ! empty( $encrypted );
+
+            if ( $has_pub && $has_priv ) {
+                self::log(
+                    'Failed to decrypt RSA private key; salts were most likely rotated. Discarding the unusable keypair and generating a new one.',
+                    'error'
+                );
+                self::discard_keypair();
+            } elseif ( $has_pub || $has_priv ) {
+                self::log(
+                    'Keypair state desynchronized in database; public or private key is missing. Discarding the remaining half and generating a new keypair.',
+                    'error'
+                );
+                self::discard_keypair();
             }
 
-            $details = openssl_pkey_get_details( $res );
-            if ( empty( $details['key'] ) ) {
-                return null;
-            }
-            $public_key_pem = $details['key'];
-
-            $encrypted_payload = self::encrypt_private_key( $private_key_pem );
-            if ( empty( $encrypted_payload ) ) {
-                return null;
-            }
-
-            if ( function_exists( 'update_option' ) ) {
-                update_option( 'gecx_public_key', $public_key_pem, 'no' );
-                update_option( 'gecx_private_key', $encrypted_payload, 'no' );
-            }
-
-            return [
-                'public_key'  => $public_key_pem,
-                'private_key' => $private_key_pem,
-            ];
+            return self::generate_and_store_keypair();
         } finally {
             if ( function_exists( 'delete_option' ) ) {
                 delete_option( 'gecx_keypair_lock' );

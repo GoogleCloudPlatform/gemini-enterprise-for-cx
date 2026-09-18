@@ -777,6 +777,23 @@ class AuthTest extends GECX_TestCase {
         $this->assertTrue( false === strpos( (string) get_option( 'gecx_public_key' ), 'MIIB...' ) );
     }
 
+    public function test_half_keypair_is_not_discarded_while_lock_is_held(): void {
+        // Simulate Worker A currently holding gecx_keypair_lock after writing gecx_public_key
+        // and right before writing gecx_private_key.
+        update_option( 'gecx_public_key', '-----BEGIN PUBLIC KEY-----\nWORKER_A_KEY\n-----END PUBLIC KEY-----' );
+        delete_option( 'gecx_private_key' );
+        add_option( 'gecx_keypair_lock', time(), '', 'no' );
+
+        $result = GECX_Auth::get_or_generate_keypair();
+        $this->assertNull( $result );
+        // Worker B must NOT have deleted Worker A's gecx_public_key while the lock was held.
+        $this->assertSame(
+            '-----BEGIN PUBLIC KEY-----\nWORKER_A_KEY\n-----END PUBLIC KEY-----',
+            get_option( 'gecx_public_key' )
+        );
+        delete_option( 'gecx_keypair_lock' );
+    }
+
     public function test_generate_admin_jwt_returns_null_when_no_user(): void {
         update_option( 'gecx_api_secret', 'test_shared_secret_123' );
         $this->assertNull( GECX_Auth::generate_admin_jwt() );

@@ -177,18 +177,25 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         // Both are sent. Dropping the signature would break every backend that
         // has not picked up the JWT path yet, and dropping the JWT would leave
         // the forgery open, so they overlap until the legacy path is removed.
-        //
-        // Minted here, before step 3 deletes gecx_private_key. Do not reorder.
-        // generate_admin_jwt() returns null without a capable logged-in user,
-        // which is what happens under WP-CLI, so the HMAC path still has to work
-        // on its own -- and a store whose API secret has already been cleared
-        // has to still be able to notify with the JWT alone.
+        // Only notify Google if this site was actually connected. Calling
+        // generate_admin_jwt() unconditionally would generate a fresh 2048-bit
+        // RSA keypair on every unconnected site (and every Multisite subsite)
+        // and send its domain + admin email to Google on plugin deletion.
+        // Furthermore, during uninstall the store's public-key endpoint is
+        // about to be torn down, so a newly minted RSA keypair or HS256 fallback
+        // token would fail backend JWT verification and cause VerifyUninstallAuth
+        // to reject an otherwise valid HMAC-signed uninstall webhook.
+        $gecx_was_connected = ! empty( $gecx_secret )
+            || ! empty( $gecx_agent_name )
+            || ! empty( get_option( 'gecx_private_key' ) )
+            || ! empty( get_option( 'gecx_auth_complete', 0 ) );
+
         $gecx_jwt = '';
-        if ( class_exists( 'GECX_Auth' ) ) {
-            $gecx_jwt = (string) GECX_Auth::generate_admin_jwt();
+        if ( $gecx_was_connected && class_exists( 'GECX_Auth' ) ) {
+            $gecx_jwt = (string) GECX_Auth::generate_existing_rs256_admin_jwt();
         }
 
-        if ( ( ! empty( $gecx_jwt ) || ! empty( $gecx_secret ) ) && ! empty( $gecx_store_url ) ) {
+        if ( $gecx_was_connected && ( ! empty( $gecx_jwt ) || ! empty( $gecx_secret ) ) && ! empty( $gecx_store_url ) ) {
             $gecx_payload_data = [ 'event' => 'uninstall' ];
             if ( ! empty( $gecx_agent_name ) ) {
                 $gecx_payload_data['agent_name'] = $gecx_agent_name;

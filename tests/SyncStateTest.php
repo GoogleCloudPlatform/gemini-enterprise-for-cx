@@ -332,6 +332,20 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertCount( 0, $GLOBALS['gecx_test_settings_errors'] );
     }
 
+    public function test_timeout_wp_error_is_noop_and_poisons_throttle(): void {
+        $this->seed_linked_store();
+        $this->queue( new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' ) );
+
+        $status = $this->sync( 'agents/agent_a' );
+
+        $this->assertEquals( '', $status );
+        $this->assert_still_linked();
+        $this->assertCount( 0, $GLOBALS['gecx_test_settings_errors'] );
+
+        // Verify that the throttle was claimed and not released.
+        $this->assertTrue( false !== get_option( 'gecx_sync_last_attempt' ) );
+    }
+
     public function test_non_200_does_not_unlink(): void {
         $this->seed_linked_store();
         $this->queue(
@@ -679,6 +693,61 @@ class SyncStateTest extends GECX_TestCase {
         // nothing to release.
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
         $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+    }
+
+    public function test_link_required_adopt_reactivates_paused_order_webhook(): void {
+        $webhook = new WC_Webhook();
+        $webhook->set_name( 'GECX Agent Order Created' );
+        $webhook->set_topic( 'order.created' );
+        $webhook->set_delivery_url( 'https://gecx.cloud.google.com/woocommerce/webhook' );
+        $webhook->set_status( 'paused' );
+        $wh_id = $webhook->save();
+        update_option( 'gecx_webhook_id', $wh_id );
+        update_option( 'gecx_auth_complete', 1 );
+        update_option( 'gecx_agent_enabled', 0 );
+
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => 'agents/agent_recovered',
+                        'tokenBrokerName'     => 'brokers/broker_recovered',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        require_once dirname( __DIR__ ) . '/includes/class-gecx-rest-api.php';
+        $this->sync( '' );
+
+        $this->assertEquals( 1, (int) get_option( 'gecx_agent_enabled' ) );
+        $reloaded = new WC_Webhook( $wh_id );
+        $this->assertSame( 'active', $reloaded->get_status() );
+    }
+
+    public function test_explicit_unlink_treats_400_and_403_as_unlinked(): void {
+        foreach ( [ 400, 403 ] as $status_code ) {
+            $this->seed_linked_store( 'agents/stale_agent' );
+            $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+            $this->queue(
+                [
+                    'response' => [
+                        'code'    => $status_code,
+                        'message' => 'Stale binding',
+                    ],
+                    'body'     => '{}',
+                ]
+            );
+
+            $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+            $admin->ajax_unlink_agent();
+
+            $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+            $this->assertFalse( get_option( 'gecx_agent_name' ) );
+        }
     }
 }
 
