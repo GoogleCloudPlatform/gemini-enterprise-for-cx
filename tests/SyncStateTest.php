@@ -139,6 +139,7 @@ class SyncStateTest extends GECX_TestCase {
     }
 
     public function test_link_required_recovers_binding_when_nothing_is_stored_locally(): void {
+        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
         $this->queue(
             gecx_test_http_response(
                 200,
@@ -160,6 +161,27 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertEquals( 'broker-2', get_option( 'gecx_token_broker_name' ) );
         $this->assert_notice_code( 'gecx_agent_adopted' );
         $this->assertTrue( false !== get_option( 'gecx_sync_last_attempt' ) ); // Throttle is not released
+    }
+
+    public function test_fresh_activation_without_auth_complete_skips_sync_and_issues_no_request(): void {
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus' => self::SYNCED,
+                        'shopDomain' => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $status = $this->sync( '' );
+
+        $this->assertEquals( '', $status );
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertFalse( get_option( 'gecx_private_key' ) );
+        $this->assertFalse( get_option( 'gecx_sync_last_attempt' ) );
     }
 
     public function test_synced_is_a_no_op(): void {

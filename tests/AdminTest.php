@@ -324,6 +324,27 @@ class AdminTest extends GECX_TestCase {
             $html
         );
     }
+
+    public function test_first_post_activation_settings_page_load_makes_no_outbound_requests(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        delete_option( 'gecx_agent_name' );
+        delete_option( 'gecx_api_secret' );
+        delete_option( 'gecx_webhook_id' );
+        delete_option( 'gecx_auth_complete' );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+
+        ob_start();
+        try {
+            $admin->render_settings_page();
+        } finally {
+            $html = ob_get_clean();
+        }
+
+        $this->assertStringContainsString( 'id="gecx-authorize-btn"', $html );
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertFalse( get_option( 'gecx_private_key' ) );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {
