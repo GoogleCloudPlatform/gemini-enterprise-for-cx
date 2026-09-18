@@ -27,6 +27,11 @@ class GECX_Admin {
     private const CONSOLE_SYNC_STATE_PATH = '/woocommerce/webhook/sync-state';
 
     /**
+     * Console path that releases this store's agent link on Google's side.
+     */
+    private const CONSOLE_UNLINK_AGENT_PATH = '/woocommerce/unlink-agent';
+
+    /**
      * Minimum number of seconds between automatic agent state syncs.
      */
     private const SYNC_THROTTLE_SECONDS = 600;
@@ -1040,12 +1045,87 @@ class GECX_Admin {
     }
 
     /**
+     * Release this store's agent link on Google's side via POST /woocommerce/unlink-agent.
+     *
+     * @param string $agent_id Agent the store currently believes it is linked to.
+     * @return bool True when Google confirms the store is no longer linked.
+     */
+    private function unlink_agent_remotely( string $agent_id ): bool {
+        $admin_jwt = GECX_Auth::generate_admin_jwt();
+        if ( empty( $admin_jwt ) ) {
+            $this->log_sync( 'unlink skipped, admin JWT unavailable' );
+            return false;
+        }
+
+        $console_base = untrailingslashit( $this->get_console_base_url() );
+
+        // Same reasoning as sync_agent_state(): the destination is filterable,
+        // and the body carries a store-signed JWT, so refuse a non-TLS scheme.
+        if ( 'https' !== wp_parse_url( $console_base, PHP_URL_SCHEME ) ) {
+            $this->log_sync( 'unlink skipped, console base URL is not https' );
+            return false;
+        }
+
+        $response = wp_remote_post(
+            $console_base . self::CONSOLE_UNLINK_AGENT_PATH,
+            [
+                'headers' => [
+                    'Content-Type' => 'application/json',
+                    'Accept'       => 'application/json',
+                ],
+                'body'    => wp_json_encode(
+                    [
+                        'agent_id'  => $agent_id,
+                        'admin_jwt' => $admin_jwt,
+                    ]
+                ),
+                'timeout' => 3,
+            ]
+        );
+
+        if ( is_wp_error( $response ) ) {
+            $this->log_sync( 'unlink transport error: ' . $response->get_error_code() );
+            return false;
+        }
+
+        $code = (int) wp_remote_retrieve_response_code( $response );
+
+        // 404 means Google has no installation to unlink, which is the state
+        // this call is trying to reach. Treat it as done rather than stranding
+        // the merchant on a link only WordPress still believes in.
+        if ( 404 === $code ) {
+            return true;
+        }
+
+        if ( $code < 200 || $code > 299 ) {
+            $this->log_sync( 'unlink got unexpected HTTP status ' . $code );
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * AJAX handler to unlink the agent and reset store status.
      */
     public function ajax_unlink_agent(): void {
         check_ajax_referer( 'gecx_save_agent_nonce', 'nonce' );
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
+        }
+
+        $agent_id = (string) get_option( 'gecx_agent_name', '' );
+        if ( '' !== $agent_id && ! $this->unlink_agent_remotely( $agent_id ) ) {
+            wp_send_json_error(
+                [
+                    'message' => __(
+                        'The agent could not be disconnected from Google. Nothing was changed. Please try again.',
+                        'gemini-enterprise-for-cx'
+                    ),
+                ],
+                502
+            );
+            return;
         }
 
         $this->unlink_agent_internal();

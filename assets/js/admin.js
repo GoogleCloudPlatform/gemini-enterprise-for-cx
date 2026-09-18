@@ -169,12 +169,20 @@ $(function() {
             window.location.href =
                 window.location.pathname + '?page=gemini-enterprise-for-cx';
           } else {
-            showNotice('error', 'Failed to disconnect agent. Please try again.');
+            const errorMsg = (res && res.data && res.data.message) ?
+                res.data.message :
+                'Failed to disconnect agent. Please try again.';
+            showNotice('error', errorMsg);
             $btn.prop('disabled', false).text('Disconnect Agent');
           }
         })
-        .fail(function() {
-          showNotice('error', 'Error disconnecting agent.');
+        .fail(function(jqXHR) {
+          const errorMsg = (jqXHR && jqXHR.responseJSON &&
+                            jqXHR.responseJSON.data &&
+                            jqXHR.responseJSON.data.message) ?
+              jqXHR.responseJSON.data.message :
+              'Error disconnecting agent.';
+          showNotice('error', errorMsg);
           $btn.prop('disabled', false).text('Disconnect Agent');
         });
   });
