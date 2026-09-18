@@ -14,6 +14,8 @@ class SyncStateTest extends GECX_TestCase {
 
     private const SYNC_URL = 'https://gecx.cloud.google.com/woocommerce/webhook/sync-state';
 
+    private const UNLINK_URL = 'https://gecx.cloud.google.com/woocommerce/unlink-agent';
+
     private const LINK_REQUIRED = 'WOOCOMMERCE_SYNC_STATUS_LINK_REQUIRED';
     private const SYNCED        = 'WOOCOMMERCE_SYNC_STATUS_SYNCED';
 
@@ -78,6 +80,19 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertTrue(
             in_array( $code, $codes, true ),
             'Expected notice ' . $code . ', got: ' . implode( ',', $codes )
+        );
+    }
+
+    /**
+     * Assert that a settings notice with the given code was NOT raised.
+     *
+     * @param string $code Notice code.
+     */
+    private function assert_no_notice_code( string $code ): void {
+        $codes = array_column( $GLOBALS['gecx_test_settings_errors'], 'code' );
+        $this->assertFalse(
+            in_array( $code, $codes, true ),
+            'Did not expect notice ' . $code . ', got: ' . implode( ',', $codes )
         );
     }
 
@@ -159,7 +174,12 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertEquals( self::LINK_REQUIRED, $status );
         $this->assertEquals( 'agents/agent_b', get_option( 'gecx_agent_name' ) );
         $this->assertEquals( 'broker-2', get_option( 'gecx_token_broker_name' ) );
-        $this->assert_notice_code( 'gecx_agent_adopted' );
+        // The store had no agent saved, so nothing was swapped out from under
+        // the merchant and there is nothing to warn about.
+        $this->assert_no_notice_code( 'gecx_agent_adopted' );
+        // Recovering the binding has to bring the storefront widget back with
+        // it, otherwise wp-admin shows connected while the storefront is dark.
+        $this->assertEquals( 1, (int) get_option( 'gecx_agent_enabled' ) );
         $this->assertTrue( false !== get_option( 'gecx_sync_last_attempt' ) ); // Throttle is not released
     }
 
@@ -182,6 +202,102 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
         $this->assertFalse( get_option( 'gecx_private_key' ) );
         $this->assertFalse( get_option( 'gecx_sync_last_attempt' ) );
+    }
+
+    public function test_synced_upgrades_a_bare_agent_id_to_the_canonical_name(): void {
+        // A store linked before the backend returned canonical names holds the
+        // bare id. The backend still matches it and answers SYNCED, so this is
+        // the only path on which the canonical name can ever be picked up.
+        update_option( 'gecx_agent_name', 'agent_a' );
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::SYNCED,
+                        'actualLinkedAgentId' => 'projects/123/locations/global/agents/agent_a',
+                        'tokenBrokerName'     => 'broker-1',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( 'agent_a' );
+
+        $this->assertEquals( 'projects/123/locations/global/agents/agent_a', get_option( 'gecx_agent_name' ) );
+        $this->assertEquals( 'broker-1', get_option( 'gecx_token_broker_name' ) );
+    }
+
+    public function test_synced_adopts_a_token_broker_the_store_is_missing(): void {
+        update_option( 'gecx_agent_name', 'agents/agent_a' );
+        delete_option( 'gecx_token_broker_name' );
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::SYNCED,
+                        'actualLinkedAgentId' => 'agents/agent_a',
+                        'tokenBrokerName'     => 'broker-1',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( 'agents/agent_a' );
+
+        $this->assertEquals( 'broker-1', get_option( 'gecx_token_broker_name' ) );
+    }
+
+    public function test_adopting_an_agent_without_a_broker_clears_the_stale_one(): void {
+        $this->seed_linked_store();
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => 'agents/agent_b',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( 'agents/agent_a' );
+
+        $this->assertEquals( 'agents/agent_b', get_option( 'gecx_agent_name' ) );
+        // broker-1 belonged to agent_a. Keeping it would hand the storefront a
+        // broker for an agent this store is no longer linked to.
+        $this->assertFalse( get_option( 'gecx_token_broker_name' ) );
+        // A genuine swap, so the merchant does get told.
+        $this->assert_notice_code( 'gecx_agent_adopted' );
+    }
+
+    public function test_link_required_clears_a_previous_authorization_failure(): void {
+        // Reaching LINK_REQUIRED means the backend accepted both the JWT and
+        // the API keys, so the store is no longer in an auth-invalid state.
+        $this->seed_linked_store();
+        update_option( 'gecx_store_auth_invalid', 1 );
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => 'agents/agent_a',
+                        'tokenBrokerName'     => 'broker-1',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( 'agents/agent_a' );
+
+        $this->assertFalse( get_option( 'gecx_store_auth_invalid' ) );
     }
 
     public function test_synced_is_a_no_op(): void {
@@ -214,6 +330,20 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertEquals( '', $status );
         $this->assert_still_linked();
         $this->assertCount( 0, $GLOBALS['gecx_test_settings_errors'] );
+    }
+
+    public function test_timeout_wp_error_is_noop_and_poisons_throttle(): void {
+        $this->seed_linked_store();
+        $this->queue( new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' ) );
+
+        $status = $this->sync( 'agents/agent_a' );
+
+        $this->assertEquals( '', $status );
+        $this->assert_still_linked();
+        $this->assertCount( 0, $GLOBALS['gecx_test_settings_errors'] );
+
+        // Verify that the throttle was claimed and not released.
+        $this->assertTrue( false !== get_option( 'gecx_sync_last_attempt' ) );
     }
 
     public function test_non_200_does_not_unlink(): void {
@@ -530,6 +660,94 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertEquals( 'Ask AI', get_option( 'gecx_button_label' ) );
         $this->assertFalse( get_option( 'gecx_sync_last_attempt' ) );
         $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+    }
+
+    public function test_explicit_unlink_tells_google_before_clearing_the_binding(): void {
+        $this->seed_linked_store();
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+        $this->queue( gecx_test_http_response( 200, '' ) );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->ajax_unlink_agent();
+
+        // The agent has to be named in the request, so the call must happen
+        // while the binding is still readable, not after it is torn down.
+        $request = $GLOBALS['gecx_test_http_requests'][0];
+        $this->assertEquals( self::UNLINK_URL, $request['url'] );
+
+        $body = json_decode( (string) $request['args']['body'], true );
+        $this->assertEquals( 'agents/agent_a', $body['agent_id'] );
+        $this->assertTrue( '' !== $body['admin_jwt'] );
+
+        $this->assertFalse( get_option( 'gecx_agent_name' ) );
+    }
+
+    public function test_explicit_unlink_without_an_agent_issues_no_request(): void {
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->ajax_unlink_agent();
+
+        // There is nothing to name in the request, and the backend rejects a
+        // blank agent_id, so the merchant would get a 502 on a reset that has
+        // nothing to release.
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+    }
+
+    public function test_link_required_adopt_reactivates_paused_order_webhook(): void {
+        $webhook = new WC_Webhook();
+        $webhook->set_name( 'GECX Agent Order Created' );
+        $webhook->set_topic( 'order.created' );
+        $webhook->set_delivery_url( 'https://gecx.cloud.google.com/woocommerce/webhook' );
+        $webhook->set_status( 'paused' );
+        $wh_id = $webhook->save();
+        update_option( 'gecx_webhook_id', $wh_id );
+        update_option( 'gecx_auth_complete', 1 );
+        update_option( 'gecx_agent_enabled', 0 );
+
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => 'agents/agent_recovered',
+                        'tokenBrokerName'     => 'brokers/broker_recovered',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        require_once dirname( __DIR__ ) . '/includes/class-gecx-rest-api.php';
+        $this->sync( '' );
+
+        $this->assertEquals( 1, (int) get_option( 'gecx_agent_enabled' ) );
+        $reloaded = new WC_Webhook( $wh_id );
+        $this->assertSame( 'active', $reloaded->get_status() );
+    }
+
+    public function test_explicit_unlink_treats_400_and_403_as_unlinked(): void {
+        foreach ( [ 400, 403 ] as $status_code ) {
+            $this->seed_linked_store( 'agents/stale_agent' );
+            $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+            $this->queue(
+                [
+                    'response' => [
+                        'code'    => $status_code,
+                        'message' => 'Stale binding',
+                    ],
+                    'body'     => '{}',
+                ]
+            );
+
+            $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+            $admin->ajax_unlink_agent();
+
+            $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+            $this->assertFalse( get_option( 'gecx_agent_name' ) );
+        }
     }
 }
 

@@ -12,6 +12,14 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 
 global $wpdb;
 
+// WordPress loads uninstall.php standalone, so none of the plugin's classes are
+// autoloaded here. The uninstall notification is authenticated with a JWT signed
+// by the store's own private key, which means the auth class has to be pulled in
+// by hand before that key is deleted further down.
+if ( ! class_exists( 'GECX_Auth' ) && file_exists( __DIR__ . '/includes/class-gecx-auth.php' ) ) {
+    require_once __DIR__ . '/includes/class-gecx-auth.php';
+}
+
 // Options, webhooks and post meta all live in per-site tables, so on a network
 // activation every site carries its own copy and cleaning only the current one
 // leaves the rest behind. Each site is also a distinct store as far as the
@@ -158,31 +166,66 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             $gecx_secret = (string) apply_filters( 'gecx_api_secret', $gecx_secret );
         }
 
-        // 2. Notify Google Backend securely via WooCommerce-compatible webhook signature.
-        if ( ! empty( $gecx_secret ) && ! empty( $gecx_store_url ) ) {
+        // 2. Notify Google Backend.
+        //
+        // The HMAC signature is derived from the WooCommerce webhook secret,
+        // which is symmetric and readable from the backend's own storage, so on
+        // its own it lets anyone who reads that storage forge an uninstall and
+        // delete a merchant's installation. The store-signed RS256 JWT is what
+        // the backend authenticates on now.
+        //
+        // Both are sent. Dropping the signature would break every backend that
+        // has not picked up the JWT path yet, and dropping the JWT would leave
+        // the forgery open, so they overlap until the legacy path is removed.
+        // Only notify Google if this site was actually connected. Calling
+        // generate_admin_jwt() unconditionally would generate a fresh 2048-bit
+        // RSA keypair on every unconnected site (and every Multisite subsite)
+        // and send its domain + admin email to Google on plugin deletion.
+        // Furthermore, during uninstall the store's public-key endpoint is
+        // about to be torn down, so a newly minted RSA keypair or HS256 fallback
+        // token would fail backend JWT verification and cause VerifyUninstallAuth
+        // to reject an otherwise valid HMAC-signed uninstall webhook.
+        $gecx_was_connected = ! empty( $gecx_secret )
+            || ! empty( $gecx_agent_name )
+            || ! empty( get_option( 'gecx_private_key' ) )
+            || ! empty( get_option( 'gecx_auth_complete', 0 ) );
+
+        $gecx_jwt = '';
+        if ( $gecx_was_connected && class_exists( 'GECX_Auth' ) ) {
+            $gecx_jwt = (string) GECX_Auth::generate_existing_rs256_admin_jwt();
+        }
+
+        if ( $gecx_was_connected && ( ! empty( $gecx_jwt ) || ! empty( $gecx_secret ) ) && ! empty( $gecx_store_url ) ) {
             $gecx_payload_data = [ 'event' => 'uninstall' ];
             if ( ! empty( $gecx_agent_name ) ) {
                 $gecx_payload_data['agent_name'] = $gecx_agent_name;
             }
             $gecx_payload = wp_json_encode( $gecx_payload_data );
-            // Our C++ Backend relies on a standard HMAC-SHA256 signature, base64 encoded.
-            $gecx_signature = base64_encode( hash_hmac( 'sha256', $gecx_payload, $gecx_secret, true ) );
+
+            $gecx_headers = [
+                'Content-Type'        => 'application/json',
+                'X-WC-Webhook-Source' => $gecx_store_url,
+                'X-WC-Webhook-Topic'  => 'plugin/uninstalled',
+            ];
+            if ( ! empty( $gecx_secret ) ) {
+                // Our C++ Backend relies on a standard HMAC-SHA256 signature, base64 encoded.
+                $gecx_headers['X-WC-Webhook-Signature'] = base64_encode( hash_hmac( 'sha256', $gecx_payload, $gecx_secret, true ) );
+            }
+            if ( ! empty( $gecx_jwt ) ) {
+                $gecx_headers['Authorization'] = 'Bearer ' . $gecx_jwt;
+            }
 
             $gecx_webhook_url = esc_url_raw( rtrim( (string) $gecx_console_url, '/' ) . '/woocommerce/webhook' );
             $gecx_scheme      = (string) wp_parse_url( $gecx_webhook_url, PHP_URL_SCHEME );
 
             if ( 'https' === $gecx_scheme && ( function_exists( 'wp_http_validate_url' ) ? wp_http_validate_url( $gecx_webhook_url ) : filter_var( $gecx_webhook_url, FILTER_VALIDATE_URL ) ) ) {
                 // Bounded at 5 seconds per connected site. Only sites that hold
-                // a secret reach this, so an uninstall costs time in proportion
-                // to the number of stores actually connected to the backend.
+                // a credential reach this, so an uninstall costs time in
+                // proportion to the number of stores actually connected to the
+                // backend.
                 wp_remote_post( $gecx_webhook_url, [
                     'timeout'     => 5,
-                    'headers'     => [
-                        'Content-Type'           => 'application/json',
-                        'X-WC-Webhook-Source'    => $gecx_store_url,
-                        'X-WC-Webhook-Topic'     => 'plugin/uninstalled',
-                        'X-WC-Webhook-Signature' => $gecx_signature,
-                    ],
+                    'headers'     => $gecx_headers,
                     'body'        => $gecx_payload,
                     'data_format' => 'body',
                 ] );

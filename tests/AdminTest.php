@@ -310,8 +310,10 @@ class AdminTest extends GECX_TestCase {
     }
 
     public function test_uninstall_cleans_every_site_on_a_network(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $GLOBALS['gecx_test_is_multisite'] = true;
         $GLOBALS['gecx_test_sites']        = [ 1, 7, 9 ];
+        $GLOBALS['gecx_test_http_requests'] = [];
 
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-123' );
         update_option( 'gecx_api_secret', 'secret123' );
@@ -322,14 +324,16 @@ class AdminTest extends GECX_TestCase {
 
         include dirname( __DIR__ ) . '/uninstall.php';
 
-        // Every site is visited, and every switch is unwound. The options
-        // store the harness provides is shared rather than per-site, so the
-        // deletions below only say that the body ran at all; the loop shape is
-        // what this test is pinning.
+        // Every site is visited, and every switch is unwound. Because options
+        // are cleared on site 1, sites 7 and 9 are unconnected and must NOT
+        // generate ephemeral RSA keypairs or fire outbound uninstall webhooks.
         $this->assertEquals( [ 1, 7, 9 ], $GLOBALS['gecx_test_switched_blogs'] );
         $this->assertEquals( [], $GLOBALS['gecx_test_blog_stack'] );
+        $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertFalse( get_option( 'gecx_api_secret' ) );
+        $this->assertFalse( get_option( 'gecx_public_key' ) );
+        $this->assertFalse( get_option( 'gecx_private_key' ) );
     }
 
     public function test_uninstall_does_not_switch_sites_on_a_single_site(): void {
