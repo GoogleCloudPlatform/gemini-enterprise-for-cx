@@ -33,8 +33,9 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-gecx-rest-api.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gecx-admin.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gecx-storefront.php';
 
-// Register activation hook.
+// Register activation and deactivation hooks.
 register_activation_hook( __FILE__, [ 'GECX_Admin', 'activate_plugin' ] );
+register_deactivation_hook( __FILE__, [ 'GECX_Admin', 'deactivate_plugin' ] );
 
 /**
  * Initializes the plugin's components if WooCommerce is active.

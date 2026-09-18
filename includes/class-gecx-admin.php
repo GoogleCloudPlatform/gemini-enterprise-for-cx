@@ -55,6 +55,19 @@ class GECX_Admin {
         update_option( 'gecx_do_activation_redirect', true );
         delete_option( 'gecx_dismiss_activation_notice' );
         GECX_Auth::get_or_generate_keypair();
+        if ( class_exists( 'GECX_Rest_API' ) ) {
+            GECX_Rest_API::reconcile_webhook_on_activation();
+        }
+    }
+
+    /**
+     * Triggered upon plugin deactivation.
+     * Pauses the order webhook so no orders are transmitted while deactivated.
+     */
+    public static function deactivate_plugin(): void {
+        if ( class_exists( 'GECX_Rest_API' ) ) {
+            GECX_Rest_API::set_order_webhook_status( 'paused' );
+        }
     }
 
     /**
@@ -670,6 +683,9 @@ class GECX_Admin {
 
         $enabled = isset( $_POST['enabled'] ) && $_POST['enabled'] === '1' ? 1 : 0;
         update_option( 'gecx_agent_enabled', $enabled );
+        if ( class_exists( 'GECX_Rest_API' ) ) {
+            GECX_Rest_API::set_order_webhook_status( 1 === $enabled ? 'active' : 'paused' );
+        }
         wp_send_json_success( [ 'enabled' => $enabled ] );
     }
 
@@ -983,6 +999,11 @@ class GECX_Admin {
      * re-link does not lose their customization.
      */
     private function unlink_agent_internal(): void {
+        if ( class_exists( 'GECX_Rest_API' ) ) {
+            GECX_Rest_API::delete_order_webhook();
+        }
+        delete_option( 'gecx_api_secret' );
+        delete_option( self::STORE_AUTH_INVALID_OPTION );
         delete_option( 'gecx_agent_name' );
         delete_option( 'gecx_token_broker_name' );
         update_option( 'gecx_agent_enabled', 0 );

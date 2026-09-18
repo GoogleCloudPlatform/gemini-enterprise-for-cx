@@ -41,7 +41,11 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_queried_object_id']    = 101;
     $GLOBALS['gecx_test_wp_salt']              = 'secret_salt';
     $GLOBALS['gecx_test_webhooks']             = [];
+    $GLOBALS['gecx_test_orders']               = [];
     $GLOBALS['gecx_test_disable_wc_webhook']   = false;
+    if ( class_exists( 'GECX_Mock_WPDB' ) ) {
+        $GLOBALS['wpdb'] = new GECX_Mock_WPDB();
+    }
     $GLOBALS['gecx_test_filter_callbacks']     = [];
     $GLOBALS['gecx_test_actions']              = [];
     $GLOBALS['gecx_test_rest_url_prefix']      = 'wp-json';
@@ -258,6 +262,170 @@ if ( ! function_exists( 'wc_get_webhooks' ) ) {
         }
         return $webhooks;
     }
+}
+
+if ( ! class_exists( 'WC_Order' ) ) {
+    class WC_Order {
+        private int $id = 0;
+        private array $meta = [];
+        private string $currency = 'USD';
+        private string $total = '0.00';
+        private string $total_tax = '0.00';
+        private string $shipping_total = '0.00';
+        private array $items = [];
+
+        public function __construct( int $id = 0 ) {
+            $this->id = $id;
+            if ( $id > 0 && isset( $GLOBALS['gecx_test_orders'][ $id ] ) && $GLOBALS['gecx_test_orders'][ $id ] instanceof WC_Order ) {
+                $existing             = $GLOBALS['gecx_test_orders'][ $id ];
+                $this->meta           = $existing->meta;
+                $this->currency       = $existing->currency;
+                $this->total          = $existing->total;
+                $this->total_tax      = $existing->total_tax;
+                $this->shipping_total = $existing->shipping_total;
+                $this->items          = $existing->items;
+            }
+        }
+
+        public function get_id(): int {
+            return $this->id;
+        }
+
+        public function update_meta_data( string $key, $value ): void {
+            $this->meta[ $key ] = $value;
+        }
+
+        public function get_meta( string $key, bool $single = true ) {
+            return $this->meta[ $key ] ?? '';
+        }
+
+        public function set_currency( string $currency ): void {
+            $this->currency = $currency;
+        }
+
+        public function get_currency(): string {
+            return $this->currency;
+        }
+
+        public function set_total( string $total ): void {
+            $this->total = $total;
+        }
+
+        public function get_total(): string {
+            return $this->total;
+        }
+
+        public function set_total_tax( string $tax ): void {
+            $this->total_tax = $tax;
+        }
+
+        public function get_total_tax(): string {
+            return $this->total_tax;
+        }
+
+        public function set_shipping_total( string $shipping ): void {
+            $this->shipping_total = $shipping;
+        }
+
+        public function get_shipping_total(): string {
+            return $this->shipping_total;
+        }
+
+        public function set_items( array $items ): void {
+            $this->items = $items;
+        }
+
+        public function get_items(): array {
+            return $this->items;
+        }
+
+        public function get_item_total( $item, bool $inc_tax = false, bool $round = true ) {
+            $qty = method_exists( $item, 'get_quantity' ) ? max( 1, (int) $item->get_quantity() ) : 1;
+            $total = method_exists( $item, 'get_total' ) ? (float) $item->get_total() : 0.0;
+            $price = $total / $qty;
+            return $round ? round( $price, 4 ) : $price;
+        }
+
+        public function save(): int {
+            if ( ! $this->id ) {
+                $this->id = count( $GLOBALS['gecx_test_orders'] ?? [] ) + 1;
+            }
+            $GLOBALS['gecx_test_orders'][ $this->id ] = $this;
+            return $this->id;
+        }
+    }
+}
+
+if ( ! function_exists( 'wc_get_order' ) ) {
+    function wc_get_order( $order_id ) {
+        $id = (int) $order_id;
+        return $GLOBALS['gecx_test_orders'][ $id ] ?? false;
+    }
+}
+
+if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
+    class GECX_Mock_WPDB {
+        public string $prefix = 'wp_';
+
+        public function esc_like( string $text ): string {
+            return addcslashes( $text, '_%\\' );
+        }
+
+        public function prepare( string $query, ...$args ): string {
+            $formatted = $query;
+            foreach ( $args as $arg ) {
+                if ( is_int( $arg ) ) {
+                    $formatted = preg_replace( '/%d/', (string) $arg, $formatted, 1 );
+                } else {
+                    $formatted = preg_replace( '/%s/', "'" . addslashes( (string) $arg ) . "'", $formatted, 1 );
+                }
+            }
+            return $formatted;
+        }
+
+        public function get_var( string $query ) {
+            if ( 0 === strpos( $query, 'SHOW TABLES LIKE' ) ) {
+                return $this->prefix . 'wc_webhooks';
+            }
+            if ( preg_match( '/WHERE webhook_id = (\d+)/', $query, $m ) ) {
+                $id = (int) $m[1];
+                return $GLOBALS['gecx_test_webhooks'][ $id ]['secret'] ?? null;
+            }
+            if ( preg_match( "/WHERE name = '([^']+)' AND topic = '([^']+)'/", $query, $m ) ) {
+                $name  = $m[1];
+                $topic = $m[2];
+                foreach ( $GLOBALS['gecx_test_webhooks'] ?? [] as $wh ) {
+                    if ( ( $wh['name'] ?? '' ) === $name && ( $wh['topic'] ?? '' ) === $topic ) {
+                        return $wh['secret'] ?? null;
+                    }
+                }
+            }
+            return null;
+        }
+
+        public function delete( string $table, array $where, array $where_format = [] ): int {
+            $deleted = 0;
+            if ( $table === $this->prefix . 'wc_webhooks' ) {
+                if ( isset( $where['webhook_id'] ) ) {
+                    $id = (int) $where['webhook_id'];
+                    if ( isset( $GLOBALS['gecx_test_webhooks'][ $id ] ) ) {
+                        unset( $GLOBALS['gecx_test_webhooks'][ $id ] );
+                        $deleted++;
+                    }
+                } elseif ( isset( $where['name'], $where['topic'] ) ) {
+                    foreach ( array_keys( $GLOBALS['gecx_test_webhooks'] ?? [] ) as $id ) {
+                        $wh = $GLOBALS['gecx_test_webhooks'][ $id ];
+                        if ( ( $wh['name'] ?? '' ) === $where['name'] && ( $wh['topic'] ?? '' ) === $where['topic'] ) {
+                            unset( $GLOBALS['gecx_test_webhooks'][ $id ] );
+                            $deleted++;
+                        }
+                    }
+                }
+            }
+            return $deleted;
+        }
+    }
+    $GLOBALS['wpdb'] = new GECX_Mock_WPDB();
 }
 
 if ( ! class_exists( 'WP_User' ) ) {
