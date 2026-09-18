@@ -521,6 +521,7 @@ class SyncStateTest extends GECX_TestCase {
         update_option( 'gecx_button_label', 'Ask AI' );
         update_option( 'gecx_sync_last_attempt', (string) time() );
         $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+        $this->queue( gecx_test_http_response( 200, '' ) );
 
         $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->ajax_unlink_agent();

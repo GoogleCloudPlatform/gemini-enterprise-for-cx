@@ -62,17 +62,49 @@ class AdminTest extends GECX_TestCase {
         $_POST = [
             'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
         ];
+        update_option( 'gecx_agent_id', 'agent-1' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_token_broker_name', 'broker-1' );
         update_option( 'gecx_agent_enabled', 1 );
+        $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 200, '' );
 
         $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->ajax_unlink_agent();
 
+        $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
+        $request = $GLOBALS['gecx_test_http_requests'][0];
+        $this->assertEquals( 'https://gecx.cloud.google.com/woocommerce/unlink-agent', $request['url'] );
+        $body = json_decode( (string) $request['args']['body'], true );
+        $this->assertEquals( 'projects/123/locations/global/agents/agent-1', $body['agent_id'] );
+        $this->assertTrue( ! empty( $body['admin_jwt'] ) );
+
+        $this->assertFalse( get_option( 'gecx_agent_id' ) );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertFalse( get_option( 'gecx_token_broker_name' ) );
         $this->assertEquals( 0, get_option( 'gecx_agent_enabled' ) );
         $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+    }
+
+    public function test_admin_ajax_unlink_agent_retains_options_when_backend_returns_error(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $_POST = [
+            'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
+        ];
+        update_option( 'gecx_agent_id', 'agent-1' );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_token_broker_name', 'broker-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+        $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 500, '' );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->ajax_unlink_agent();
+
+        $this->assertEquals( 'agent-1', get_option( 'gecx_agent_id' ) );
+        $this->assertEquals( 'projects/123/locations/global/agents/agent-1', get_option( 'gecx_agent_name' ) );
+        $this->assertEquals( 'broker-1', get_option( 'gecx_token_broker_name' ) );
+        $this->assertEquals( 1, get_option( 'gecx_agent_enabled' ) );
+        $this->assertFalse( $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertEquals( 502, $GLOBALS['gecx_test_last_json_response']['status'] );
     }
 
     public function test_handle_connection_callback_rejects_missing_or_invalid_state(): void {

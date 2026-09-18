@@ -297,6 +297,7 @@ class WebhookLifecycleTest extends TestCase {
         $_POST = [
             'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
         ];
+        $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 200, '' );
         $this->admin->ajax_unlink_agent();
 
         $this->assertArrayNotHasKey( $webhook_id, $GLOBALS['gecx_test_webhooks'] );
