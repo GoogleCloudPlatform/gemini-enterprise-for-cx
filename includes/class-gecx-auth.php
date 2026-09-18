@@ -567,10 +567,11 @@ class GECX_Auth {
         }
 
         if ( ! empty( $_SERVER['SCRIPT_FILENAME'] ) && defined( 'ABSPATH' ) && is_string( ABSPATH ) ) {
-            $normalize = function_exists( 'wp_normalize_path' ) ? 'wp_normalize_path' : static function( $p ) {
+            $normalize       = function_exists( 'wp_normalize_path' ) ? 'wp_normalize_path' : static function( $p ) {
                 return str_replace( '\\', '/', (string) $p );
             };
-            if ( $normalize( $_SERVER['SCRIPT_FILENAME'] ) !== $normalize( rtrim( ABSPATH, '/\\' ) . '/index.php' ) ) {
+            $script_filename = sanitize_text_field( wp_unslash( $_SERVER['SCRIPT_FILENAME'] ) );
+            if ( $normalize( $script_filename ) !== $normalize( rtrim( ABSPATH, '/\\' ) . '/index.php' ) ) {
                 return false;
             }
         }

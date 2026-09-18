@@ -372,15 +372,22 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
         }
 
         public function prepare( string $query, ...$args ): string {
-            $formatted = $query;
-            foreach ( $args as $arg ) {
-                if ( is_int( $arg ) ) {
-                    $formatted = preg_replace( '/%d/', (string) $arg, $formatted, 1 );
-                } else {
-                    $formatted = preg_replace( '/%s/', "'" . addslashes( (string) $arg ) . "'", $formatted, 1 );
-                }
-            }
-            return $formatted;
+            $arg_index = 0;
+            return preg_replace_callback(
+                '/%([dsifF])/',
+                static function ( array $matches ) use ( &$arg_index, $args ) {
+                    $type = $matches[1];
+                    $arg  = $args[ $arg_index++ ] ?? null;
+                    if ( 'd' === $type ) {
+                        return (string) (int) $arg;
+                    }
+                    if ( 'i' === $type ) {
+                        return '`' . str_replace( '`', '``', (string) $arg ) . '`';
+                    }
+                    return "'" . addslashes( (string) $arg ) . "'";
+                },
+                $query
+            );
         }
 
         public function get_var( string $query ) {

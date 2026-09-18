@@ -97,7 +97,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
                             $found_secret = $wpdb->get_var(
                                 $wpdb->prepare(
-                                    "SELECT secret FROM {$table_name} WHERE webhook_id = %d",
+                                    'SELECT secret FROM %i WHERE webhook_id = %d',
+                                    $table_name,
                                     (int) $gecx_webhook_id
                                 )
                             );
@@ -118,7 +119,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
                         $found_secret = $wpdb->get_var(
                             $wpdb->prepare(
-                                "SELECT secret FROM {$table_name} WHERE name = %s AND topic = %s LIMIT 1",
+                                'SELECT secret FROM %i WHERE name = %s AND topic = %s LIMIT 1',
+                                $table_name,
                                 'GECX Agent Order Created',
                                 'order.created'
                             )
