@@ -749,6 +749,55 @@ class SyncStateTest extends GECX_TestCase {
             $this->assertFalse( get_option( 'gecx_agent_name' ) );
         }
     }
+
+    public function test_version_change_triggers_sync_and_clears_throttle(): void {
+        $this->seed_linked_store();
+        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( GECX_Admin::PLUGIN_VERSION_OPTION, '0.9.0' );
+        update_option( 'gecx_sync_last_attempt', (string) time() );
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus' => self::SYNCED,
+                        'shopDomain' => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->maybe_sync_on_version_change();
+
+        $this->assertEquals( GECX_VERSION, get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+        $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
+    }
+
+    public function test_matching_version_does_not_trigger_sync_on_admin_init(): void {
+        $this->seed_linked_store();
+        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( GECX_Admin::PLUGIN_VERSION_OPTION, GECX_VERSION );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->maybe_sync_on_version_change();
+
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+    }
+
+    public function test_version_change_records_version_without_sync_before_auth_complete(): void {
+        delete_option( 'gecx_agent_name' );
+        delete_option( 'gecx_api_secret' );
+        delete_option( 'gecx_webhook_id' );
+        delete_option( GECX_Admin::AUTH_COMPLETE_OPTION );
+        delete_option( GECX_Admin::PLUGIN_VERSION_OPTION );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->maybe_sync_on_version_change();
+
+        $this->assertEquals( GECX_VERSION, get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+    }
 }
 
 if ( php_sapi_name() === 'cli' && isset( $argv[0] ) && basename( $argv[0] ) === basename( __FILE__ ) ) {

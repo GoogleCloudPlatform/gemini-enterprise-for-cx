@@ -18,6 +18,9 @@ if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
 if ( ! defined( 'GECX_TESTING' ) ) {
     define( 'GECX_TESTING', true );
 }
+if ( ! defined( 'GECX_VERSION' ) ) {
+    define( 'GECX_VERSION', '1.0.0' );
+}
 
 /**
  * Resets every global the harness owns.

@@ -64,6 +64,12 @@ class GECX_Admin {
     public const AUTH_COMPLETE_OPTION = 'gecx_auth_complete';
 
     /**
+     * Option storing the last observed plugin version so upgrades trigger an
+     * immediate SyncState reconciliation.
+     */
+    public const PLUGIN_VERSION_OPTION = 'gecx_plugin_version';
+
+    /**
      * Triggered upon plugin activation.
      */
     public static function activate_plugin(): void {
@@ -107,6 +113,7 @@ class GECX_Admin {
         add_action( 'admin_init', [ $this, 'register_settings' ] );
         add_action( 'admin_init', [ $this, 'redirect_on_activation' ] );
         add_action( 'admin_init', [ $this, 'handle_connection_callback' ] );
+        add_action( 'admin_init', [ $this, 'maybe_sync_on_version_change' ] );
         add_action( 'admin_notices', [ $this, 'show_activation_notice' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
 
@@ -123,6 +130,57 @@ class GECX_Admin {
         add_action( 'wp_ajax_gecx_toggle_pdp_prompts', [ $this, 'ajax_toggle_pdp_prompts' ] );
         add_action( 'wp_ajax_gecx_unlink_agent', [ $this, 'ajax_unlink_agent' ] );
         add_action( 'wp_ajax_gecx_dismiss_notice', [ $this, 'ajax_dismiss_notice' ] );
+    }
+
+    /**
+     * Trigger a SyncState reconciliation when the active plugin version changes.
+     *
+     * WordPress does not run register_activation_hook() during plugin upgrades.
+     * Comparing GECX_VERSION against the stored gecx_plugin_version option on
+     * admin_init ensures the backend refreshes the installation's recorded
+     * plugin version as soon as an administrator loads wp-admin after an
+     * upgrade, bypassing any active sync throttle window.
+     */
+    public function maybe_sync_on_version_change(): void {
+        if ( ! defined( 'GECX_VERSION' ) || '' === (string) GECX_VERSION ) {
+            return;
+        }
+
+        $current_version  = (string) GECX_VERSION;
+        $recorded_version = (string) get_option( self::PLUGIN_VERSION_OPTION, '' );
+        if ( $recorded_version === $current_version ) {
+            return;
+        }
+
+        $current_agent = (string) get_option( 'gecx_agent_name', '' );
+        $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
+        if ( ! $auth_complete ) {
+            $has_existing_state = '' !== $current_agent
+                || ! empty( get_option( 'gecx_api_secret', '' ) )
+                || ! empty( get_option( 'gecx_webhook_id' ) );
+            if ( ! $has_existing_state ) {
+                update_option( self::PLUGIN_VERSION_OPTION, $current_version, 'no' );
+                return;
+            }
+        }
+
+        if ( ! function_exists( 'is_user_logged_in' ) || ! is_user_logged_in() ) {
+            return;
+        }
+        $user_id       = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+        $has_admin_cap = false;
+        if ( $user_id > 0 && function_exists( 'user_can' ) ) {
+            $has_admin_cap = (bool) ( user_can( $user_id, 'manage_options' ) || user_can( $user_id, 'manage_woocommerce' ) );
+        } elseif ( function_exists( 'current_user_can' ) ) {
+            $has_admin_cap = (bool) ( current_user_can( 'manage_options' ) || current_user_can( 'manage_woocommerce' ) );
+        }
+        if ( ! $has_admin_cap ) {
+            return;
+        }
+
+        update_option( self::PLUGIN_VERSION_OPTION, $current_version, 'no' );
+        delete_option( self::SYNC_THROTTLE_OPTION );
+        $this->sync_agent_state( $current_agent );
     }
 
     /**
