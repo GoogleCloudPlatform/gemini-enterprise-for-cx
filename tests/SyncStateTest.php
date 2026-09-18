@@ -14,6 +14,8 @@ class SyncStateTest extends GECX_TestCase {
 
     private const SYNC_URL = 'https://gecx.cloud.google.com/woocommerce/webhook/sync-state';
 
+    private const UNLINK_URL = 'https://gecx.cloud.google.com/woocommerce/unlink-agent';
+
     private const LINK_REQUIRED = 'WOOCOMMERCE_SYNC_STATUS_LINK_REQUIRED';
     private const SYNCED        = 'WOOCOMMERCE_SYNC_STATUS_SYNCED';
 
@@ -643,6 +645,39 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertEquals( 'Ask AI', get_option( 'gecx_button_label' ) );
         $this->assertFalse( get_option( 'gecx_sync_last_attempt' ) );
+        $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+    }
+
+    public function test_explicit_unlink_tells_google_before_clearing_the_binding(): void {
+        $this->seed_linked_store();
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+        $this->queue( gecx_test_http_response( 200, '' ) );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->ajax_unlink_agent();
+
+        // The agent has to be named in the request, so the call must happen
+        // while the binding is still readable, not after it is torn down.
+        $request = $GLOBALS['gecx_test_http_requests'][0];
+        $this->assertEquals( self::UNLINK_URL, $request['url'] );
+
+        $body = json_decode( (string) $request['args']['body'], true );
+        $this->assertEquals( 'agents/agent_a', $body['agent_id'] );
+        $this->assertTrue( '' !== $body['admin_jwt'] );
+
+        $this->assertFalse( get_option( 'gecx_agent_name' ) );
+    }
+
+    public function test_explicit_unlink_without_an_agent_issues_no_request(): void {
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->ajax_unlink_agent();
+
+        // There is nothing to name in the request, and the backend rejects a
+        // blank agent_id, so the merchant would get a 502 on a reset that has
+        // nothing to release.
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
         $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
     }
 }
