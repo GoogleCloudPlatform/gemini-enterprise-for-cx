@@ -1,7 +1,7 @@
 === Gemini Enterprise for CX ===
 Contributors: google
 Tags: woocommerce, marketing, ai, agent, gecx
-Requires at least: 5.9
+Requires at least: 6.2
 WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
