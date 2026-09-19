@@ -55,6 +55,7 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_rest_plain_permalinks'] = false;
     $GLOBALS['gecx_test_http_responses']       = [];
     $GLOBALS['gecx_test_http_requests']        = [];
+    $GLOBALS['gecx_test_rest_routes']          = [];
     $GLOBALS['gecx_test_settings_errors']      = [];
     $GLOBALS['gecx_test_inline_styles']        = [];
     $GLOBALS['gecx_test_localized_scripts']    = [];
@@ -1113,6 +1114,7 @@ function gecx_test_http_response( int $code, string $body = '' ): array {
 
 if ( ! function_exists( 'register_rest_route' ) ) {
     function register_rest_route( string $namespace, string $route, array $args = [], bool $override = false ): bool {
+        $GLOBALS['gecx_test_rest_routes'][ $namespace . $route ] = $args;
         return true;
     }
 }

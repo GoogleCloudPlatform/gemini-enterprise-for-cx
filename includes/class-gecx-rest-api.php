@@ -426,10 +426,17 @@ class GECX_Rest_API {
     /**
      * Register API Route to fetch fresh, dynamic auth context (nonce and customer JWT)
      * without caching.
+     *
+     * POST is the method the widget uses. Response headers say no-store, but a
+     * CDN configured to "cache everything" can still serve a GET response from
+     * the edge and hand one shopper's nonce and JWT to another; POST is not
+     * cached by such rules. GET remains registered only so widget bundles that
+     * predate the switch keep working, and should be dropped once those are no
+     * longer deployed.
      */
     public function register_auth_context_rest_route(): void {
         register_rest_route( 'gecx/v1', '/auth-context', [
-            'methods'             => 'GET',
+            'methods'             => [ 'GET', 'POST' ],
             'callback'            => [ $this, 'auth_context_handler' ],
             'permission_callback' => [ $this, 'check_auth_context_permissions' ],
         ] );

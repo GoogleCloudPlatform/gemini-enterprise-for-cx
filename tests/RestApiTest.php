@@ -1417,6 +1417,19 @@ class RestApiTest extends GECX_TestCase {
         $this->assertNotEmpty( $data['nonce'] );
         $this->assertNull( $data['customer_jwt'] );
     }
+
+    public function test_auth_context_route_accepts_post_and_get(): void {
+        // The widget posts, so that a CDN told to "cache everything" cannot
+        // serve one shopper's nonce and JWT to the next. GET has to keep
+        // working for bundles deployed before that switch.
+        $rest_api = new GECX_Rest_API();
+
+        $rest_api->register_auth_context_rest_route();
+
+        $route = $GLOBALS['gecx_test_rest_routes']['gecx/v1/auth-context'] ?? null;
+        $this->assertNotEmpty( $route );
+        $this->assertSame( [ 'GET', 'POST' ], $route['methods'] );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {
