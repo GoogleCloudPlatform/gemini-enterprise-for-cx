@@ -197,14 +197,25 @@ class GECX_Admin {
         // upgrade, which is usually not the settings page, and settings_errors()
         // is only called there. Collect the notices so they survive to a screen
         // that can show them.
+        //
+        // Only the first attempt for a new version forces past an unexpired
+        // window (which was stamped by the previous release). Once this
+        // version has claimed a window, retries respect the throttle cooldown.
+        $last_stamp = (string) get_option( self::SYNC_THROTTLE_OPTION, '' );
+        $suffix     = ':' . $current_version;
+        $force      = substr( $last_stamp, -strlen( $suffix ) ) !== $suffix;
+
         $this->defer_notices = true;
-        $status              = $this->sync_agent_state( $current_agent, true );
-        $this->defer_notices = false;
+        try {
+            $status = $this->sync_agent_state( $current_agent, $force );
+        } finally {
+            $this->defer_notices = false;
+        }
 
         if ( '' === $status ) {
             // Nothing usable came back. sync_agent_state() has already stamped
-            // the throttle window, so the retry on a later admin page load is
-            // rate limited rather than immediate.
+            // the throttle window with this version, so the retry on a later
+            // admin page load is rate limited rather than immediate.
             return;
         }
 
@@ -424,7 +435,7 @@ class GECX_Admin {
             return;
         }
 
-        $admin_js_ver = defined( 'GECX_VERSION' ) ? GECX_VERSION : '0.3.10';
+        $admin_js_ver = defined( 'GECX_VERSION' ) ? GECX_VERSION : '0.3.11';
 
         wp_register_style( 'gecx-admin-css', false, [], $admin_js_ver );
         wp_enqueue_style( 'gecx-admin-css' );
@@ -943,10 +954,13 @@ class GECX_Admin {
      * @return bool True when this request owns the window and should sync.
      */
     private function claim_sync_window( bool $force = false ): bool {
-        $now = time();
+        $now   = time();
+        $stamp = defined( 'GECX_VERSION' ) && '' !== (string) GECX_VERSION
+            ? $now . ':' . (string) GECX_VERSION
+            : (string) $now;
 
         // Autoload is off: this option is only read on the settings page.
-        if ( add_option( self::SYNC_THROTTLE_OPTION, (string) $now, '', false ) ) {
+        if ( add_option( self::SYNC_THROTTLE_OPTION, $stamp, '', false ) ) {
             return true;
         }
 
@@ -959,7 +973,7 @@ class GECX_Admin {
         // is not atomic, so two requests racing on the same expiry can both
         // sync once; the endpoint is idempotent and the throttle then applies
         // again.
-        update_option( self::SYNC_THROTTLE_OPTION, (string) $now, false );
+        update_option( self::SYNC_THROTTLE_OPTION, $stamp, false );
         return true;
     }
 

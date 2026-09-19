@@ -6,9 +6,9 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.10
+Stable tag: 0.3.11
 License: GPLv3
-License URI: https://www.gnu.com/licenses/gpl-3.0.html
+License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
 Drive sales with an AI agent that's already an expert on your brand and products. Go live instantly on your WooCommerce storefront.
 
@@ -76,6 +76,11 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.11 =
+* Reconcile store state with the SyncState API on `admin_init` when the installed plugin version changes, so the backend records the new version on the first administrator page load after an upgrade without waiting out the sync throttle window.
+* Keep the recorded plugin version pending when an upgrade sync fails, while rate-limiting retries by the sync throttle window.
+* Queue notices raised by an `admin_init` upgrade sync and display them on `admin_notices` for administrators.
 
 = 0.3.10 =
 * Stop rendering `wp-nonce` and `customer-jwt` attributes into storefront HTML, so full-page caches can no longer serve one shopper's credentials to the next.

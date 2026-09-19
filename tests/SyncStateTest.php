@@ -802,7 +802,6 @@ class SyncStateTest extends GECX_TestCase {
 
     public function test_version_change_records_version_without_sync_before_auth_complete(): void {
         delete_option( 'gecx_agent_name' );
-        delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_webhook_id' );
         delete_option( GECX_Admin::AUTH_COMPLETE_OPTION );
         delete_option( GECX_Admin::PLUGIN_VERSION_OPTION );
@@ -847,13 +846,17 @@ class SyncStateTest extends GECX_TestCase {
     public function test_failed_upgrade_sync_leaves_the_version_pending_for_a_retry(): void {
         $this->seed_upgraded_store();
         $this->queue( gecx_test_http_response( 503 ) );
+        $this->queue( gecx_test_http_response( 503 ) );
 
         $this->run_version_check();
 
         $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
         $this->assertEquals( '0.9.0', get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
-        // The retry is rate limited by the window the failed attempt claimed.
+        // The retry is rate limited by the window the failed attempt claimed:
+        // a second admin page load inside the window makes no HTTP call.
         $this->assertTrue( false !== get_option( 'gecx_sync_last_attempt' ) );
+        $this->run_version_check();
+        $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
     }
 
     public function test_upgrade_sync_defers_notices_instead_of_discarding_them(): void {

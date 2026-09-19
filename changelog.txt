@@ -1,5 +1,10 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-09-19 - version 0.3.11
+* Reconcile store state with the SyncState API on `admin_init` when the installed plugin version changes, so the backend records the new version on the first administrator page load after an upgrade without waiting out the sync throttle window.
+* Keep the recorded plugin version pending when an upgrade sync fails, while rate-limiting retries by the sync throttle window.
+* Queue notices raised by an `admin_init` upgrade sync and display them on `admin_notices` for administrators.
+
 2026-09-19 - version 0.3.10
 * Stop rendering `wp-nonce` and `customer-jwt` attributes into storefront HTML, so full-page caches can no longer serve one shopper's credentials to the next.
 * Serve fresh per-shopper auth context (`nonce` and `customer_jwt`) from `/wp-json/gecx/v1/auth-context` (`POST` and `GET`) with `no-store` cache headers, `Access-Control-Allow-Origin` suppression, and strict same-origin enforcement across `Sec-Fetch-Site`, `Origin`, and `Referer`.
