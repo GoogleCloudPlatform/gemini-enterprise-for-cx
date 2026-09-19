@@ -788,11 +788,12 @@ class GECX_Auth {
      * Generate a signed customer JWT for the active logged-in user or guest.
      *
      * The token always asserts is_admin: false, whatever the shopper can do in
-     * WordPress. It is published to the storefront DOM by
-     * GECX_Storefront::inject_chat_widget(), where any script on the page can
-     * read it, so it must not carry a claim that grants anything. An operator
-     * who needs one calls generate_admin_jwt(), which gates on capability and
-     * lives for 300 seconds rather than an hour.
+     * WordPress. It is handed to the chat widget over
+     * GET /gecx/v1/auth-context and held in the DOM as a property of the
+     * widget element, where any script on the page can read it, so it must not
+     * carry a claim that grants anything. An operator who needs one calls
+     * generate_admin_jwt(), which gates on capability and lives for 300
+     * seconds rather than an hour.
      *
      * @param int|null $user_id Optional user ID. If null, resolved from current logged-in user or defaults to 0 (guest).
      * @param int $expiration Expiration duration in seconds (default 3600).

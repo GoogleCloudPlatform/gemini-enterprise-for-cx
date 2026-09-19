@@ -6,9 +6,9 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.9
+Stable tag: 0.3.10
 License: GPLv3
-License URI: https://www.gnu.org/licenses/gpl-3.0.html
+License URI: https://www.gnu.com/licenses/gpl-3.0.html
 
 Drive sales with an AI agent that's already an expert on your brand and products. Go live instantly on your WooCommerce storefront.
 
@@ -76,6 +76,11 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.10 =
+* Stop rendering `wp-nonce` and `customer-jwt` attributes into storefront HTML, so full-page caches can no longer serve one shopper's credentials to the next.
+* Serve fresh per-shopper auth context (`nonce` and `customer_jwt`) from `/wp-json/gecx/v1/auth-context` (`POST` and `GET`) with `no-store` cache headers, `Access-Control-Allow-Origin` suppression, and strict same-origin enforcement across `Sec-Fetch-Site`, `Origin`, and `Referer`.
+* Emit `rest-url` on `<gecx-woocommerce-chat-widget>` from `rest_url()` so the widget resolves WordPress REST routes on subdirectory installs, plain permalinks, and custom REST prefixes.
 
 = 0.3.9 =
 * Sign customer and admin JWTs exclusively with the store's RSA private key (RS256). A store that cannot produce a usable keypair now mints no token and logs an error instead of falling back to the retired `gecx_api_secret` shared secret.

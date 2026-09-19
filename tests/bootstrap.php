@@ -31,6 +31,7 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_options']              = [];
     $GLOBALS['gecx_test_option_autoload']      = [];
     $GLOBALS['gecx_test_current_user']         = null;
+    $GLOBALS['gecx_test_cookie_user_id']       = 0;
     $GLOBALS['gecx_test_users']                = [];
     $GLOBALS['gecx_test_transients']           = [];
     $GLOBALS['gecx_test_last_redirect']        = null;
@@ -49,8 +50,12 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_filter_callbacks']     = [];
     $GLOBALS['gecx_test_actions']              = [];
     $GLOBALS['gecx_test_rest_url_prefix']      = 'wp-json';
+    $GLOBALS['gecx_test_home_url']             = 'https://example.com';
+    $GLOBALS['gecx_test_site_url']             = null;
+    $GLOBALS['gecx_test_rest_plain_permalinks'] = false;
     $GLOBALS['gecx_test_http_responses']       = [];
     $GLOBALS['gecx_test_http_requests']        = [];
+    $GLOBALS['gecx_test_rest_routes']          = [];
     $GLOBALS['gecx_test_settings_errors']      = [];
     $GLOBALS['gecx_test_inline_styles']        = [];
     $GLOBALS['gecx_test_localized_scripts']    = [];
@@ -594,6 +599,30 @@ if ( ! function_exists( 'get_userdata' ) ) {
     }
 }
 
+if ( ! function_exists( 'wp_set_current_user' ) ) {
+    function wp_set_current_user( int $id, string $name = '' ): WP_User {
+        if ( $id <= 0 ) {
+            $GLOBALS['gecx_test_current_user'] = null;
+            return new WP_User( 0, '' );
+        }
+        $user = get_userdata( $id );
+        if ( ! ( $user instanceof WP_User ) ) {
+            $user = new WP_User( $id, '' !== $name ? $name : 'user_' . $id . '@example.com' );
+        }
+        $GLOBALS['gecx_test_current_user'] = $user;
+        return $user;
+    }
+}
+
+if ( ! function_exists( 'wp_validate_auth_cookie' ) ) {
+    function wp_validate_auth_cookie( string $cookie = '', string $scheme = '' ) {
+        if ( ! empty( $GLOBALS['gecx_test_cookie_user_id'] ) && (int) $GLOBALS['gecx_test_cookie_user_id'] > 0 ) {
+            return (int) $GLOBALS['gecx_test_cookie_user_id'];
+        }
+        return false;
+    }
+}
+
 if ( ! function_exists( 'apply_filters' ) ) {
     /**
      * Runs registered callbacks, in priority order, over $value.
@@ -664,6 +693,31 @@ if ( ! function_exists( 'home_url' ) ) {
     }
 }
 
+if ( ! function_exists( 'site_url' ) ) {
+    function site_url(): string {
+        return (string) ( $GLOBALS['gecx_test_site_url'] ?? home_url() );
+    }
+}
+
+if ( ! function_exists( 'rest_url' ) ) {
+    /**
+     * Mirrors WordPress: the REST root follows the permalink structure, so a
+     * store on plain permalinks answers at ?rest_route= rather than /wp-json/.
+     *
+     * @param string $path Route appended to the REST root.
+     * @return string
+     */
+    function rest_url( string $path = '' ): string {
+        $base = rtrim( home_url(), '/' );
+
+        if ( ! empty( $GLOBALS['gecx_test_rest_plain_permalinks'] ) ) {
+            return $base . '/?rest_route=/' . ltrim( $path, '/' );
+        }
+
+        return $base . '/' . rest_get_url_prefix() . '/' . ltrim( $path, '/' );
+    }
+}
+
 if ( ! function_exists( 'is_admin' ) ) {
     function is_admin(): bool {
         return (bool) ( $GLOBALS['gecx_test_is_admin'] ?? false );
@@ -730,13 +784,16 @@ if ( ! function_exists( 'is_customize_preview' ) ) {
 
 if ( ! function_exists( 'wp_create_nonce' ) ) {
     function wp_create_nonce( $action = -1 ): string {
-        return 'test_nonce_' . $action;
+        $uid = get_current_user_id();
+        return $uid > 0 ? 'test_nonce_' . $action . '_u' . $uid : 'test_nonce_' . $action;
     }
 }
 
 if ( ! function_exists( 'wp_verify_nonce' ) ) {
     function wp_verify_nonce( $nonce, $action = -1 ): bool {
-        return $nonce === 'valid_nonce_' . $action || $nonce === 'test_nonce_' . $action;
+        $uid      = get_current_user_id();
+        $expected = $uid > 0 ? 'test_nonce_' . $action . '_u' . $uid : 'test_nonce_' . $action;
+        return $nonce === 'valid_nonce_' . $action || $nonce === $expected;
     }
 }
 
@@ -1057,6 +1114,7 @@ function gecx_test_http_response( int $code, string $body = '' ): array {
 
 if ( ! function_exists( 'register_rest_route' ) ) {
     function register_rest_route( string $namespace, string $route, array $args = [], bool $override = false ): bool {
+        $GLOBALS['gecx_test_rest_routes'][ $namespace . $route ] = $args;
         return true;
     }
 }
@@ -1355,6 +1413,12 @@ if ( ! class_exists( 'PHPUnit\Framework\TestCase' ) ) {
         public function assertNotNull( $value, string $message = '' ): void {
             if ( null === $value ) {
                 throw new \AssertionError( $message ?: 'Failed asserting that value is not null.' );
+            }
+        }
+
+        public function assertNotEmpty( $actual, string $message = '' ): void {
+            if ( empty( $actual ) ) {
+                throw new \AssertionError( $message ?: 'Failed asserting that a variable is not empty.' );
             }
         }
 

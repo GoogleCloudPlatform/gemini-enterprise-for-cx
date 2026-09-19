@@ -1,5 +1,10 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-09-19 - version 0.3.10
+* Stop rendering `wp-nonce` and `customer-jwt` attributes into storefront HTML, so full-page caches can no longer serve one shopper's credentials to the next.
+* Serve fresh per-shopper auth context (`nonce` and `customer_jwt`) from `/wp-json/gecx/v1/auth-context` (`POST` and `GET`) with `no-store` cache headers, `Access-Control-Allow-Origin` suppression, and strict same-origin enforcement across `Sec-Fetch-Site`, `Origin`, and `Referer`.
+* Emit `rest-url` on `<gecx-woocommerce-chat-widget>` from `rest_url()` so the widget resolves WordPress REST routes on subdirectory installs, plain permalinks, and custom REST prefixes.
+
 2026-09-19 - version 0.3.9
 * Sign customer and admin JWTs exclusively with the store's RSA private key (RS256). A store that cannot produce a usable keypair now mints no token and logs an error instead of falling back to the retired `gecx_api_secret` shared secret.
 * Remove the legacy `POST /wp-json/gecx/v1/secret` route and the `gecx_api_secret` filter. Order-created webhook registration and credential refresh now run solely through `POST /wp-json/gecx/v1/webhooks/order-created`, and webhook HMAC signatures are derived only from the webhook's own consumer secret.

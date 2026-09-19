@@ -51,6 +51,8 @@ class GECX_Rest_API {
         add_action( 'rest_api_init', [ $this, 'register_public_key_rest_route' ] );
         add_action( 'rest_api_init', [ $this, 'register_link_rest_route' ] );
         add_action( 'rest_api_init', [ $this, 'register_refresh_token_rest_route' ] );
+        add_action( 'rest_api_init', [ $this, 'register_auth_context_rest_route' ] );
+        add_filter( 'rest_pre_serve_request', [ $this, 'suppress_cors_on_auth_context' ], 20, 4 );
         add_filter( 'woocommerce_rest_is_request_to_rest_api', [ $this, 'enable_wc_auth_for_custom_endpoints' ], 10, 1 );
         add_action( 'woocommerce_checkout_create_order', [ $this, 'attach_session_to_order_metadata' ], 10, 2 );
         add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'attach_session_to_order_metadata_store_api' ], 10, 2 );
@@ -403,6 +405,12 @@ class GECX_Rest_API {
 
     /**
      * Handle the POST request to refresh customer JWT for active session.
+     *
+     * A missing secret is a 500 here, rather than a 200 carrying a null token
+     * as on /gecx/v1/auth-context. Minting the JWT is the entire purpose of
+     * this route, so there is no partial success to report; auth-context also
+     * returns the nonce, which stays useful to the widget whether or not a JWT
+     * could be signed.
      */
     public function refresh_token_handler( \WP_REST_Request $request ) {
         $customer_jwt = GECX_Auth::generate_customer_jwt();
@@ -413,6 +421,272 @@ class GECX_Rest_API {
             'success'      => true,
             'customer_jwt' => $customer_jwt,
         ], 200 );
+    }
+
+    /**
+     * Register API Route to fetch fresh, dynamic auth context (nonce and customer JWT)
+     * without caching.
+     *
+     * POST is the method the widget uses. Response headers say no-store, but a
+     * CDN configured to "cache everything" can still serve a GET response from
+     * the edge and hand one shopper's nonce and JWT to another; POST is not
+     * cached by such rules. GET remains registered only so widget bundles that
+     * predate the switch keep working, and should be dropped once those are no
+     * longer deployed.
+     */
+    public function register_auth_context_rest_route(): void {
+        register_rest_route( 'gecx/v1', '/auth-context', [
+            'methods'             => [ 'GET', 'POST' ],
+            'callback'            => [ $this, 'auth_context_handler' ],
+            'permission_callback' => [ $this, 'check_auth_context_permissions' ],
+        ] );
+    }
+
+    /**
+     * Enforces strict same-origin isolation on /gecx/v1/auth-context.
+     *
+     * Because this endpoint resolves the logged-in user from the WordPress
+     * logged_in cookie without a prior X-WP-Nonce (in order to bootstrap the
+     * nonce on cached storefront pages), cross-origin and cross-site reads
+     * must be rejected so another origin cannot read the user's nonce or JWT.
+     *
+     * A request has to positively identify itself as same-origin. Fetch
+     * Metadata, Origin and Referer are each consulted, and a request carrying
+     * none of the three is refused rather than trusted: a cross-origin
+     * `<script src>` under `Referrer-Policy: no-referrer` arrives with all
+     * three absent, and so does a non-browser client replaying a stolen
+     * cookie. Browsers too old to send Fetch Metadata still send Referer,
+     * unless the store suppresses it site-wide.
+     *
+     * @param \WP_REST_Request $request REST request instance.
+     * @return true|\WP_Error
+     */
+    public function check_auth_context_permissions( \WP_REST_Request $request ) {
+        if ( GECX_Auth::is_cart_token_request() ) {
+            return new \WP_Error( 'rest_forbidden', __( 'Unauthorized.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
+        }
+
+        $fetch_site = self::read_request_header( $request, 'Sec-Fetch-Site', 'HTTP_SEC_FETCH_SITE' );
+        $origin     = self::read_request_header( $request, 'Origin', 'HTTP_ORIGIN' );
+        $referer    = self::read_request_header( $request, 'Referer', 'HTTP_REFERER' );
+
+        if ( '' === $fetch_site && '' === $origin && '' === $referer ) {
+            return new \WP_Error( 'rest_forbidden', __( 'Request origin could not be verified.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
+        }
+
+        if ( '' !== $fetch_site ) {
+            $lower_site = strtolower( trim( $fetch_site ) );
+            if ( 'same-origin' !== $lower_site && 'none' !== $lower_site ) {
+                return new \WP_Error( 'rest_forbidden', __( 'Cross-site requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
+            }
+        }
+
+        if ( '' !== $origin && ! self::is_same_origin( $origin ) ) {
+            return new \WP_Error( 'rest_forbidden', __( 'Cross-origin requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
+        }
+
+        if ( '' === $origin && '' !== $referer && ! self::is_same_origin( $referer ) ) {
+            return new \WP_Error( 'rest_forbidden', __( 'Cross-origin requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
+        }
+
+        return true;
+    }
+
+    /**
+     * Reads a request header, falling back to the raw $_SERVER entry.
+     *
+     * @param \WP_REST_Request $request     REST request instance.
+     * @param string           $header_name Header name as sent on the wire.
+     * @param string           $server_key  Matching $_SERVER key.
+     * @return string Sanitized header value, or '' when the header is absent.
+     */
+    private static function read_request_header( \WP_REST_Request $request, string $header_name, string $server_key ): string {
+        $value = (string) $request->get_header( $header_name );
+        if ( '' === $value && isset( $_SERVER[ $server_key ] ) ) {
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via sanitize_text_field.
+            $value = sanitize_text_field( wp_unslash( (string) $_SERVER[ $server_key ] ) );
+        }
+        return $value;
+    }
+
+    /**
+     * Checks whether a candidate URL (Origin or Referer) addresses this store.
+     *
+     * Host and port are compared against both home_url() and site_url(),
+     * which differ on the common install where WordPress itself lives in a
+     * subdirectory of the storefront.
+     *
+     * Scheme is deliberately not compared. Behind a TLS-terminating proxy or
+     * a CDN doing flexible SSL, home_url() is routinely stored as http while
+     * the browser reports an https Origin, and refusing that pairing takes the
+     * widget offline on stores that are otherwise healthy. An http Origin on
+     * the store's own host implies an active network attacker, who already
+     * holds the cookie this check exists to protect. Schemes other than http
+     * and https are still refused outright.
+     *
+     * @param string $candidate_url Candidate Origin or Referer URL.
+     * @return bool
+     */
+    private static function is_same_origin( string $candidate_url ): bool {
+        $candidate = self::parse_origin( $candidate_url );
+        if ( null === $candidate ) {
+            return false;
+        }
+
+        foreach ( self::get_allowed_origins() as $allowed ) {
+            if ( $allowed['host'] === $candidate['host'] && $allowed['port'] === $candidate['port'] ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Reduces a URL to its host and port, collapsing the scheme's default port
+     * to null so that https://example.com and https://example.com:443 compare
+     * equal.
+     *
+     * @param string $url Candidate URL.
+     * @return array|null Array with 'host' and 'port' keys, or null when the URL is unusable.
+     */
+    private static function parse_origin( string $url ): ?array {
+        $parts = wp_parse_url( $url );
+        if ( ! is_array( $parts ) || empty( $parts['host'] ) ) {
+            return null;
+        }
+
+        $scheme = isset( $parts['scheme'] ) ? strtolower( (string) $parts['scheme'] ) : '';
+        if ( '' !== $scheme && 'http' !== $scheme && 'https' !== $scheme ) {
+            return null;
+        }
+
+        $port = isset( $parts['port'] ) ? (int) $parts['port'] : null;
+        if ( ( 'https' === $scheme && 443 === $port ) || ( 'http' === $scheme && 80 === $port ) ) {
+            $port = null;
+        }
+
+        return [
+            'host' => strtolower( (string) $parts['host'] ),
+            'port' => $port,
+        ];
+    }
+
+    /**
+     * Builds the set of origins permitted to read /gecx/v1/auth-context.
+     *
+     * @return array List of arrays with 'host' and 'port' keys.
+     */
+    private static function get_allowed_origins(): array {
+        $urls = [];
+        if ( function_exists( 'home_url' ) ) {
+            $urls[] = (string) home_url();
+        }
+        if ( function_exists( 'site_url' ) ) {
+            $urls[] = (string) site_url();
+        }
+
+        /**
+         * Filters the URLs whose host and port may read the auth context.
+         *
+         * A store that serves the storefront from a domain WordPress does not
+         * know about, such as a headless front end or a mapped domain, adds it
+         * here.
+         *
+         * @param array $urls Allowed URLs.
+         */
+        if ( function_exists( 'apply_filters' ) ) {
+            $urls = (array) apply_filters( 'gecx_auth_context_allowed_origins', $urls );
+        }
+
+        $allowed = [];
+        foreach ( $urls as $url ) {
+            $parsed = self::parse_origin( (string) $url );
+            if ( null !== $parsed ) {
+                $allowed[] = $parsed;
+            }
+        }
+
+        return $allowed;
+    }
+
+    /**
+     * Strips WordPress REST API CORS reflection headers on /gecx/v1/auth-context
+     * so cross-origin documents cannot read the response even if preflighted.
+     *
+     * @param bool             $served  Whether the request has already been served.
+     * @param \WP_HTTP_Response $result  Result to send to the client.
+     * @param \WP_REST_Request  $request Request used to generate the response.
+     * @param \WP_REST_Server   $server  Server instance.
+     * @return bool
+     */
+    public function suppress_cors_on_auth_context( $served, $result, $request, $server ) {
+        if ( $request instanceof \WP_REST_Request && '/gecx/v1/auth-context' === $request->get_route() ) {
+            if ( function_exists( 'header_remove' ) && ( ! function_exists( 'headers_sent' ) || ! headers_sent() ) ) {
+                header_remove( 'Access-Control-Allow-Origin' );
+                header_remove( 'Access-Control-Allow-Credentials' );
+            }
+        }
+        return $served;
+    }
+
+    /**
+     * Handle the GET request for dynamic auth context.
+     *
+     * WordPress's rest_cookie_check_errors() calls wp_set_current_user( 0 )
+     * when a REST request arrives without an X-WP-Nonce header. Because this
+     * endpoint is what mints the fresh wp_rest nonce and customer JWT after a
+     * cached page load, it restores the logged-in user from the WordPress
+     * logged_in cookie (after check_auth_context_permissions() has verified
+     * same-origin isolation) and resets the user state before returning.
+     *
+     * The response always carries a nonce and a 'customer_jwt' key. That key
+     * is null when no signing secret is configured, which is a 200 rather than
+     * an error: the nonce alone still lets the widget reach the Store API, so
+     * an unsigned store degrades to an anonymous shopper instead of a broken
+     * widget. Callers must treat null as "no identity", never as a failure to
+     * retry.
+     *
+     * @param \WP_REST_Request $request REST request instance.
+     * @return \WP_REST_Response
+     */
+    public function auth_context_handler( \WP_REST_Request $request ): \WP_REST_Response {
+        $previous_user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+        $restored_user    = false;
+
+        if ( 0 === $previous_user_id && function_exists( 'wp_validate_auth_cookie' ) && function_exists( 'wp_set_current_user' ) ) {
+            $cookie_user_id = (int) wp_validate_auth_cookie( '', 'logged_in' );
+            if ( $cookie_user_id > 0 ) {
+                wp_set_current_user( $cookie_user_id );
+                $restored_user = true;
+            }
+        }
+
+        try {
+            if ( function_exists( 'nocache_headers' ) ) {
+                nocache_headers();
+            }
+
+            $nonce        = function_exists( 'wp_create_nonce' ) ? (string) wp_create_nonce( 'wp_rest' ) : '';
+            $customer_jwt = GECX_Auth::generate_customer_jwt();
+        } finally {
+            if ( $restored_user && function_exists( 'wp_set_current_user' ) ) {
+                wp_set_current_user( $previous_user_id );
+            }
+        }
+
+        $response = new \WP_REST_Response( [
+            'success'      => true,
+            'nonce'        => $nonce,
+            'customer_jwt' => $customer_jwt,
+        ], 200 );
+
+        $response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, private, max-age=0' );
+        $response->header( 'Pragma', 'no-cache' );
+        $response->header( 'Expires', 'Wed, 11 Jan 1984 05:00:00 GMT' );
+        $response->header( 'Vary', 'Cookie, Origin' );
+
+        return $response;
     }
 
     /**
