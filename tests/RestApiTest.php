@@ -939,6 +939,111 @@ class RestApiTest extends GECX_TestCase {
         $this->assertEquals( 'rest_forbidden', $perm->get_error_code() );
         $this->assertEquals( 403, $perm->get_error_data()['status'] );
     }
+
+    /**
+     * The batch route is not a cart route, so WooCommerce sets no Cart-Token
+     * on the batch response. The token reaches the client only inside the
+     * body, in each sub-response envelope. Lift it to a header so a caller
+     * reading headers sees the same thing on /batch as on /cart.
+     */
+    public function test_batch_cart_token_is_exposed_as_a_response_header(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $response = new WP_REST_Response( [
+            'responses' => [
+                [
+                    'status'  => 200,
+                    'headers' => [ 'Cart-Token' => 'a.cart.token' ],
+                    'body'    => [ 'items_count' => 1 ],
+                ],
+            ],
+        ] );
+
+        $result = $rest_api->expose_batch_cart_token_header( $response, null, $request );
+
+        $this->assertSame( 'a.cart.token', $result->get_headers()['Cart-Token'] );
+    }
+
+    public function test_batch_cart_token_exposure_leaves_the_body_alone(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $payload  = [
+            'responses' => [
+                [
+                    'status'  => 200,
+                    'headers' => [ 'Cart-Token' => 'a.cart.token' ],
+                    'body'    => [ 'items_count' => 1 ],
+                ],
+            ],
+        ];
+        $response = new WP_REST_Response( $payload );
+
+        $result = $rest_api->expose_batch_cart_token_header( $response, null, $request );
+
+        $this->assertSame( $payload, $result->get_data() );
+    }
+
+    /**
+     * Sub-requests run in order, so the token the last one reports is the one
+     * that describes the session the batch leaves behind.
+     */
+    public function test_batch_cart_token_exposure_takes_the_last_token(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $response = new WP_REST_Response( [
+            'responses' => [
+                [ 'status' => 200, 'headers' => [ 'cart-token' => 'first.token' ], 'body' => [] ],
+                [ 'status' => 200, 'headers' => [ 'Cart-Token' => 'second.token' ], 'body' => [] ],
+            ],
+        ] );
+
+        $result = $rest_api->expose_batch_cart_token_header( $response, null, $request );
+
+        $this->assertSame( 'second.token', $result->get_headers()['Cart-Token'] );
+    }
+
+    public function test_batch_cart_token_exposure_adds_nothing_when_no_sub_response_carries_one(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $response = new WP_REST_Response( [
+            'responses' => [
+                [ 'status' => 400, 'headers' => [], 'body' => [ 'code' => 'nope' ] ],
+            ],
+        ] );
+
+        $result = $rest_api->expose_batch_cart_token_header( $response, null, $request );
+
+        $this->assertArrayNotHasKey( 'Cart-Token', $result->get_headers() );
+    }
+
+    /**
+     * Cart routes set their own Cart-Token. Nothing to lift, nothing to touch.
+     */
+    public function test_cart_route_response_is_not_touched_by_batch_token_exposure(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/cart' );
+        $response = new WP_REST_Response( [ 'items_count' => 0 ] );
+        $response->header( 'Cart-Token', 'a.cart.token' );
+
+        $result = $rest_api->expose_batch_cart_token_header( $response, null, $request );
+
+        $this->assertSame( [ 'items_count' => 0 ], $result->get_data() );
+        $this->assertSame( 'a.cart.token', $result->get_headers()['Cart-Token'] );
+    }
+
+    public function test_batch_token_exposure_returns_non_response_values_unchanged(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $error    = new WP_Error( 'woocommerce_rest_batch_error', 'Nope.' );
+
+        $this->assertSame( $error, $rest_api->expose_batch_cart_token_header( $error, null, $request ) );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {
