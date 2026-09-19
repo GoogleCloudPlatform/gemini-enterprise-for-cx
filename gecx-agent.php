@@ -5,7 +5,7 @@
  * Requires Plugins: woocommerce
  * Requires at least: 6.2
  * Requires PHP:     7.4
- * Version:          0.3.10
+ * Version:          0.3.11
  * Author:           Google LLC
  * Author URI:       https://cloud.google.com/gemini
  * License:          GPLv3
@@ -23,7 +23,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 if ( ! defined( 'GECX_VERSION' ) ) {
-    define( 'GECX_VERSION', '0.3.10' );
+    define( 'GECX_VERSION', '0.3.11' );
 }
 
 

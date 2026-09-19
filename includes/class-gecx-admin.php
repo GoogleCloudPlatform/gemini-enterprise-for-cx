@@ -64,6 +64,18 @@ class GECX_Admin {
     public const AUTH_COMPLETE_OPTION = 'gecx_auth_complete';
 
     /**
+     * Option storing the last observed plugin version so upgrades trigger an
+     * immediate SyncState reconciliation.
+     */
+    public const PLUGIN_VERSION_OPTION = 'gecx_plugin_version';
+
+    /**
+     * Option holding the codes of sync notices that were raised while no
+     * screen was available to render them.
+     */
+    public const PENDING_NOTICES_OPTION = 'gecx_pending_sync_notices';
+
+    /**
      * Triggered upon plugin activation.
      */
     public static function activate_plugin(): void {
@@ -96,6 +108,12 @@ class GECX_Admin {
     private string $settings_page_hook = '';
 
     /**
+     * Whether notices raised by a sync should be persisted for a later page
+     * load instead of being rendered inline by settings_errors().
+     */
+    private bool $defer_notices = false;
+
+    /**
      * Constructor.
      *
      * @param string $plugin_file Path to the main plugin file.
@@ -107,7 +125,9 @@ class GECX_Admin {
         add_action( 'admin_init', [ $this, 'register_settings' ] );
         add_action( 'admin_init', [ $this, 'redirect_on_activation' ] );
         add_action( 'admin_init', [ $this, 'handle_connection_callback' ] );
+        add_action( 'admin_init', [ $this, 'maybe_sync_on_version_change' ] );
         add_action( 'admin_notices', [ $this, 'show_activation_notice' ] );
+        add_action( 'admin_notices', [ $this, 'show_pending_sync_notices' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
 
         // Register product settings override hooks.
@@ -123,6 +143,205 @@ class GECX_Admin {
         add_action( 'wp_ajax_gecx_toggle_pdp_prompts', [ $this, 'ajax_toggle_pdp_prompts' ] );
         add_action( 'wp_ajax_gecx_unlink_agent', [ $this, 'ajax_unlink_agent' ] );
         add_action( 'wp_ajax_gecx_dismiss_notice', [ $this, 'ajax_dismiss_notice' ] );
+    }
+
+    /**
+     * Trigger a SyncState reconciliation when the active plugin version changes.
+     *
+     * WordPress does not run register_activation_hook() during plugin upgrades.
+     * Comparing GECX_VERSION against the stored gecx_plugin_version option on
+     * admin_init ensures the backend refreshes the installation's recorded
+     * plugin version as soon as an administrator loads wp-admin after an
+     * upgrade, without waiting out the sync throttle window.
+     *
+     * The recorded version is only advanced once a sync actually succeeds, so a
+     * backend that is unreachable during a rollout is retried on a later admin
+     * page load rather than skipped until the next release.
+     */
+    public function maybe_sync_on_version_change(): void {
+        if ( ! defined( 'GECX_VERSION' ) || '' === (string) GECX_VERSION ) {
+            return;
+        }
+
+        // admin-ajax.php fires admin_init as well, so without this guard the
+        // first Heartbeat tick after an upgrade would absorb the sync, put its
+        // response time in front of that request, and discard anything the
+        // backend reported.
+        if ( wp_doing_ajax() ) {
+            return;
+        }
+
+        $current_version  = (string) GECX_VERSION;
+        $recorded_version = (string) get_option( self::PLUGIN_VERSION_OPTION, '' );
+        if ( $recorded_version === $current_version ) {
+            return;
+        }
+
+        $current_agent = (string) get_option( 'gecx_agent_name', '' );
+        $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
+        if ( ! $auth_complete && ! $this->has_existing_state( $current_agent ) ) {
+            // There is nothing to reconcile yet. Record the version anyway so
+            // the store's first authorization is not also treated as an
+            // upgrade.
+            update_option( self::PLUGIN_VERSION_OPTION, $current_version, false );
+            return;
+        }
+
+        // Same bar as every other state changing path in this class: a sync can
+        // adopt a different agent or unlink this store outright.
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        // This runs on whichever admin screen happened to load first after the
+        // upgrade, which is usually not the settings page, and settings_errors()
+        // is only called there. Collect the notices so they survive to a screen
+        // that can show them.
+        //
+        // Only the first attempt for a new version forces past an unexpired
+        // window (which was stamped by the previous release). Once this
+        // version has claimed a window, retries respect the throttle cooldown.
+        $last_stamp = (string) get_option( self::SYNC_THROTTLE_OPTION, '' );
+        $suffix     = ':' . $current_version;
+        $force      = substr( $last_stamp, -strlen( $suffix ) ) !== $suffix;
+
+        $this->defer_notices = true;
+        try {
+            $status = $this->sync_agent_state( $current_agent, $force );
+        } finally {
+            $this->defer_notices = false;
+        }
+
+        if ( '' === $status ) {
+            // Nothing usable came back. sync_agent_state() has already stamped
+            // the throttle window with this version, so the retry on a later
+            // admin page load is rate limited rather than immediate.
+            return;
+        }
+
+        update_option( self::PLUGIN_VERSION_OPTION, $current_version, false );
+    }
+
+    /**
+     * Whether this store still holds any trace of a link to Google.
+     *
+     * Recognizes installs that authorized before gecx_auth_complete existed;
+     * they have no completion flag but must still reconcile.
+     *
+     * @param string $current_agent Currently configured agent resource name.
+     */
+    private function has_existing_state( string $current_agent ): bool {
+        return '' !== $current_agent
+            || ! empty( get_option( 'gecx_webhook_id' ) );
+    }
+
+    /**
+     * Message and severity for a notice raised by a SyncState reconciliation.
+     *
+     * Deferred notices are stored by code rather than by text so the message is
+     * always rendered in the locale of the request that displays it.
+     *
+     * @param string $code Notice code.
+     * @return array{message: string, type: string}|null Null for unknown codes.
+     */
+    private function sync_notice( string $code ): ?array {
+        switch ( $code ) {
+            case 'gecx_sync_jwt_invalid':
+                return [
+                    'message' => __(
+                        'Google could not verify the identity of this store. Authorize your store again to restore the assistant.',
+                        'gemini-enterprise-for-cx'
+                    ),
+                    'type'    => 'warning',
+                ];
+            case 'gecx_sync_api_keys_invalid':
+                return [
+                    'message' => __(
+                        'Google can no longer read your store catalog with the saved WooCommerce API keys. Authorize your store again to issue new keys.',
+                        'gemini-enterprise-for-cx'
+                    ),
+                    'type'    => 'warning',
+                ];
+            case 'gecx_agent_adopted':
+                return [
+                    'message' => __(
+                        'This store is connected to a different agent than the one saved here, so the saved agent was updated to match Google.',
+                        'gemini-enterprise-for-cx'
+                    ),
+                    'type'    => 'warning',
+                ];
+            case 'gecx_agent_unlinked':
+                return [
+                    'message' => __(
+                        'The agent was automatically unlinked because Google no longer has a connection for this store. Please reconnect your store to restore the assistant.',
+                        'gemini-enterprise-for-cx'
+                    ),
+                    'type'    => 'warning',
+                ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Raise a notice produced by a SyncState reconciliation.
+     *
+     * On the settings page settings_errors() renders these inline. A sync
+     * started from admin_init runs on a screen that never calls it, so the code
+     * is persisted instead and shown by show_pending_sync_notices().
+     *
+     * @param string $code Notice code understood by sync_notice().
+     */
+    private function add_sync_notice( string $code ): void {
+        $notice = $this->sync_notice( $code );
+        if ( null === $notice ) {
+            return;
+        }
+
+        if ( ! $this->defer_notices ) {
+            add_settings_error( 'gecx_messages', $code, $notice['message'], $notice['type'] );
+            return;
+        }
+
+        $pending = get_option( self::PENDING_NOTICES_OPTION, [] );
+        if ( ! is_array( $pending ) ) {
+            $pending = [];
+        }
+        if ( in_array( $code, $pending, true ) ) {
+            return;
+        }
+
+        $pending[] = $code;
+        update_option( self::PENDING_NOTICES_OPTION, $pending, false );
+    }
+
+    /**
+     * Render notices left behind by a sync that ran outside the settings page.
+     */
+    public function show_pending_sync_notices(): void {
+        $pending = get_option( self::PENDING_NOTICES_OPTION, [] );
+        if ( ! is_array( $pending ) || empty( $pending ) ) {
+            return;
+        }
+
+        // Keep them queued until someone who can act on them is looking.
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        delete_option( self::PENDING_NOTICES_OPTION );
+
+        foreach ( $pending as $code ) {
+            $notice = $this->sync_notice( (string) $code );
+            if ( null === $notice ) {
+                continue;
+            }
+            printf(
+                '<div class="notice notice-%1$s is-dismissible"><p>%2$s</p></div>',
+                esc_attr( $notice['type'] ),
+                esc_html( $notice['message'] )
+            );
+        }
     }
 
     /**
@@ -216,7 +435,7 @@ class GECX_Admin {
             return;
         }
 
-        $admin_js_ver = defined( 'GECX_VERSION' ) ? GECX_VERSION : '0.3.10';
+        $admin_js_ver = defined( 'GECX_VERSION' ) ? GECX_VERSION : '0.3.11';
 
         wp_register_style( 'gecx-admin-css', false, [], $admin_js_ver );
         wp_enqueue_style( 'gecx-admin-css' );
@@ -729,25 +948,32 @@ class GECX_Admin {
      * wp_cache_add() is only per-request and transients fall back to options
      * with a non-atomic read-then-write).
      *
+     * @param bool $force Ignore an unexpired window. The window is still
+     *                    stamped, so a forced sync does not leave the next
+     *                    request free to sync again immediately.
      * @return bool True when this request owns the window and should sync.
      */
-    private function claim_sync_window(): bool {
-        $now = time();
+    private function claim_sync_window( bool $force = false ): bool {
+        $now   = time();
+        $stamp = defined( 'GECX_VERSION' ) && '' !== (string) GECX_VERSION
+            ? $now . ':' . (string) GECX_VERSION
+            : (string) $now;
 
         // Autoload is off: this option is only read on the settings page.
-        if ( add_option( self::SYNC_THROTTLE_OPTION, (string) $now, '', false ) ) {
+        if ( add_option( self::SYNC_THROTTLE_OPTION, $stamp, '', false ) ) {
             return true;
         }
 
         $last = (int) get_option( self::SYNC_THROTTLE_OPTION, 0 );
-        if ( $now - $last < self::SYNC_THROTTLE_SECONDS ) {
+        if ( ! $force && $now - $last < self::SYNC_THROTTLE_SECONDS ) {
             return false;
         }
 
-        // The window has elapsed. This refresh is not atomic, so two requests
-        // racing on the same expiry can both sync once; the endpoint is
-        // idempotent and the throttle then applies again.
-        update_option( self::SYNC_THROTTLE_OPTION, (string) $now, false );
+        // The window has elapsed, or a caller is forcing past it. This refresh
+        // is not atomic, so two requests racing on the same expiry can both
+        // sync once; the endpoint is idempotent and the throttle then applies
+        // again.
+        update_option( self::SYNC_THROTTLE_OPTION, $stamp, false );
         return true;
     }
 
@@ -825,19 +1051,19 @@ class GECX_Admin {
      * local configuration problem does not consume it.
      *
      * @param string $current_agent Currently configured agent resource name.
+     * @param bool   $force         Sync even inside an unexpired throttle
+     *                              window. Used after an upgrade, which must
+     *                              reconcile promptly.
      * @return string The status reported by the backend, or '' when no usable
      *                response was obtained.
      */
-    private function sync_agent_state( string $current_agent ): string {
+    private function sync_agent_state( string $current_agent, bool $force = false ): string {
         $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
-        if ( ! $auth_complete ) {
-            $has_existing_state = '' !== $current_agent
-                || ! empty( get_option( 'gecx_webhook_id' ) );
-            if ( $has_existing_state ) {
-                update_option( self::AUTH_COMPLETE_OPTION, 1, 'no' );
-                $auth_complete = true;
-            }
+        if ( ! $auth_complete && $this->has_existing_state( $current_agent ) ) {
+            update_option( self::AUTH_COMPLETE_OPTION, 1, 'no' );
+            $auth_complete = true;
         }
+
         if ( ! $auth_complete ) {
             $this->log_sync( 'skipped, store has not completed authorization' );
             return '';
@@ -860,7 +1086,7 @@ class GECX_Admin {
             return '';
         }
 
-        if ( ! $this->claim_sync_window() ) {
+        if ( ! $this->claim_sync_window( $force ) ) {
             return '';
         }
 
@@ -937,29 +1163,13 @@ class GECX_Admin {
             // which is also how Google re-reads this store's public key, so
             // send the merchant back to that step instead of only warning.
             update_option( self::STORE_AUTH_INVALID_OPTION, 1 );
-            add_settings_error(
-                'gecx_messages',
-                'gecx_sync_jwt_invalid',
-                __(
-                    'Google could not verify the identity of this store. Authorize your store again to restore the assistant.',
-                    'gemini-enterprise-for-cx'
-                ),
-                'warning'
-            );
+            $this->add_sync_notice( 'gecx_sync_jwt_invalid' );
             return;
         }
 
         if ( 'WOOCOMMERCE_SYNC_STATUS_WOOCOMMERCE_API_KEYS_INVALID' === $status ) {
             update_option( self::STORE_AUTH_INVALID_OPTION, 1 );
-            add_settings_error(
-                'gecx_messages',
-                'gecx_sync_api_keys_invalid',
-                __(
-                    'Google can no longer read your store catalog with the saved WooCommerce API keys. Authorize your store again to issue new keys.',
-                    'gemini-enterprise-for-cx'
-                ),
-                'warning'
-            );
+            $this->add_sync_notice( 'gecx_sync_api_keys_invalid' );
             return;
         }
 
@@ -1028,16 +1238,9 @@ class GECX_Admin {
             // Only a genuine swap is worth warning about. Recovering a binding
             // the store had lost is not something the merchant did wrong.
             if ( '' !== $current_agent && $current_agent !== $actual ) {
-                add_settings_error(
-                    'gecx_messages',
-                    'gecx_agent_adopted',
-                    __(
-                        'This store is connected to a different agent than the one saved here, so the saved agent was updated to match Google.',
-                        'gemini-enterprise-for-cx'
-                    ),
-                    'warning'
-                );
+                $this->add_sync_notice( 'gecx_agent_adopted' );
             }
+
             return;
         }
 
@@ -1050,15 +1253,7 @@ class GECX_Admin {
         $this->unlink_agent_internal();
         $this->clear_sync_window();
 
-        add_settings_error(
-            'gecx_messages',
-            'gecx_agent_unlinked',
-            __(
-                'The agent was automatically unlinked because Google no longer has a connection for this store. Please reconnect your store to restore the assistant.',
-                'gemini-enterprise-for-cx'
-            ),
-            'warning'
-        );
+        $this->add_sync_notice( 'gecx_agent_unlinked' );
     }
 
     /**

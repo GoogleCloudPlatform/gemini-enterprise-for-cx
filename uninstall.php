@@ -248,6 +248,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         delete_option( 'gecx_sync_last_attempt' );
         delete_option( 'gecx_store_auth_invalid' );
         delete_option( 'gecx_auth_complete' );
+        delete_option( 'gecx_plugin_version' );
+        delete_option( 'gecx_pending_sync_notices' );
 
         // 4. Clear plugin post meta.
         //

@@ -18,6 +18,9 @@ if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
 if ( ! defined( 'GECX_TESTING' ) ) {
     define( 'GECX_TESTING', true );
 }
+if ( ! defined( 'GECX_VERSION' ) ) {
+    define( 'GECX_VERSION', '1.0.0' );
+}
 
 /**
  * Resets every global the harness owns.
@@ -683,6 +686,12 @@ if ( ! function_exists( 'wp_normalize_path' ) ) {
 
 if ( ! function_exists( 'esc_attr' ) ) {
     function esc_attr( string $text ): string {
+        return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' );
+    }
+}
+
+if ( ! function_exists( 'esc_html' ) ) {
+    function esc_html( string $text ): string {
         return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' );
     }
 }
