@@ -633,12 +633,14 @@ class GECX_Rest_API {
     /**
      * Handle the GET request for dynamic auth context.
      *
-     * WordPress's rest_cookie_check_errors() calls wp_set_current_user( 0 )
+     * WordPress's rest_cookie_check_errors() resets the active user to 0
      * when a REST request arrives without an X-WP-Nonce header. Because this
      * endpoint is what mints the fresh wp_rest nonce and customer JWT after a
-     * cached page load, it restores the logged-in user from the WordPress
+     * cached page load, it resolves the logged-in user ID from the WordPress
      * logged_in cookie (after check_auth_context_permissions() has verified
-     * same-origin isolation) and resets the user state before returning.
+     * same-origin isolation), supplies that user ID to wp_create_nonce() via
+     * the core nonce_user_logged_out filter and directly to
+     * GECX_Auth::generate_customer_jwt(), and never mutates global user state.
      *
      * The response always carries a nonce and a 'customer_jwt' key. That key
      * is null when no signing secret is configured, which is a 200 rather than
@@ -651,14 +653,20 @@ class GECX_Rest_API {
      * @return \WP_REST_Response
      */
     public function auth_context_handler( \WP_REST_Request $request ): \WP_REST_Response {
-        $previous_user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
-        $restored_user    = false;
+        $current_user_id   = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+        $effective_user_id = $current_user_id;
+        $nonce_user_filter = null;
 
-        if ( 0 === $previous_user_id && function_exists( 'wp_validate_auth_cookie' ) && function_exists( 'wp_set_current_user' ) ) {
+        if ( 0 === $effective_user_id && function_exists( 'wp_validate_auth_cookie' ) ) {
             $cookie_user_id = (int) wp_validate_auth_cookie( '', 'logged_in' );
             if ( $cookie_user_id > 0 ) {
-                wp_set_current_user( $cookie_user_id );
-                $restored_user = true;
+                $effective_user_id = $cookie_user_id;
+                if ( function_exists( 'add_filter' ) ) {
+                    $nonce_user_filter = static function ( $uid, $action = -1 ) use ( $cookie_user_id ) {
+                        return 'wp_rest' === (string) $action ? $cookie_user_id : $uid;
+                    };
+                    add_filter( 'nonce_user_logged_out', $nonce_user_filter, 999, 2 );
+                }
             }
         }
 
@@ -668,10 +676,10 @@ class GECX_Rest_API {
             }
 
             $nonce        = function_exists( 'wp_create_nonce' ) ? (string) wp_create_nonce( 'wp_rest' ) : '';
-            $customer_jwt = GECX_Auth::generate_customer_jwt();
+            $customer_jwt = GECX_Auth::generate_customer_jwt( $effective_user_id );
         } finally {
-            if ( $restored_user && function_exists( 'wp_set_current_user' ) ) {
-                wp_set_current_user( $previous_user_id );
+            if ( null !== $nonce_user_filter && function_exists( 'remove_filter' ) ) {
+                remove_filter( 'nonce_user_logged_out', $nonce_user_filter, 999 );
             }
         }
 
