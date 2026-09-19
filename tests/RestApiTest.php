@@ -1156,6 +1156,150 @@ class RestApiTest extends GECX_TestCase {
 
         $this->assertSame( $error, $rest_api->sync_cart_session_after_dispatch( $error, null, $request ) );
     }
+    /**
+     * The batch body repeats each sub-response's headers, so the token
+     * WooCommerce issued for a cart sub-request is sitting in the payload as
+     * data. It is on the response as a header by the time this runs; take the
+     * body copy away.
+     */
+    public function test_batch_body_loses_the_cart_token(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $response = new WP_REST_Response( [
+            'responses' => [
+                [
+                    'status'  => 200,
+                    'headers' => [ 'Cart-Token' => 'a.cart.token' ],
+                    'body'    => [ 'items_count' => 1 ],
+                ],
+            ],
+        ] );
+
+        $result = $rest_api->strip_cart_token_from_batch_body( $response, null, $request );
+
+        $this->assertSame( [], $result->get_data()['responses'][0]['headers'] );
+    }
+
+    /**
+     * A sub-response carries headers a client legitimately reads. Only the
+     * credential goes.
+     */
+    public function test_batch_body_keeps_every_other_sub_response_header(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $response = new WP_REST_Response( [
+            'responses' => [
+                [
+                    'status'  => 200,
+                    'headers' => [
+                        'Nonce'      => 'a-nonce',
+                        'CART-TOKEN' => 'a.cart.token',
+                        'Cart-Hash'  => 'a-hash',
+                    ],
+                    'body'    => [ 'items_count' => 1 ],
+                ],
+            ],
+        ] );
+
+        $result = $rest_api->strip_cart_token_from_batch_body( $response, null, $request );
+
+        $this->assertSame(
+            [ 'Nonce' => 'a-nonce', 'Cart-Hash' => 'a-hash' ],
+            $result->get_data()['responses'][0]['headers']
+        );
+    }
+
+    public function test_batch_body_stripping_leaves_sub_response_bodies_alone(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $response = new WP_REST_Response( [
+            'responses' => [
+                [
+                    'status'  => 200,
+                    'headers' => [ 'Cart-Token' => 'a.cart.token' ],
+                    'body'    => [ 'items_count' => 1, 'id' => 99 ],
+                ],
+            ],
+        ] );
+
+        $result = $rest_api->strip_cart_token_from_batch_body( $response, null, $request );
+
+        $this->assertSame( [ 'items_count' => 1, 'id' => 99 ], $result->get_data()['responses'][0]['body'] );
+        $this->assertSame( 200, $result->get_data()['responses'][0]['status'] );
+    }
+
+    public function test_batch_body_stripping_covers_every_sub_response(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $response = new WP_REST_Response( [
+            'responses' => [
+                [ 'status' => 200, 'headers' => [ 'cart-token' => 'first.token' ], 'body' => [] ],
+                [ 'status' => 200, 'headers' => [ 'Cart-Token' => 'second.token' ], 'body' => [] ],
+            ],
+        ] );
+
+        $result = $rest_api->strip_cart_token_from_batch_body( $response, null, $request );
+
+        $data = $result->get_data();
+        $this->assertSame( [], $data['responses'][0]['headers'] );
+        $this->assertSame( [], $data['responses'][1]['headers'] );
+    }
+
+    /**
+     * Cart routes answer with the token in a header and nothing in the body.
+     * There is nothing here to strip, and nothing to rewrite.
+     */
+    public function test_cart_route_body_is_not_touched_by_stripping(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/cart' );
+        $payload  = [ 'items_count' => 0, 'responses' => [ [ 'headers' => [ 'Cart-Token' => 'a.cart.token' ] ] ] ];
+        $response = new WP_REST_Response( $payload );
+
+        $result = $rest_api->strip_cart_token_from_batch_body( $response, null, $request );
+
+        $this->assertSame( $payload, $result->get_data() );
+    }
+
+    public function test_batch_body_stripping_returns_non_response_values_unchanged(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $error    = new WP_Error( 'woocommerce_rest_batch_error', 'Nope.' );
+
+        $this->assertSame( $error, $rest_api->strip_cart_token_from_batch_body( $error, null, $request ) );
+    }
+
+    /**
+     * The two halves have to compose: the token ends up on the response as a
+     * header, and nowhere in the body. Dispatching covers the priorities that
+     * order them, which calling the callbacks directly does not.
+     */
+    public function test_dispatching_a_batch_moves_the_cart_token_from_body_to_header(): void {
+        new GECX_Rest_API();
+        $request = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $response = new WP_REST_Response( [
+            'responses' => [
+                [
+                    'status'  => 200,
+                    'headers' => [ 'Cart-Token' => 'a.cart.token', 'Nonce' => 'a-nonce' ],
+                    'body'    => [ 'items_count' => 1 ],
+                ],
+            ],
+        ] );
+
+        $result = apply_filters( 'rest_post_dispatch', $response, null, $request );
+
+        $this->assertSame( 'a.cart.token', $result->get_headers()['Cart-Token'] );
+        $this->assertSame( [ 'Nonce' => 'a-nonce' ], $result->get_data()['responses'][0]['headers'] );
+        $this->assertStringNotContainsString( 'a.cart.token', wp_json_encode( $result->get_data() ) );
+    }
+
 }
 
 if ( php_sapi_name() === 'cli' ) {

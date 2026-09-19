@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.7
+Stable tag: 0.3.8
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -76,6 +76,9 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.8 =
+* Remove the `Cart-Token` from the sub-response `headers` that a `/wc/store/v1/batch` response repeats inside its JSON body. WordPress builds an envelope for each sub-response and puts its headers in the body as data, so the session credential WooCommerce issued for each cart sub-request was still leaving the store in the response payload, after 0.3.6 put it in the response header and 0.3.7 stopped mirroring it as `id`. Only `Cart-Token` is removed; every other sub-response header stays.
 
 = 0.3.7 =
 * Stop mirroring the Store API cart token into the cart response body as `id`. The token is a bearer credential, and both cart and batch responses now return it in the CORS-exposed `Cart-Token` response header, which is the supported way to read it. Mirroring it into the body exposed it to any script on the page through `wp.data`, and to session-replay and error tools that capture response bodies.
