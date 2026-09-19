@@ -1036,6 +1036,34 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 'a.cart.token', $result->get_headers()['Cart-Token'] );
     }
 
+    /**
+     * The tests above call the callback directly, which proves what it does
+     * but not that anything calls it. Go through rest_post_dispatch so a
+     * callback that is never registered, or registered under the wrong name,
+     * fails here.
+     *
+     * Only the header is asserted. What else the plugin does to a batch
+     * response on this filter is the business of the tests that cover it.
+     */
+    public function test_batch_cart_token_header_is_set_through_rest_post_dispatch(): void {
+        new GECX_Rest_API();
+        $request = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $response = new WP_REST_Response( [
+            'responses' => [
+                [
+                    'status'  => 200,
+                    'headers' => [ 'Cart-Token' => 'a.cart.token' ],
+                    'body'    => [ 'items_count' => 1 ],
+                ],
+            ],
+        ] );
+
+        $result = apply_filters( 'rest_post_dispatch', $response, null, $request );
+
+        $this->assertSame( 'a.cart.token', $result->get_headers()['Cart-Token'] );
+    }
+
     public function test_batch_token_exposure_returns_non_response_values_unchanged(): void {
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();

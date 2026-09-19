@@ -1,7 +1,8 @@
 *** Gemini Enterprise for CX Changelog ***
 
 2026-09-19 - version 0.3.6
-* Return the cart token in the `Cart-Token` response header on `/wc/store/v1/batch`, as the Store API already does on `/wc/store/v1/cart`. The batch route is not a cart route, so WooCommerce sets no token on the batch response; it survives only inside the JSON body, in the envelope WordPress builds for each sub-response. A client reading response headers now sees the same thing on both routes and never has to read a credential out of a body.
+* Return the cart token in the `Cart-Token` response header on `/wc/store/v1/batch`, as the Store API already does on `/wc/store/v1/cart`. The batch route is not a cart route, so WooCommerce sets no token on the batch response; it survives only inside the JSON body, in the envelope WordPress builds for each sub-response. A client reading response headers now sees the same thing on both routes.
+* This adds a header and removes nothing. The token still appears in the batch response body, because the envelope WordPress builds for each sub-response repeats that sub-response's headers. Taking it out of the body is a later change, once clients read the header.
 
 2026-09-17 - version 0.3.5
 * Restrict Cart-Token authentication strictly to Store API cart and batch endpoints (`/wc/store/v1/cart` and `/wc/store/v1/batch`), preventing order enumeration or guest order access via `/order/*` and `/checkout/*`.
