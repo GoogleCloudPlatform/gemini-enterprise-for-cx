@@ -67,6 +67,9 @@ class GECX_Rest_API {
 
         // Re-emit the batch sub-response Cart-Token as a real response header.
         add_filter( 'rest_post_dispatch', [ $this, 'expose_batch_cart_token_header' ], 10, 3 );
+
+        // Then drop it from the body, at priority 11 so it runs after the lift.
+        add_filter( 'rest_post_dispatch', [ $this, 'strip_cart_token_from_batch_body' ], 11, 3 );
     }
 
     /**
@@ -124,6 +127,64 @@ class GECX_Rest_API {
 
         if ( ! empty( $cart_token ) ) {
             $response->header( 'Cart-Token', $cart_token );
+        }
+
+        return $response;
+    }
+
+    /**
+     * Removes the Cart-Token from the sub-response headers a batch response
+     * repeats inside its JSON body.
+     *
+     * WordPress envelopes each sub-response into status, headers and body, and
+     * puts those envelopes in the batch response body. The headers of a cart
+     * sub-request include the Cart-Token WooCommerce issued, so a batch body
+     * carries the session credential as data: readable by any script that gets
+     * hold of the payload, captured whole by session-replay and error tools,
+     * and written into HAR files attached to support tickets.
+     *
+     * Nothing needs it there. The token is on the response itself, as a
+     * header, put there by expose_batch_cart_token_header() at priority 10.
+     * This runs at 11, after it, and takes the body copy away. WooCommerce
+     * Blocks never reads a cart token from anywhere, so the store's own
+     * client is unaffected.
+     *
+     * Only the Cart-Token entry goes. Every other sub-response header stays
+     * where a client expects it.
+     *
+     * @param \WP_REST_Response|\WP_HTTP_Response|\WP_Error $response Result to send.
+     * @param \WP_REST_Server                               $server   Server instance.
+     * @param \WP_REST_Request                              $request  Request used to generate $response.
+     * @return \WP_REST_Response|\WP_HTTP_Response|\WP_Error The response, with no Cart-Token left in its body.
+     */
+    public function strip_cart_token_from_batch_body( $response, $server, $request ) {
+        if ( ! $response instanceof \WP_REST_Response || ! $request instanceof \WP_REST_Request ) {
+            return $response;
+        }
+        if ( strpos( (string) $request->get_route(), '/wc/store/v1/batch' ) !== 0 ) {
+            return $response;
+        }
+
+        $data = $response->get_data();
+        if ( ! is_array( $data ) || ! isset( $data['responses'] ) || ! is_array( $data['responses'] ) ) {
+            return $response;
+        }
+
+        $stripped = false;
+        foreach ( $data['responses'] as $index => $sub_response ) {
+            if ( ! is_array( $sub_response ) || ! isset( $sub_response['headers'] ) || ! is_array( $sub_response['headers'] ) ) {
+                continue;
+            }
+            foreach ( $sub_response['headers'] as $key => $value ) {
+                if ( strtolower( (string) $key ) === 'cart-token' ) {
+                    unset( $data['responses'][ $index ]['headers'][ $key ] );
+                    $stripped = true;
+                }
+            }
+        }
+
+        if ( $stripped ) {
+            $response->set_data( $data );
         }
 
         return $response;
