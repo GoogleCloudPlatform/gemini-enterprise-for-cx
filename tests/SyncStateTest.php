@@ -750,11 +750,25 @@ class SyncStateTest extends GECX_TestCase {
         }
     }
 
-    public function test_version_change_triggers_sync_and_clears_throttle(): void {
+    /**
+     * Seed a store that has finished authorization and is running an older
+     * plugin version than GECX_VERSION.
+     */
+    private function seed_upgraded_store(): void {
         $this->seed_linked_store();
         update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
         update_option( GECX_Admin::PLUGIN_VERSION_OPTION, '0.9.0' );
-        update_option( 'gecx_sync_last_attempt', (string) time() );
+    }
+
+    /** Run the upgrade check through a fresh admin instance. */
+    private function run_version_check(): void {
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->maybe_sync_on_version_change();
+    }
+
+    public function test_version_change_syncs_past_an_unexpired_throttle_window(): void {
+        $this->seed_upgraded_store();
+        update_option( 'gecx_sync_last_attempt', (string) ( time() - 60 ) );
         $this->queue(
             gecx_test_http_response(
                 200,
@@ -767,11 +781,13 @@ class SyncStateTest extends GECX_TestCase {
             )
         );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
-        $admin->maybe_sync_on_version_change();
+        $this->run_version_check();
 
         $this->assertEquals( GECX_VERSION, get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
         $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
+        // The window is re-stamped rather than deleted, so the settings page
+        // does not sync again on the next load.
+
     }
 
     public function test_matching_version_does_not_trigger_sync_on_admin_init(): void {
@@ -779,8 +795,7 @@ class SyncStateTest extends GECX_TestCase {
         update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
         update_option( GECX_Admin::PLUGIN_VERSION_OPTION, GECX_VERSION );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
-        $admin->maybe_sync_on_version_change();
+        $this->run_version_check();
 
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
     }
@@ -792,11 +807,133 @@ class SyncStateTest extends GECX_TestCase {
         delete_option( GECX_Admin::AUTH_COMPLETE_OPTION );
         delete_option( GECX_Admin::PLUGIN_VERSION_OPTION );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
-        $admin->maybe_sync_on_version_change();
+        $this->run_version_check();
 
         $this->assertEquals( GECX_VERSION, get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+    }
+
+    public function test_version_change_does_not_sync_on_an_ajax_request(): void {
+        $this->seed_upgraded_store();
+        $GLOBALS['gecx_test_doing_ajax'] = true;
+
+        $this->run_version_check();
+
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        // Still pending, so the next real admin page load reconciles.
+        $this->assertEquals( '0.9.0', get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+    }
+
+    public function test_version_change_does_not_sync_without_manage_options(): void {
+        $this->seed_upgraded_store();
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 2, 'manager@example.com', [ 'shop_manager' ] );
+
+        $this->run_version_check();
+
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertEquals( '0.9.0', get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+    }
+
+    public function test_version_change_does_not_sync_for_a_logged_out_request(): void {
+        $this->seed_upgraded_store();
+        $GLOBALS['gecx_test_current_user'] = null;
+
+        $this->run_version_check();
+
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertEquals( '0.9.0', get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+    }
+
+    public function test_failed_upgrade_sync_leaves_the_version_pending_for_a_retry(): void {
+        $this->seed_upgraded_store();
+        $this->queue( gecx_test_http_response( 503 ) );
+
+        $this->run_version_check();
+
+        $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertEquals( '0.9.0', get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+        // The retry is rate limited by the window the failed attempt claimed.
+        $this->assertTrue( false !== get_option( 'gecx_sync_last_attempt' ) );
+    }
+
+    public function test_upgrade_sync_defers_notices_instead_of_discarding_them(): void {
+        $this->seed_upgraded_store();
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => '',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->run_version_check();
+
+        $this->assertFalse( get_option( 'gecx_agent_name' ) );
+        // settings_errors() is never called on the screen this ran from.
+        $this->assertCount( 0, $GLOBALS['gecx_test_settings_errors'] );
+        $this->assertEquals(
+            [ 'gecx_agent_unlinked' ],
+            get_option( GECX_Admin::PENDING_NOTICES_OPTION )
+        );
+    }
+
+    public function test_deferred_notices_render_once_for_an_administrator(): void {
+        update_option( GECX_Admin::PENDING_NOTICES_OPTION, [ 'gecx_agent_unlinked' ] );
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+
+        ob_start();
+        $admin->show_pending_sync_notices();
+        $first = (string) ob_get_clean();
+
+        ob_start();
+        $admin->show_pending_sync_notices();
+        $second = (string) ob_get_clean();
+
+        $this->assertStringContainsString( 'automatically unlinked', $first );
+        $this->assertEquals( '', $second );
+        $this->assertFalse( get_option( GECX_Admin::PENDING_NOTICES_OPTION ) );
+    }
+
+    public function test_deferred_notices_are_kept_until_an_administrator_sees_them(): void {
+        update_option( GECX_Admin::PENDING_NOTICES_OPTION, [ 'gecx_agent_unlinked' ] );
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 2, 'manager@example.com', [ 'shop_manager' ] );
+        $admin                             = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+
+        ob_start();
+        $admin->show_pending_sync_notices();
+        $output = (string) ob_get_clean();
+
+        $this->assertEquals( '', $output );
+        $this->assertEquals(
+            [ 'gecx_agent_unlinked' ],
+            get_option( GECX_Admin::PENDING_NOTICES_OPTION )
+        );
+    }
+
+    public function test_settings_page_sync_still_raises_notices_inline(): void {
+        $this->seed_linked_store();
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => '',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( 'agents/agent_a' );
+
+        $this->assert_notice_code( 'gecx_agent_unlinked' );
+        $this->assertFalse( get_option( GECX_Admin::PENDING_NOTICES_OPTION ) );
     }
 }
 

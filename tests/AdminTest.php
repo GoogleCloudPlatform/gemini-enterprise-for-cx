@@ -350,6 +350,7 @@ class AdminTest extends GECX_TestCase {
     public function test_uninstall_does_not_switch_sites_on_a_single_site(): void {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-123' );
         update_option( 'gecx_plugin_version', '1.0.0' );
+        update_option( 'gecx_pending_sync_notices', [ 'gecx_agent_unlinked' ] );
 
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
             define( 'WP_UNINSTALL_PLUGIN', true );
@@ -360,6 +361,7 @@ class AdminTest extends GECX_TestCase {
         $this->assertEquals( [], $GLOBALS['gecx_test_switched_blogs'] );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertFalse( get_option( 'gecx_plugin_version' ) );
+        $this->assertFalse( get_option( 'gecx_pending_sync_notices' ) );
     }
 
     public function test_connect_url_return_url_is_encoded_once(): void {

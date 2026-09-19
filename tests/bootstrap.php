@@ -690,6 +690,12 @@ if ( ! function_exists( 'esc_attr' ) ) {
     }
 }
 
+if ( ! function_exists( 'esc_html' ) ) {
+    function esc_html( string $text ): string {
+        return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' );
+    }
+}
+
 if ( ! function_exists( 'home_url' ) ) {
     function home_url(): string {
         return (string) ( $GLOBALS['gecx_test_home_url'] ?? 'https://example.com' );
