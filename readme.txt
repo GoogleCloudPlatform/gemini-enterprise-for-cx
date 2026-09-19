@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.6
+Stable tag: 0.3.7
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -76,6 +76,10 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.7 =
+* Stop mirroring the Store API cart token into the cart response body as `id`. The token is a bearer credential, and both cart and batch responses now return it in the CORS-exposed `Cart-Token` response header, which is the supported way to read it. Mirroring it into the body exposed it to any script on the page through `wp.data`, and to session-replay and error tools that capture response bodies.
+* Stop overwriting the `id` of Store API cart item sub-resources, which is the product ID, as a side effect of that mirroring.
 
 = 0.3.6 =
 * Return the cart token in the `Cart-Token` response header on `/wc/store/v1/batch`, as the Store API already does on `/wc/store/v1/cart`. The batch route is not a cart route, so WooCommerce sets no token on the batch response; it survives only inside the JSON body, in the envelope WordPress builds for each sub-response. A client reading response headers now sees the same thing on both routes.

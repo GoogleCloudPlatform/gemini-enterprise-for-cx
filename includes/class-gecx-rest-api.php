@@ -62,8 +62,8 @@ class GECX_Rest_API {
         add_filter( 'woocommerce_webhook_should_deliver', [ $this, 'gate_order_webhook_delivery' ], 10, 3 );
         add_filter( 'woocommerce_webhook_payload', [ $this, 'minimize_order_webhook_payload' ], 10, 4 );
 
-        // Restore Store API post-dispatch cart token injection, SQL sync, and cache invalidation.
-        add_filter( 'rest_post_dispatch', [ $this, 'inject_cart_token_into_body' ], 10, 3 );
+        // Post-dispatch WooCommerce session sync and cache invalidation.
+        add_filter( 'rest_post_dispatch', [ $this, 'sync_cart_session_after_dispatch' ], 10, 3 );
 
         // Re-emit the batch sub-response Cart-Token as a real response header.
         add_filter( 'rest_post_dispatch', [ $this, 'expose_batch_cart_token_header' ], 10, 3 );
@@ -154,68 +154,30 @@ class GECX_Rest_API {
     }
 
     /**
-     * Injects the Cart-Token header value into the JSON response body as 'id'
-     * and guarantees MySQL session sync + cache eviction.
+     * Syncs the cart the Store API just mutated to the browser's session row
+     * and evicts the cached copy of it.
+     *
+     * This used to also mirror the Cart-Token response header into the JSON
+     * body as 'id'. It no longer does. The cart token is a bearer credential:
+     * it authenticates Store API requests for the session it names, and
+     * WooCommerce returns it in the CORS-exposed Cart-Token response header,
+     * which is the supported way to read it. Mirroring it into the body put it
+     * everywhere a body goes and a header does not - wp.data cart state that
+     * any script on the page can read via
+     * wp.data.select('wc/store/cart').getCartData().id, session-replay and RUM
+     * tools that capture XHR bodies, HAR files attached to support tickets,
+     * and any intermediary that caches the response. The agent reads the
+     * header instead.
+     *
+     * Removing the mirroring also stops it corrupting cart item sub-resources,
+     * which define their own 'id' (the product ID) and were being overwritten.
+     *
+     * @param \WP_REST_Response|\WP_HTTP_Response|\WP_Error $response Result to send.
+     * @param \WP_REST_Server                               $server   Server instance.
+     * @param \WP_REST_Request                              $request  Request used to generate $response.
+     * @return \WP_REST_Response|\WP_HTTP_Response|\WP_Error The response, unmodified.
      */
-    public function inject_cart_token_into_body( $response, $server, $request ) {
-        $route = $request->get_route();
-        if ( strpos( $route, '/wc/store/v1/cart' ) === 0 ) {
-            if ( $response instanceof \WP_REST_Response ) {
-                $headers = $response->get_headers();
-                $cart_token = '';
-                foreach ( $headers as $key => $val ) {
-                    $lower_key = strtolower( $key );
-                    if ( $lower_key === 'cart-token' ) {
-                        $cart_token = $val;
-                    }
-                }
-                if ( empty( $cart_token ) ) {
-                    $cart_token = $request->get_header( 'Cart-Token' );
-                }
-
-                $data = $response->get_data();
-                if ( is_array( $data ) ) {
-                    $data_changed = false;
-                    if ( ! empty( $cart_token ) ) {
-                        $data['id'] = $cart_token;
-                        $data_changed = true;
-                    }
-                    if ( $data_changed ) {
-                        $response->set_data( $data );
-                    }
-                }
-            }
-        } elseif ( strpos( $route, '/wc/store/v1/batch' ) === 0 ) {
-            if ( $response instanceof \WP_REST_Response ) {
-                $data = $response->get_data();
-                if ( is_array( $data ) && isset( $data['responses'] ) && is_array( $data['responses'] ) ) {
-                    foreach ( $data['responses'] as $key => $sub_response ) {
-                        if ( isset( $sub_response['body'] ) && is_array( $sub_response['body'] ) && isset( $sub_response['headers'] ) ) {
-                            $sub_headers = $sub_response['headers'];
-                            $sub_cart_token = '';
-                            foreach ( $sub_headers as $h_key => $h_val ) {
-                                $lower_h_key = strtolower( $h_key );
-                                if ( $lower_h_key === 'cart-token' ) {
-                                    $sub_cart_token = $h_val;
-                                }
-                            }
-
-                            $sub_data = $sub_response['body'];
-                            $sub_data_changed = false;
-                            if ( ! empty( $sub_cart_token ) ) {
-                                $sub_data['id'] = $sub_cart_token;
-                                $sub_data_changed = true;
-                            }
-                            if ( $sub_data_changed ) {
-                                $data['responses'][$key]['body'] = $sub_data;
-                            }
-                        }
-                    }
-                    $response->set_data( $data );
-                }
-            }
-        }
-
+    public function sync_cart_session_after_dispatch( $response, $server, $request ) {
         if ( isset( WC()->cart ) ) {
             // Sync to user persistent cart user meta
             if ( method_exists( WC()->cart, 'persistent_cart_update' ) ) {
