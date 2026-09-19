@@ -1249,7 +1249,9 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 77, $payload['user_id'] );
         $this->assertSame( 'buyer@shop.test', $payload['user_email'] );
 
-        // Verify the nonce validates when user 77 is active on subsequent REST requests.
+        // Verify the nonce validates when user 77 is active on subsequent REST requests,
+        // and that the temporary nonce_user_logged_out filter was removed.
+        $this->assertSame( [], $GLOBALS['gecx_test_filter_callbacks']['nonce_user_logged_out'] ?? [] );
         $GLOBALS['gecx_test_current_user'] = $GLOBALS['gecx_test_users'][77];
         $this->assertTrue( (bool) wp_verify_nonce( $data['nonce'], 'wp_rest' ) );
     }

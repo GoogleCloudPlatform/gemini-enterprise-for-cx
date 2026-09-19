@@ -794,6 +794,9 @@ if ( ! function_exists( 'is_customize_preview' ) ) {
 if ( ! function_exists( 'wp_create_nonce' ) ) {
     function wp_create_nonce( $action = -1 ): string {
         $uid = get_current_user_id();
+        if ( ! $uid && function_exists( 'apply_filters' ) ) {
+            $uid = (int) apply_filters( 'nonce_user_logged_out', $uid, $action );
+        }
         return $uid > 0 ? 'test_nonce_' . $action . '_u' . $uid : 'test_nonce_' . $action;
     }
 }
@@ -837,7 +840,7 @@ if ( ! function_exists( 'wp_http_validate_url' ) ) {
 if ( ! function_exists( '__' ) ) {
     function __( string $text, string $domain = 'default' ): string {
         // Returns $text unless a test has supplied a translation for it, which
-        // is how a test tells a string that goes through __() from one that
+        // is how a string that goes through __() is told from one that
         // was hard-coded.
         return (string) ( $GLOBALS['gecx_test_translations'][ $text ] ?? $text );
     }
@@ -853,6 +856,21 @@ if ( ! function_exists( 'add_filter' ) ) {
             'insertion_index' => ++$filter_insertion_index,
         ];
         return true;
+    }
+}
+
+if ( ! function_exists( 'remove_filter' ) ) {
+    function remove_filter( string $hook_name, $callback, int $priority = 10 ): bool {
+        if ( empty( $GLOBALS['gecx_test_filter_callbacks'][ $hook_name ] ) ) {
+            return false;
+        }
+        foreach ( $GLOBALS['gecx_test_filter_callbacks'][ $hook_name ] as $idx => $entry ) {
+            if ( ( $entry['priority'] ?? 10 ) === $priority && ( $entry['callback'] ?? null ) === $callback ) {
+                unset( $GLOBALS['gecx_test_filter_callbacks'][ $hook_name ][ $idx ] );
+                return true;
+            }
+        }
+        return false;
     }
 }
 

@@ -6,9 +6,9 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.11
+Stable tag: 0.3.12
 License: GPLv3
-License URI: https://www.gnu.org/licenses/gpl-3.0.html
+License URI: https://www.gnu.com/licenses/gpl-3.0.html
 
 Drive sales with an AI agent that's already an expert on your brand and products. Go live instantly on your WooCommerce storefront.
 
@@ -76,6 +76,9 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.12 =
+* Resolve the logged-in user on `/wp-json/gecx/v1/auth-context` without calling `wp_set_current_user()`, passing the validated cookie user ID directly to `GECX_Auth::generate_customer_jwt()` and to `wp_create_nonce()` via the core `nonce_user_logged_out` filter.
 
 = 0.3.11 =
 * Reconcile store state with the SyncState API on `admin_init` when the installed plugin version changes, so the backend records the new version on the first administrator page load after an upgrade without waiting out the sync throttle window.
