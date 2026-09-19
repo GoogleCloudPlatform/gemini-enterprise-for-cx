@@ -50,6 +50,9 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_filter_callbacks']     = [];
     $GLOBALS['gecx_test_actions']              = [];
     $GLOBALS['gecx_test_rest_url_prefix']      = 'wp-json';
+    $GLOBALS['gecx_test_home_url']             = 'https://example.com';
+    $GLOBALS['gecx_test_site_url']             = null;
+    $GLOBALS['gecx_test_rest_plain_permalinks'] = false;
     $GLOBALS['gecx_test_http_responses']       = [];
     $GLOBALS['gecx_test_http_requests']        = [];
     $GLOBALS['gecx_test_settings_errors']      = [];
@@ -686,6 +689,31 @@ if ( ! function_exists( 'esc_attr' ) ) {
 if ( ! function_exists( 'home_url' ) ) {
     function home_url(): string {
         return (string) ( $GLOBALS['gecx_test_home_url'] ?? 'https://example.com' );
+    }
+}
+
+if ( ! function_exists( 'site_url' ) ) {
+    function site_url(): string {
+        return (string) ( $GLOBALS['gecx_test_site_url'] ?? home_url() );
+    }
+}
+
+if ( ! function_exists( 'rest_url' ) ) {
+    /**
+     * Mirrors WordPress: the REST root follows the permalink structure, so a
+     * store on plain permalinks answers at ?rest_route= rather than /wp-json/.
+     *
+     * @param string $path Route appended to the REST root.
+     * @return string
+     */
+    function rest_url( string $path = '' ): string {
+        $base = rtrim( home_url(), '/' );
+
+        if ( ! empty( $GLOBALS['gecx_test_rest_plain_permalinks'] ) ) {
+            return $base . '/?rest_route=/' . ltrim( $path, '/' );
+        }
+
+        return $base . '/' . rest_get_url_prefix() . '/' . ltrim( $path, '/' );
     }
 }
 

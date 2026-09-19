@@ -50,6 +50,54 @@ class StorefrontTest extends GECX_TestCase {
         $this->assertStringNotContainsString( 'wp-nonce=', $html );
     }
 
+    /**
+     * Sets up an enabled agent and renders the widget markup.
+     *
+     * @return string Rendered HTML.
+     */
+    private function render_widget_html(): string {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+
+        $storefront = new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+
+        ob_start();
+        $storefront->inject_chat_widget();
+        return (string) ob_get_clean();
+    }
+
+    public function test_storefront_passes_rest_root_to_widget(): void {
+        $html = $this->render_widget_html();
+
+        $this->assertStringContainsString( 'rest-url="https://example.com/wp-json/"', $html );
+    }
+
+    public function test_storefront_rest_url_follows_a_renamed_rest_prefix(): void {
+        $GLOBALS['gecx_test_rest_url_prefix'] = 'api';
+
+        $html = $this->render_widget_html();
+
+        $this->assertStringContainsString( 'rest-url="https://example.com/api/"', $html );
+    }
+
+    public function test_storefront_rest_url_follows_plain_permalinks(): void {
+        $GLOBALS['gecx_test_rest_plain_permalinks'] = true;
+
+        $html = $this->render_widget_html();
+
+        // On plain permalinks /wp-json/ does not resolve, so the widget must be
+        // told to use the query-string form instead of assuming a path prefix.
+        $this->assertStringContainsString( 'rest-url="https://example.com/?rest_route=/"', $html );
+    }
+
+    public function test_storefront_rest_url_follows_a_subdirectory_install(): void {
+        $GLOBALS['gecx_test_home_url'] = 'https://example.com/shop';
+
+        $html = $this->render_widget_html();
+
+        $this->assertStringContainsString( 'rest-url="https://example.com/shop/wp-json/"', $html );
+    }
+
     public function test_nav_menu_injection_primary_location(): void {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );

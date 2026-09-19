@@ -405,6 +405,12 @@ class GECX_Rest_API {
 
     /**
      * Handle the POST request to refresh customer JWT for active session.
+     *
+     * A missing secret is a 500 here, rather than a 200 carrying a null token
+     * as on /gecx/v1/auth-context. Minting the JWT is the entire purpose of
+     * this route, so there is no partial success to report; auth-context also
+     * returns the nonce, which stays useful to the widget whether or not a JWT
+     * could be signed.
      */
     public function refresh_token_handler( \WP_REST_Request $request ) {
         $customer_jwt = GECX_Auth::generate_customer_jwt();
@@ -437,6 +443,14 @@ class GECX_Rest_API {
      * nonce on cached storefront pages), cross-origin and cross-site reads
      * must be rejected so another origin cannot read the user's nonce or JWT.
      *
+     * A request has to positively identify itself as same-origin. Fetch
+     * Metadata, Origin and Referer are each consulted, and a request carrying
+     * none of the three is refused rather than trusted: a cross-origin
+     * `<script src>` under `Referrer-Policy: no-referrer` arrives with all
+     * three absent, and so does a non-browser client replaying a stolen
+     * cookie. Browsers too old to send Fetch Metadata still send Referer,
+     * unless the store suppresses it site-wide.
+     *
      * @param \WP_REST_Request $request REST request instance.
      * @return true|\WP_Error
      */
@@ -445,11 +459,14 @@ class GECX_Rest_API {
             return new \WP_Error( 'rest_forbidden', __( 'Unauthorized.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
 
-        $fetch_site = (string) $request->get_header( 'Sec-Fetch-Site' );
-        if ( '' === $fetch_site && isset( $_SERVER['HTTP_SEC_FETCH_SITE'] ) ) {
-            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via sanitize_text_field.
-            $fetch_site = sanitize_text_field( wp_unslash( (string) $_SERVER['HTTP_SEC_FETCH_SITE'] ) );
+        $fetch_site = self::read_request_header( $request, 'Sec-Fetch-Site', 'HTTP_SEC_FETCH_SITE' );
+        $origin     = self::read_request_header( $request, 'Origin', 'HTTP_ORIGIN' );
+        $referer    = self::read_request_header( $request, 'Referer', 'HTTP_REFERER' );
+
+        if ( '' === $fetch_site && '' === $origin && '' === $referer ) {
+            return new \WP_Error( 'rest_forbidden', __( 'Request origin could not be verified.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
+
         if ( '' !== $fetch_site ) {
             $lower_site = strtolower( trim( $fetch_site ) );
             if ( 'same-origin' !== $lower_site && 'none' !== $lower_site ) {
@@ -457,20 +474,10 @@ class GECX_Rest_API {
             }
         }
 
-        $origin = (string) $request->get_header( 'Origin' );
-        if ( '' === $origin && isset( $_SERVER['HTTP_ORIGIN'] ) ) {
-            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via sanitize_text_field.
-            $origin = sanitize_text_field( wp_unslash( (string) $_SERVER['HTTP_ORIGIN'] ) );
-        }
         if ( '' !== $origin && ! self::is_same_origin( $origin ) ) {
             return new \WP_Error( 'rest_forbidden', __( 'Cross-origin requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
 
-        $referer = (string) $request->get_header( 'Referer' );
-        if ( '' === $referer && isset( $_SERVER['HTTP_REFERER'] ) ) {
-            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via sanitize_text_field.
-            $referer = sanitize_text_field( wp_unslash( (string) $_SERVER['HTTP_REFERER'] ) );
-        }
         if ( '' === $origin && '' !== $referer && ! self::is_same_origin( $referer ) ) {
             return new \WP_Error( 'rest_forbidden', __( 'Cross-origin requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
@@ -479,44 +486,121 @@ class GECX_Rest_API {
     }
 
     /**
-     * Checks whether a candidate URL (Origin or Referer) shares the same
-     * scheme, host, and port as the store's home_url().
+     * Reads a request header, falling back to the raw $_SERVER entry.
+     *
+     * @param \WP_REST_Request $request     REST request instance.
+     * @param string           $header_name Header name as sent on the wire.
+     * @param string           $server_key  Matching $_SERVER key.
+     * @return string Sanitized header value, or '' when the header is absent.
+     */
+    private static function read_request_header( \WP_REST_Request $request, string $header_name, string $server_key ): string {
+        $value = (string) $request->get_header( $header_name );
+        if ( '' === $value && isset( $_SERVER[ $server_key ] ) ) {
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via sanitize_text_field.
+            $value = sanitize_text_field( wp_unslash( (string) $_SERVER[ $server_key ] ) );
+        }
+        return $value;
+    }
+
+    /**
+     * Checks whether a candidate URL (Origin or Referer) addresses this store.
+     *
+     * Host and port are compared against both home_url() and site_url(),
+     * which differ on the common install where WordPress itself lives in a
+     * subdirectory of the storefront.
+     *
+     * Scheme is deliberately not compared. Behind a TLS-terminating proxy or
+     * a CDN doing flexible SSL, home_url() is routinely stored as http while
+     * the browser reports an https Origin, and refusing that pairing takes the
+     * widget offline on stores that are otherwise healthy. An http Origin on
+     * the store's own host implies an active network attacker, who already
+     * holds the cookie this check exists to protect. Schemes other than http
+     * and https are still refused outright.
      *
      * @param string $candidate_url Candidate Origin or Referer URL.
      * @return bool
      */
     private static function is_same_origin( string $candidate_url ): bool {
-        $site_url = function_exists( 'home_url' ) ? (string) home_url() : '';
-        if ( '' === $site_url ) {
+        $candidate = self::parse_origin( $candidate_url );
+        if ( null === $candidate ) {
             return false;
         }
 
-        $site_parts = wp_parse_url( $site_url );
-        $cand_parts = wp_parse_url( $candidate_url );
-        if ( ! is_array( $site_parts ) || ! is_array( $cand_parts ) ) {
-            return false;
-        }
-        if ( empty( $site_parts['scheme'] ) || empty( $site_parts['host'] ) || empty( $cand_parts['scheme'] ) || empty( $cand_parts['host'] ) ) {
-            return false;
+        foreach ( self::get_allowed_origins() as $allowed ) {
+            if ( $allowed['host'] === $candidate['host'] && $allowed['port'] === $candidate['port'] ) {
+                return true;
+            }
         }
 
-        $site_scheme = strtolower( (string) $site_parts['scheme'] );
-        $cand_scheme = strtolower( (string) $cand_parts['scheme'] );
-        if ( $site_scheme !== $cand_scheme ) {
-            return false;
+        return false;
+    }
+
+    /**
+     * Reduces a URL to its host and port, collapsing the scheme's default port
+     * to null so that https://example.com and https://example.com:443 compare
+     * equal.
+     *
+     * @param string $url Candidate URL.
+     * @return array|null Array with 'host' and 'port' keys, or null when the URL is unusable.
+     */
+    private static function parse_origin( string $url ): ?array {
+        $parts = wp_parse_url( $url );
+        if ( ! is_array( $parts ) || empty( $parts['host'] ) ) {
+            return null;
         }
 
-        $site_host = strtolower( (string) $site_parts['host'] );
-        $cand_host = strtolower( (string) $cand_parts['host'] );
-        if ( $site_host !== $cand_host ) {
-            return false;
+        $scheme = isset( $parts['scheme'] ) ? strtolower( (string) $parts['scheme'] ) : '';
+        if ( '' !== $scheme && 'http' !== $scheme && 'https' !== $scheme ) {
+            return null;
         }
 
-        $default_port = ( 'https' === $site_scheme ) ? 443 : 80;
-        $site_port    = isset( $site_parts['port'] ) ? (int) $site_parts['port'] : $default_port;
-        $cand_port    = isset( $cand_parts['port'] ) ? (int) $cand_parts['port'] : $default_port;
+        $port = isset( $parts['port'] ) ? (int) $parts['port'] : null;
+        if ( ( 'https' === $scheme && 443 === $port ) || ( 'http' === $scheme && 80 === $port ) ) {
+            $port = null;
+        }
 
-        return $site_port === $cand_port;
+        return [
+            'host' => strtolower( (string) $parts['host'] ),
+            'port' => $port,
+        ];
+    }
+
+    /**
+     * Builds the set of origins permitted to read /gecx/v1/auth-context.
+     *
+     * @return array List of arrays with 'host' and 'port' keys.
+     */
+    private static function get_allowed_origins(): array {
+        $urls = [];
+        if ( function_exists( 'home_url' ) ) {
+            $urls[] = (string) home_url();
+        }
+        if ( function_exists( 'site_url' ) ) {
+            $urls[] = (string) site_url();
+        }
+
+        /**
+         * Filters the URLs whose host and port may read the auth context.
+         *
+         * A store that serves the storefront from a domain WordPress does not
+         * know about, such as a headless front end or a mapped domain, adds it
+         * here.
+         *
+         * @param array $urls Allowed URLs.
+         */
+        if ( function_exists( 'apply_filters' ) ) {
+            $urls = (array) apply_filters( 'gecx_auth_context_allowed_origins', $urls );
+        }
+
+        $allowed = [];
+        foreach ( $urls as $url ) {
+            $parsed = self::parse_origin( (string) $url );
+            if ( null !== $parsed ) {
+                $allowed[] = $parsed;
+            }
+        }
+
+        return $allowed;
     }
 
     /**
@@ -548,6 +632,13 @@ class GECX_Rest_API {
      * cached page load, it restores the logged-in user from the WordPress
      * logged_in cookie (after check_auth_context_permissions() has verified
      * same-origin isolation) and resets the user state before returning.
+     *
+     * The response always carries a nonce and a 'customer_jwt' key. That key
+     * is null when no signing secret is configured, which is a 200 rather than
+     * an error: the nonce alone still lets the widget reach the Store API, so
+     * an unsigned store degrades to an anonymous shopper instead of a broken
+     * widget. Callers must treat null as "no identity", never as a failure to
+     * retry.
      *
      * @param \WP_REST_Request $request REST request instance.
      * @return \WP_REST_Response

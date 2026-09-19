@@ -1285,6 +1285,102 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 403, $perm->get_error_data()['status'] );
     }
 
+    public function test_auth_context_permissions_rejects_a_request_carrying_no_origin_signal(): void {
+        // No Sec-Fetch-Site, no Origin, no Referer: a cross-origin <script src>
+        // under Referrer-Policy: no-referrer looks exactly like this, as does a
+        // non-browser client replaying a stolen cookie.
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+
+        $perm = $rest_api->check_auth_context_permissions( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
+    }
+
+    public function test_auth_context_permissions_accepts_a_same_origin_referer_without_origin(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_header( 'Referer', 'https://example.com/shop/product-1' );
+
+        $this->assertTrue( true === $rest_api->check_auth_context_permissions( $request ) );
+    }
+
+    public function test_auth_context_permissions_accepts_https_origin_when_home_url_is_http(): void {
+        // Behind a TLS-terminating proxy or flexible SSL, home_url() stays http
+        // while the browser reports an https Origin. Refusing that pairing
+        // would take the widget offline on a healthy store.
+        $GLOBALS['gecx_test_home_url'] = 'http://example.com';
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_header( 'Origin', 'https://example.com' );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+
+        $this->assertTrue( true === $rest_api->check_auth_context_permissions( $request ) );
+    }
+
+    public function test_auth_context_permissions_accepts_the_site_url_host(): void {
+        // WordPress in a subdirectory of the storefront: home_url() and
+        // site_url() disagree, and requests legitimately arrive from either.
+        $GLOBALS['gecx_test_home_url'] = 'https://shop.example.com';
+        $GLOBALS['gecx_test_site_url'] = 'https://wp.example.com';
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_header( 'Origin', 'https://wp.example.com' );
+
+        $this->assertTrue( true === $rest_api->check_auth_context_permissions( $request ) );
+    }
+
+    public function test_auth_context_permissions_treats_default_ports_as_equal(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_header( 'Origin', 'https://example.com:443' );
+
+        $this->assertTrue( true === $rest_api->check_auth_context_permissions( $request ) );
+    }
+
+    public function test_auth_context_permissions_rejects_a_mismatched_explicit_port(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_header( 'Origin', 'https://example.com:8443' );
+
+        $perm = $rest_api->check_auth_context_permissions( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
+    }
+
+    public function test_auth_context_permissions_rejects_a_non_http_origin_scheme(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_header( 'Origin', 'chrome-extension://example.com' );
+
+        $perm = $rest_api->check_auth_context_permissions( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
+    }
+
+    public function test_auth_context_allowed_origins_are_filterable(): void {
+        // Escape hatch for a headless front end or a mapped domain that
+        // WordPress itself has no record of.
+        add_filter(
+            'gecx_auth_context_allowed_origins',
+            static function ( $urls ) {
+                $urls[] = 'https://headless.example.net';
+                return $urls;
+            }
+        );
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_header( 'Origin', 'https://headless.example.net' );
+
+        $this->assertTrue( true === $rest_api->check_auth_context_permissions( $request ) );
+    }
+
     public function test_auth_context_handler_returns_guest_jwt_for_unauthenticated_user(): void {
         $GLOBALS['gecx_test_current_user'] = null;
 

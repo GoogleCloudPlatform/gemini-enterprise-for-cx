@@ -242,6 +242,7 @@ class GECX_Storefront {
         }
 
         $store_url     = esc_url( home_url() );
+        $rest_url      = esc_url( rest_url() );
         $token_broker  = $this->get_token_broker();
         $placement     = (string) get_option( 'gecx_button_placement', 'nav_menu' );
         $floating_pos  = (string) get_option( 'gecx_floating_position', 'bottom_center' );
@@ -259,6 +260,7 @@ class GECX_Storefront {
         <gecx-woocommerce-chat-widget
             agent-name="<?php echo esc_attr( $agent_name ); ?>"
             store-url="<?php echo esc_attr( $store_url ); ?>"
+            rest-url="<?php echo esc_attr( $rest_url ); ?>"
             token-broker="<?php echo esc_attr( $token_broker ); ?>"
             environment="prod"
             hide-launcher
