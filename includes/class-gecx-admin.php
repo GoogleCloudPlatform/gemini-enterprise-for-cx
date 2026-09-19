@@ -216,7 +216,7 @@ class GECX_Admin {
             return;
         }
 
-        $admin_js_ver = defined( 'GECX_VERSION' ) ? GECX_VERSION : '0.3.8';
+        $admin_js_ver = defined( 'GECX_VERSION' ) ? GECX_VERSION : '0.3.9';
 
         wp_register_style( 'gecx-admin-css', false, [], $admin_js_ver );
         wp_enqueue_style( 'gecx-admin-css' );
@@ -372,7 +372,7 @@ class GECX_Admin {
             admin_url( 'admin.php?page=gemini-enterprise-for-cx' )
         );
 
-        $has_store_credentials = ! empty( get_option( 'gecx_webhook_id' ) ) || ! empty( get_option( 'gecx_api_secret', '' ) );
+        $has_store_credentials = ! empty( get_option( 'gecx_webhook_id' ) );
         // SyncState can report that Google can no longer use this store's
         // credentials. Treat that as unauthorized so the merchant is offered
         // the authorize step again instead of a dead end.
@@ -832,7 +832,6 @@ class GECX_Admin {
         $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
         if ( ! $auth_complete ) {
             $has_existing_state = '' !== $current_agent
-                || ! empty( get_option( 'gecx_api_secret', '' ) )
                 || ! empty( get_option( 'gecx_webhook_id' ) );
             if ( $has_existing_state ) {
                 update_option( self::AUTH_COMPLETE_OPTION, 1, 'no' );
@@ -1072,6 +1071,9 @@ class GECX_Admin {
         if ( class_exists( 'GECX_Rest_API' ) ) {
             GECX_Rest_API::delete_order_webhook();
         }
+        // Legacy shared secret, retired in favour of the store's RSA keypair.
+        // Still deleted so a store upgraded from an older version does not keep
+        // the row around after disconnecting.
         delete_option( 'gecx_api_secret' );
         delete_option( self::STORE_AUTH_INVALID_OPTION );
         delete_option( 'gecx_agent_name' );

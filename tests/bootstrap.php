@@ -460,7 +460,7 @@ if ( ! class_exists( 'WP_REST_Request' ) ) {
     class WP_REST_Request {
         private array $headers = [];
         private array $params  = [];
-        private string $route  = '/gecx/v1/secret';
+        private string $route  = '/gecx/v1/public-key';
         public function set_header( string $name, string $value ): void {
             $this->headers[ strtolower( $name ) ] = $value;
         }

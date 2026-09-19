@@ -159,13 +159,6 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         }
         delete_option( 'gecx_webhook_id' );
 
-        if ( empty( $gecx_secret ) ) {
-            $gecx_secret = get_option( 'gecx_api_secret', '' );
-        }
-        if ( function_exists( 'apply_filters' ) ) {
-            $gecx_secret = (string) apply_filters( 'gecx_api_secret', $gecx_secret );
-        }
-
         // 2. Notify Google Backend.
         //
         // The HMAC signature is derived from the WooCommerce webhook secret,
@@ -182,9 +175,9 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         // RSA keypair on every unconnected site (and every Multisite subsite)
         // and send its domain + admin email to Google on plugin deletion.
         // Furthermore, during uninstall the store's public-key endpoint is
-        // about to be torn down, so a newly minted RSA keypair or HS256 fallback
-        // token would fail backend JWT verification and cause VerifyUninstallAuth
-        // to reject an otherwise valid HMAC-signed uninstall webhook.
+        // about to be torn down, so a newly minted RSA keypair would fail
+        // backend JWT verification and cause VerifyUninstallAuth to reject an
+        // otherwise valid HMAC-signed uninstall webhook.
         $gecx_was_connected = ! empty( $gecx_secret )
             || ! empty( $gecx_agent_name )
             || ! empty( get_option( 'gecx_private_key' ) )
@@ -233,6 +226,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         }
 
         // 3. Clear all plugin options from the local WordPress database.
+        // Legacy shared secret, retired in favour of the store's RSA keypair.
         delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );

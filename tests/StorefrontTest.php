@@ -20,7 +20,6 @@ class StorefrontTest extends GECX_TestCase {
 
     public function test_storefront_injects_customer_jwt_when_logged_in(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 77, 'buyer@shop.test' );
-        update_option( 'gecx_api_secret', 'secret_storefront' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
@@ -34,9 +33,8 @@ class StorefrontTest extends GECX_TestCase {
         $this->assertStringContainsString( 'customer-jwt="', $html );
     }
 
-    public function test_storefront_injects_customer_jwt_when_logged_out_with_secret(): void {
+    public function test_storefront_injects_customer_jwt_when_logged_out(): void {
         $GLOBALS['gecx_test_current_user'] = null;
-        update_option( 'gecx_api_secret', 'secret_storefront' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
@@ -50,9 +48,8 @@ class StorefrontTest extends GECX_TestCase {
         $this->assertStringContainsString( 'customer-jwt="', $html );
     }
 
-    public function test_storefront_omits_customer_jwt_when_no_secret(): void {
+    public function test_storefront_omits_customer_jwt_when_no_signing_key(): void {
         $GLOBALS['gecx_test_current_user'] = null;
-        delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
         $GLOBALS['gecx_test_wp_salt'] = '';

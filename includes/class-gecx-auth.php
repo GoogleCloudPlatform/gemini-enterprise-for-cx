@@ -797,7 +797,7 @@ class GECX_Auth {
      * @param int|null $user_id Optional user ID. If null, resolved from current logged-in user or defaults to 0 (guest).
      * @param int $expiration Expiration duration in seconds (default 3600).
      * @param string|null $email Optional email. If null, resolved from user ID or current user.
-     * @return string|null Signed JWT string, or null if secret is missing.
+     * @return string|null Signed JWT string, or null if the store's RSA private key is unavailable.
      */
     public static function generate_customer_jwt( ?int $user_id = null, int $expiration = 3600, ?string $email = null ): ?string {
         return self::generate_jwt_internal( $user_id, false, $expiration, $email );
@@ -809,21 +809,21 @@ class GECX_Auth {
      * @param int|null $user_id Optional user ID. If null, the current logged-in user ID is used.
      * @param int $expiration Expiration duration in seconds (default 300).
      * @param string|null $email Optional email. If null, resolved from user ID or current user.
-     * @return string|null Signed JWT string, or null if user is unauthorized or secret is missing.
+     * @return string|null Signed JWT string, or null if the user is unauthorized or the store's RSA private key is unavailable.
      */
     public static function generate_admin_jwt( ?int $user_id = null, int $expiration = 300, ?string $email = null ): ?string {
-        return self::build_admin_jwt( $user_id, $expiration, $email, true, true );
+        return self::build_admin_jwt( $user_id, $expiration, $email, true );
     }
 
     /**
      * Mint an admin RS256 JWT using only an already-stored, decryptable keypair.
      *
-     * Used during uninstall so plugin deletion never generates a new keypair,
-     * never writes options, and never falls back to HS256 (which the backend
-     * rejects when an Authorization header is present).
+     * Used during uninstall so plugin deletion never generates a new keypair
+     * and never writes options. A store whose keypair is missing or corrupt
+     * mints nothing here rather than pinning a key the backend has never seen.
      */
     public static function generate_existing_rs256_admin_jwt( ?int $user_id = null, int $expiration = 300, ?string $email = null ): ?string {
-        return self::build_admin_jwt( $user_id, $expiration, $email, false, false );
+        return self::build_admin_jwt( $user_id, $expiration, $email, false );
     }
 
     /**
@@ -833,8 +833,7 @@ class GECX_Auth {
         ?int $user_id,
         int $expiration,
         ?string $email,
-        bool $allow_key_generation,
-        bool $allow_hs256_fallback
+        bool $allow_key_generation
     ): ?string {
         if ( null === $user_id ) {
             if ( ! function_exists( 'is_user_logged_in' ) || ! is_user_logged_in() ) {
@@ -858,7 +857,7 @@ class GECX_Auth {
             return null;
         }
 
-        return self::generate_jwt_internal( $user_id, true, $expiration, $email, $allow_key_generation, $allow_hs256_fallback );
+        return self::generate_jwt_internal( $user_id, true, $expiration, $email, $allow_key_generation );
     }
 
     /**
@@ -879,16 +878,15 @@ class GECX_Auth {
      * @param string|null $email Optional email. Used as given when non-empty,
      *                           which skips the user lookup entirely.
      * @param bool $allow_key_generation Whether missing/corrupt RSA keys may be generated/replaced.
-     * @param bool $allow_hs256_fallback Whether HS256 signing is permitted when RS256 is unavailable.
-     * @return string|null Signed JWT string, or null if user/secret missing.
+     * @return string|null RS256-signed JWT string, or null when the user is
+     *                     missing or the store's RSA private key is unusable.
      */
     private static function generate_jwt_internal(
         ?int $user_id,
         bool $is_admin,
         int $expiration,
         ?string $email,
-        bool $allow_key_generation = true,
-        bool $allow_hs256_fallback = true
+        bool $allow_key_generation = true
     ): ?string {
         if ( ! $is_admin ) {
             // Customer JWT: authenticated user or guest ($user_id = 0).
@@ -920,7 +918,10 @@ class GECX_Auth {
         }
 
         $private_key = $allow_key_generation ? self::get_private_key() : self::get_existing_private_key();
-        $use_rs256   = ! empty( $private_key ) && function_exists( 'openssl_sign' );
+        if ( empty( $private_key ) || ! function_exists( 'openssl_sign' ) ) {
+            self::log( 'Unable to sign JWT: the store has no usable RSA private key.', 'error' );
+            return null;
+        }
 
         $issued_at    = time();
         $expires_at   = $issued_at + $expiration;
@@ -944,58 +945,38 @@ class GECX_Auth {
 
         $payload_encoded = self::to_base_64_url( (string) json_encode( $payload ) );
 
-        if ( $use_rs256 ) {
-            $signing_input = self::build_signing_input( 'RS256', $payload_encoded );
-            $raw_signature = '';
+        $signing_input = self::build_signing_input( 'RS256', $payload_encoded );
+        $raw_signature = '';
 
-            // Suppress OpenSSL error output on corrupt/invalid private key strings and gracefully fall through.
+        // Suppress OpenSSL error output on corrupt/invalid private key strings;
+        // the queued errors are drained into the log lines below instead.
+        if ( @openssl_sign( $signing_input, $raw_signature, $private_key, OPENSSL_ALGO_SHA256 ) && ! empty( $raw_signature ) ) {
+            return $signing_input . '.' . self::to_base_64_url( $raw_signature );
+        }
+
+        if ( ! $allow_key_generation ) {
+            self::log( 'RS256 signing failed and key generation is not permitted here: ' . self::get_last_openssl_error(), 'error' );
+            return null;
+        }
+
+        // The key decrypted but will not sign, so it is corrupt rather than
+        // merely unreadable. Replace it under gecx_keypair_lock and retry once.
+        // There is no symmetric fallback left, so if OpenSSL cannot produce a
+        // usable keypair the store mints no token at all.
+        self::log(
+            'RS256 signing failed: ' . self::get_last_openssl_error() . ' Replacing the keypair under lock and retrying once.',
+            'warning'
+        );
+        $private_key = self::regenerate_keypair_locked( $private_key );
+        if ( ! empty( $private_key ) ) {
+            $raw_signature = '';
             if ( @openssl_sign( $signing_input, $raw_signature, $private_key, OPENSSL_ALGO_SHA256 ) && ! empty( $raw_signature ) ) {
                 return $signing_input . '.' . self::to_base_64_url( $raw_signature );
             }
-
-            if ( ! $allow_key_generation ) {
-                return null;
-            }
-
-            // The key decrypted but will not sign, so it is corrupt rather than
-            // merely unreadable. Replace it under gecx_keypair_lock and retry once;
-            // only fall back to legacy HS256 (still used for local REST verification
-            // and legacy installations without a pinned RSA key) if OpenSSL cannot
-            // produce a usable keypair at all.
-            self::log(
-                'RS256 signing failed: ' . self::get_last_openssl_error() . ' Replacing the keypair under lock and retrying once.',
-                'warning'
-            );
-            $private_key = self::regenerate_keypair_locked( $private_key );
-            if ( ! empty( $private_key ) ) {
-                $raw_signature = '';
-                if ( @openssl_sign( $signing_input, $raw_signature, $private_key, OPENSSL_ALGO_SHA256 ) && ! empty( $raw_signature ) ) {
-                    return $signing_input . '.' . self::to_base_64_url( $raw_signature );
-                }
-                self::log(
-                    'RS256 signing failed again on a freshly generated keypair, falling back to legacy HS256: ' . self::get_last_openssl_error(),
-                    'warning'
-                );
-            }
         }
 
-        if ( ! $allow_hs256_fallback ) {
-            return null;
-        }
-
-        // Legacy HS256 fallback (retained for local REST token verification and
-        // legacy installations until HS256 support is removed on the backend).
-        $secret = function_exists( 'get_option' ) ? (string) get_option( 'gecx_api_secret', '' ) : '';
-        if ( function_exists( 'apply_filters' ) ) {
-            $secret = (string) apply_filters( 'gecx_api_secret', $secret );
-        }
-        if ( empty( $secret ) ) {
-            return null;
-        }
-
-        $signing_input = self::build_signing_input( 'HS256', $payload_encoded );
-        $signature     = hash_hmac( 'sha256', $signing_input, $secret, true );
-        return $signing_input . '.' . self::to_base_64_url( $signature );
+        self::log( 'RS256 signing failed on a freshly generated keypair: ' . self::get_last_openssl_error(), 'error' );
+        return null;
     }
 
     /**

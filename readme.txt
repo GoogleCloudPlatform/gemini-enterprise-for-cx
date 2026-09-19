@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.8
+Stable tag: 0.3.9
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -76,6 +76,11 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.9 =
+* Sign customer and admin JWTs exclusively with the store's RSA private key (RS256). A store that cannot produce a usable keypair now mints no token and logs an error instead of falling back to the retired `gecx_api_secret` shared secret.
+* Remove the legacy `POST /wp-json/gecx/v1/secret` route and the `gecx_api_secret` filter. Order-created webhook registration and credential refresh now run solely through `POST /wp-json/gecx/v1/webhooks/order-created`, and webhook HMAC signatures are derived only from the webhook's own consumer secret.
+* Continue deleting `gecx_api_secret` on unlink and on uninstall so stores upgrading from earlier releases clear the stale option.
 
 = 0.3.8 =
 * Remove the `Cart-Token` from the sub-response `headers` that a `/wc/store/v1/batch` response repeats inside its JSON body. WordPress builds an envelope for each sub-response and puts its headers in the body as data, so the session credential WooCommerce issued for each cart sub-request was still leaving the store in the response payload, after 0.3.6 put it in the response header and 0.3.7 stopped mirroring it as `id`. Only `Cart-Token` is removed; every other sub-response header stays.

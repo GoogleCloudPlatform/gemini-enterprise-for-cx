@@ -16,25 +16,22 @@ class GECX_Rest_API {
      * enabled for. See enable_wc_auth_for_custom_endpoints().
      */
     private const WC_AUTHENTICATED_ROUTES = [
-        'gecx/v1/secret',
         'gecx/v1/webhooks/order-created',
         'gecx/v1/public-key',
         'gecx/v1/link-agent',
     ];
 
     /**
-     * Longest accepted value for the shared secret and for a WooCommerce
-     * consumer secret.
+     * Longest accepted value for a WooCommerce consumer secret.
      *
-     * A WooCommerce consumer secret is 'cs_' followed by 40 hex characters and
-     * the backend's shared secret is a base64-encoded 256-bit value, so both
-     * are well under this. The bound exists so that an authenticated caller
+     * A WooCommerce consumer secret is 'cs_' followed by 40 hex characters, so
+     * it is well under this. The bound exists so that an authenticated caller
      * cannot park a megabyte in the options table.
      */
     private const MAX_SECRET_LENGTH = 512;
 
     /**
-     * Checks that a secret is a plausible shared or consumer secret.
+     * Checks that a secret is a plausible WooCommerce consumer secret.
      *
      * @param string $secret Candidate secret.
      * @return bool True if the secret is within the length bound and uses only base64 and base64url characters.
@@ -50,7 +47,6 @@ class GECX_Rest_API {
     public function __construct() {
         // Session to order attribution hooks
         add_action( 'rest_api_init', [ $this, 'register_session_rest_route' ] );
-        add_action( 'rest_api_init', [ $this, 'register_secret_rest_route' ] );
         add_action( 'rest_api_init', [ $this, 'register_webhooks_rest_route' ] );
         add_action( 'rest_api_init', [ $this, 'register_public_key_rest_route' ] );
         add_action( 'rest_api_init', [ $this, 'register_link_rest_route' ] );
@@ -420,17 +416,6 @@ class GECX_Rest_API {
     }
 
     /**
-     * Register API Route to securely store the gecx_api_secret.
-     */
-    public function register_secret_rest_route(): void {
-        register_rest_route( 'gecx/v1', '/secret', [
-            'methods'             => 'POST',
-            'callback'            => [ $this, 'save_secret_handler' ],
-            'permission_callback' => [ $this, 'check_admin_permissions' ],
-        ] );
-    }
-
-    /**
      * Register API Route to register or update WooCommerce webhooks.
      */
     public function register_webhooks_rest_route(): void {
@@ -547,7 +532,8 @@ class GECX_Rest_API {
     }
 
     /**
-     * Helper to retrieve preferred webhook HMAC secret (consumer_secret from webhook with fallback to gecx_api_secret).
+     * Helper to retrieve the webhook HMAC secret (the consumer_secret stored on
+     * the WooCommerce webhook).
      */
     public static function get_webhook_secret(): string {
         $secret = '';
@@ -561,12 +547,6 @@ class GECX_Rest_API {
             } catch ( \Exception $e ) {
                 $secret = '';
             }
-        }
-        if ( empty( $secret ) ) {
-            $secret = (string) get_option( 'gecx_api_secret', '' );
-        }
-        if ( function_exists( 'apply_filters' ) ) {
-            $secret = (string) apply_filters( 'gecx_api_secret', $secret );
         }
         return $secret;
     }
@@ -688,52 +668,6 @@ class GECX_Rest_API {
     }
 
     /**
-     * Handle the POST request to save the gecx_api_secret option.
-     */
-    public function save_secret_handler( \WP_REST_Request $request ) {
-        $raw_secret      = trim( (string) $request->get_param( 'secret' ) );
-        $consumer_secret = trim( (string) $request->get_param( 'consumer_secret' ) );
-
-        if ( empty( $raw_secret ) && empty( $consumer_secret ) ) {
-            return new \WP_Error( 'invalid_secret', __( 'Secret is invalid or missing.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
-        }
-
-        if ( ! empty( $raw_secret ) && ! self::is_valid_secret( $raw_secret ) ) {
-            return new \WP_Error( 'invalid_secret', __( 'Secret is invalid or missing.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
-        }
-
-        if ( ! empty( $consumer_secret ) && ! self::is_valid_secret( $consumer_secret ) ) {
-            return new \WP_Error( 'invalid_secret', __( 'Consumer secret is invalid.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
-        }
-
-        if ( ! empty( $raw_secret ) ) {
-            // Not autoloaded: this is read by the webhook signing path and by
-            // uninstall, never by a page render, so there is no reason to hold
-            // it in memory for every request on the site.
-            update_option( 'gecx_api_secret', $raw_secret, 'no' );
-        }
-
-        if ( class_exists( 'WC_Webhook' ) ) {
-            $webhook_secret = ! empty( $consumer_secret ) ? $consumer_secret : self::get_webhook_secret();
-            if ( ! empty( $webhook_secret ) ) {
-                $webhook_result = self::ensure_order_webhook( '', $webhook_secret );
-                if ( is_wp_error( $webhook_result ) ) {
-                    return $webhook_result;
-                }
-            }
-        }
-
-        // New credentials are in place, so clear any invalidation recorded by
-        // a previous SyncState reconciliation and mark store auth complete.
-        update_option( 'gecx_auth_complete', 1, 'no' );
-        if ( class_exists( 'GECX_Admin' ) ) {
-            delete_option( GECX_Admin::STORE_AUTH_INVALID_OPTION );
-        }
-
-        return new \WP_REST_Response( [ 'success' => true ], 200 );
-    }
-
-    /**
      * Handle the POST request to register or update WooCommerce order.created webhook.
      */
     public function order_created_webhooks_handler( \WP_REST_Request $request ) {
@@ -751,7 +685,13 @@ class GECX_Rest_API {
         if ( is_wp_error( $webhook ) ) {
             return $webhook;
         }
+
+        // New credentials are in place, so clear any invalidation recorded by
+        // a previous SyncState reconciliation and mark store auth complete.
         update_option( 'gecx_auth_complete', 1, 'no' );
+        if ( class_exists( 'GECX_Admin' ) ) {
+            delete_option( GECX_Admin::STORE_AUTH_INVALID_OPTION );
+        }
 
         return new \WP_REST_Response( [
             'success'    => true,
@@ -793,7 +733,7 @@ class GECX_Rest_API {
      *
      * It previously matched the URI path first and only consulted rest_route
      * afterwards. WordPress dispatches on rest_route whenever one is present,
-     * so GET /gecx/v1/secret?rest_route=/wp/v2/users enabled key authentication
+     * so GET /gecx/v1/public-key?rest_route=/wp/v2/users enabled key authentication
      * and then dispatched /wp/v2/users, with the key's user's full WordPress
      * capabilities applying. Core routes have no notion of a key's read/write
      * scope, so a read-only key issued for an administrator reached every core
