@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.5
+Stable tag: 0.3.6
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -76,6 +76,10 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.6 =
+* Return the cart token in the `Cart-Token` response header on `/wc/store/v1/batch`, as the Store API already does on `/wc/store/v1/cart`. The batch route is not a cart route, so WooCommerce sets no token on the batch response; it survives only inside the JSON body, in the envelope WordPress builds for each sub-response. A client reading response headers now sees the same thing on both routes.
+* This adds a header and removes nothing. The token still appears in the batch response body, because the envelope WordPress builds for each sub-response repeats that sub-response's headers. Taking it out of the body is a later change, once clients read the header.
 
 = 0.3.5 =
 * Restrict Cart-Token authentication strictly to Store API cart and batch endpoints (`/wc/store/v1/cart` and `/wc/store/v1/batch`), preventing order enumeration or guest order access via `/order/*` and `/checkout/*`.

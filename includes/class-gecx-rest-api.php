@@ -64,6 +64,93 @@ class GECX_Rest_API {
 
         // Restore Store API post-dispatch cart token injection, SQL sync, and cache invalidation.
         add_filter( 'rest_post_dispatch', [ $this, 'inject_cart_token_into_body' ], 10, 3 );
+
+        // Re-emit the batch sub-response Cart-Token as a real response header.
+        add_filter( 'rest_post_dispatch', [ $this, 'expose_batch_cart_token_header' ], 10, 3 );
+    }
+
+    /**
+     * Copies the Cart-Token a batch sub-response carries up to the batch
+     * response itself, as a header.
+     *
+     * WooCommerce sets Cart-Token in AbstractCartRoute::add_response_headers(),
+     * so every cart sub-request inside a batch gets one. The batch route is not
+     * a cart route - it extends AbstractRoute - so the batch response that
+     * WordPress actually sends carries no Cart-Token of its own. The token
+     * survives only inside the JSON body, in the envelope WordPress builds for
+     * each sub-response.
+     *
+     * A client reading response headers therefore gets a token from
+     * /wc/store/v1/cart and nothing from /wc/store/v1/batch. This makes the two
+     * behave the same, so a caller never has to read a token out of a body.
+     *
+     * The header is CORS-exposed: WooCommerce adds Cart-Token to
+     * Access-Control-Expose-Headers for every Store API request, batch
+     * included.
+     *
+     * @param \WP_REST_Response|\WP_HTTP_Response|\WP_Error $response Result to send.
+     * @param \WP_REST_Server                               $server   Server instance.
+     * @param \WP_REST_Request                              $request  Request used to generate $response.
+     * @return \WP_REST_Response|\WP_HTTP_Response|\WP_Error The response, with a Cart-Token header when one was found.
+     */
+    public function expose_batch_cart_token_header( $response, $server, $request ) {
+        if ( ! $response instanceof \WP_REST_Response || ! $request instanceof \WP_REST_Request ) {
+            return $response;
+        }
+        if ( strpos( (string) $request->get_route(), '/wc/store/v1/batch' ) !== 0 ) {
+            return $response;
+        }
+        if ( ! empty( $this->find_cart_token( $response->get_headers() ) ) ) {
+            return $response;
+        }
+
+        $data = $response->get_data();
+        if ( ! is_array( $data ) || ! isset( $data['responses'] ) || ! is_array( $data['responses'] ) ) {
+            return $response;
+        }
+
+        // Later sub-requests run after earlier ones, so the last token is the
+        // one describing the session as it stands once the batch is done.
+        $cart_token = '';
+        foreach ( $data['responses'] as $sub_response ) {
+            if ( ! is_array( $sub_response ) || ! isset( $sub_response['headers'] ) || ! is_array( $sub_response['headers'] ) ) {
+                continue;
+            }
+            $sub_token = $this->find_cart_token( $sub_response['headers'] );
+            if ( ! empty( $sub_token ) ) {
+                $cart_token = $sub_token;
+            }
+        }
+
+        if ( ! empty( $cart_token ) ) {
+            $response->header( 'Cart-Token', $cart_token );
+        }
+
+        return $response;
+    }
+
+    /**
+     * Reads a Cart-Token out of a header map, whatever case it is keyed under.
+     *
+     * @param array $headers Header map.
+     * @return string The token, or '' when the map carries none.
+     */
+    private function find_cart_token( $headers ): string {
+        if ( ! is_array( $headers ) ) {
+            return '';
+        }
+        foreach ( $headers as $key => $value ) {
+            if ( strtolower( (string) $key ) !== 'cart-token' ) {
+                continue;
+            }
+            if ( is_array( $value ) ) {
+                $value = reset( $value );
+            }
+            if ( is_string( $value ) && '' !== $value ) {
+                return $value;
+            }
+        }
+        return '';
     }
 
     /**
