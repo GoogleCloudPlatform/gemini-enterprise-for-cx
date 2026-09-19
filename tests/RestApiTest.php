@@ -1072,6 +1072,90 @@ class RestApiTest extends GECX_TestCase {
 
         $this->assertSame( $error, $rest_api->expose_batch_cart_token_header( $error, null, $request ) );
     }
+
+    /**
+     * The cart token is a bearer credential. It belongs in the Cart-Token
+     * response header, which WooCommerce sets and exposes through CORS, and
+     * nowhere else. A body carrying it reaches wp.data, session-replay tools,
+     * HAR files and caches; a header reaches none of those.
+     */
+    public function test_post_dispatch_does_not_copy_the_cart_token_into_the_cart_body(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/cart' );
+        $response = new WP_REST_Response( [ 'items' => [], 'items_count' => 0 ] );
+        $response->header( 'Cart-Token', 'a.cart.token' );
+
+        $result = $rest_api->sync_cart_session_after_dispatch( $response, null, $request );
+
+        $this->assertSame( [ 'items' => [], 'items_count' => 0 ], $result->get_data() );
+        $this->assertSame( 'a.cart.token', $result->get_headers()['Cart-Token'] );
+    }
+
+    /**
+     * The token also arrives on the request, and was copied from there
+     * whenever the response header was absent.
+     */
+    public function test_post_dispatch_does_not_copy_a_request_cart_token_into_the_cart_body(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/cart' );
+        $request->set_header( 'Cart-Token', 'a.cart.token' );
+        $response = new WP_REST_Response( [ 'items_count' => 0 ] );
+
+        $result = $rest_api->sync_cart_session_after_dispatch( $response, null, $request );
+
+        $this->assertArrayNotHasKey( 'id', $result->get_data() );
+    }
+
+    /**
+     * Cart item sub-resources define their own 'id', the product ID. The
+     * mirroring overwrote it, corrupting those responses.
+     */
+    public function test_post_dispatch_leaves_a_cart_item_id_alone(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/cart/items' );
+        $response = new WP_REST_Response( [ 'id' => 99, 'quantity' => 2 ] );
+        $response->header( 'Cart-Token', 'a.cart.token' );
+
+        $result = $rest_api->sync_cart_session_after_dispatch( $response, null, $request );
+
+        $this->assertSame( 99, $result->get_data()['id'] );
+    }
+
+    public function test_post_dispatch_does_not_copy_the_cart_token_into_batch_sub_responses(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/batch' );
+        $payload  = [
+            'responses' => [
+                [
+                    'status'  => 200,
+                    'headers' => [ 'Cart-Token' => 'a.cart.token' ],
+                    'body'    => [ 'items_count' => 1 ],
+                ],
+            ],
+        ];
+        $response = new WP_REST_Response( $payload );
+
+        $result = $rest_api->sync_cart_session_after_dispatch( $response, null, $request );
+
+        $this->assertSame( $payload, $result->get_data() );
+    }
+
+    /**
+     * The filter runs on every dispatch, so it has to hand back whatever it
+     * was given, including the errors and non-arrays it cannot read.
+     */
+    public function test_post_dispatch_returns_non_response_values_unchanged(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_route( '/wc/store/v1/cart' );
+        $error    = new WP_Error( 'woocommerce_rest_cart_error', 'Nope.' );
+
+        $this->assertSame( $error, $rest_api->sync_cart_session_after_dispatch( $error, null, $request ) );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {
