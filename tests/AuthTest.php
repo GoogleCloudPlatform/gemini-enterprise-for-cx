@@ -54,12 +54,12 @@ class AuthTest extends GECX_TestCase {
     public function test_cart_token_is_rejected_on_gecx_routes(): void {
         $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
 
-        foreach ( [ '/wp-json/gecx/v1/secret', '/wp-json/gecx/v1/session', '/wp-json/gecx/v1/public-key' ] as $path ) {
+        foreach ( [ '/wp-json/gecx/v1/link-agent', '/wp-json/gecx/v1/session', '/wp-json/gecx/v1/public-key' ] as $path ) {
             $_SERVER['REQUEST_URI'] = $path;
             $this->assertEquals( 0, $this->auth->authenticate_via_cart_token( 0 ), $path );
         }
 
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=/gecx/v1/secret';
+        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=/gecx/v1/public-key';
         $this->assertEquals( 0, $this->auth->authenticate_via_cart_token( 0 ) );
     }
 
@@ -72,7 +72,7 @@ class AuthTest extends GECX_TestCase {
 
         $spoofs = [
             '/wc/store/v1/?rest_route=/gecx/v1/public-key',
-            '/wp-json/wc/store/v1/cart?rest_route=/gecx/v1/secret',
+            '/wp-json/wc/store/v1/cart?rest_route=/gecx/v1/public-key',
             '/wc/store/v1/cart/?rest_route=/wp/v2/users',
         ];
         foreach ( $spoofs as $uri ) {
@@ -128,7 +128,7 @@ class AuthTest extends GECX_TestCase {
         $_SERVER['REQUEST_URI']     = '/wp-json/wc/store/v1/cart';
 
         $GLOBALS['wp']             = new stdClass();
-        $GLOBALS['wp']->query_vars = [ 'rest_route' => '/gecx/v1/secret' ];
+        $GLOBALS['wp']->query_vars = [ 'rest_route' => '/gecx/v1/public-key' ];
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
 
         $GLOBALS['wp']->query_vars = [ 'rest_route' => '/wc/store/v1/cart' ];
@@ -162,7 +162,7 @@ class AuthTest extends GECX_TestCase {
         $_POST['rest_route']        = '/wc/store/v1/cart';
 
         $GLOBALS['wp']                   = new stdClass();
-        $GLOBALS['wp']->extra_query_vars = [ 'rest_route' => '/gecx/v1/secret' ];
+        $GLOBALS['wp']->extra_query_vars = [ 'rest_route' => '/gecx/v1/public-key' ];
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
 
         $GLOBALS['wp']->extra_query_vars = [ 'rest_route' => '/wc/store/v1/cart' ];
@@ -381,7 +381,7 @@ class AuthTest extends GECX_TestCase {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
 
         $request = new WP_REST_Request();
-        $request->set_route( '/gecx/v1/secret' );
+        $request->set_route( '/gecx/v1/public-key' );
 
         $this->assertNull( $this->auth->block_cart_token_off_store_api( null, null, $request ) );
     }
@@ -405,13 +405,13 @@ class AuthTest extends GECX_TestCase {
     public function test_cart_token_requires_versioned_store_api_namespace(): void {
         $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
 
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/secret/wc/store/';
+        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/public-key/wc/store/';
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
 
         // The versioned form, embedded mid-path. The route WordPress resolves
-        // here is '/gecx/v1/secret/wc/store/v1/x', not a Store API route, so a
+        // here is '/gecx/v1/public-key/wc/store/v1/x', not a Store API route, so a
         // substring match anywhere in the path is not good enough either.
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/secret/wc/store/v1/x';
+        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/public-key/wc/store/v1/x';
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
 
         $_SERVER['REQUEST_URI'] = '/wp-json/wc/store/v1/cart';
@@ -613,8 +613,6 @@ class AuthTest extends GECX_TestCase {
 
     public function test_generate_customer_jwt_generates_guest_jwt_when_logged_out(): void {
         $GLOBALS['gecx_test_current_user'] = null;
-        $secret = 'test_shared_secret_123';
-        update_option( 'gecx_api_secret', $secret );
 
         $jwt = GECX_Auth::generate_customer_jwt();
         $this->assertNotNull( $jwt );
@@ -645,8 +643,6 @@ class AuthTest extends GECX_TestCase {
 
     public function test_generate_and_verify_customer_jwt_success(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com', [ 'customer' ] );
-        $secret = 'test_shared_secret_123';
-        update_option( 'gecx_api_secret', $secret );
 
         $jwt = GECX_Auth::generate_customer_jwt();
         $this->assertNotNull( $jwt );
@@ -666,8 +662,6 @@ class AuthTest extends GECX_TestCase {
 
     public function test_generate_customer_jwt_never_claims_admin_for_administrator(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        $secret = 'test_shared_secret_123';
-        update_option( 'gecx_api_secret', $secret );
 
         $jwt = GECX_Auth::generate_customer_jwt();
         $this->assertNotNull( $jwt );
@@ -686,8 +680,6 @@ class AuthTest extends GECX_TestCase {
 
     public function test_generate_admin_jwt_success(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 99, 'admin@example.com', [ 'administrator' ] );
-        $secret = 'test_shared_secret_123';
-        update_option( 'gecx_api_secret', $secret );
 
         $jwt = GECX_Auth::generate_admin_jwt();
         $this->assertNotNull( $jwt );
@@ -708,8 +700,6 @@ class AuthTest extends GECX_TestCase {
 
     public function test_generate_admin_jwt_custom_expiration(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 99, 'admin@example.com', [ 'administrator' ] );
-        $secret = 'test_shared_secret_123';
-        update_option( 'gecx_api_secret', $secret );
 
         $jwt = GECX_Auth::generate_admin_jwt( 99, 600, 'custom_admin@example.com' );
         $this->assertNotNull( $jwt );
@@ -725,26 +715,19 @@ class AuthTest extends GECX_TestCase {
         $this->assertTrue( $payload['is_admin'] );
     }
 
-    public function test_generate_jwt_hs256_fallback_when_no_private_key(): void {
+    public function test_generate_jwt_returns_null_when_no_private_key(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 55, 'fallback@example.com', [ 'customer' ] );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
         $GLOBALS['gecx_test_wp_salt'] = '';
 
-        $secret = 'fallback_shared_secret_456';
-        update_option( 'gecx_api_secret', $secret );
+        // A store that once held the retired shared secret must not fall back
+        // to signing with it.
+        update_option( 'gecx_api_secret', 'legacy_shared_secret_456' );
 
-        $jwt = GECX_Auth::generate_customer_jwt();
-        $this->assertNotNull( $jwt );
+        $this->assertNull( GECX_Auth::generate_customer_jwt() );
 
-        $parts  = explode( '.', $jwt );
-        $header = json_decode( $this->base64_url_decode( $parts[0] ), true );
-        $this->assertEquals( 'HS256', $header['alg'] );
-        $this->assertTrue( $this->verify_jwt_signature( $jwt, $secret ) );
-
-        $payload = $this->decode_jwt_payload( $jwt );
-        $this->assertEquals( 55, $payload['user_id'] );
-        $this->assertEquals( 'fallback@example.com', $payload['user_email'] );
+        delete_option( 'gecx_api_secret' );
     }
 
     public function test_corrupt_private_key_is_replaced_and_signing_recovers_to_rs256(): void {
@@ -757,7 +740,8 @@ class AuthTest extends GECX_TestCase {
         update_option( 'gecx_public_key', '-----BEGIN PUBLIC KEY-----\nMIIB...\n-----END PUBLIC KEY-----' );
         update_option( 'gecx_private_key', $encrypted );
 
-        update_option( 'gecx_api_secret', 'fallback_secret_789' );
+        // A store still holding the retired shared secret must not sign with it.
+        update_option( 'gecx_api_secret', 'legacy_shared_secret_789' );
 
         $jwt = GECX_Auth::generate_customer_jwt();
         $this->assertNotNull( $jwt );
@@ -775,6 +759,8 @@ class AuthTest extends GECX_TestCase {
         // The corrupt key is gone, not left in place to fail again next time.
         $this->assertTrue( $encrypted !== get_option( 'gecx_private_key' ) );
         $this->assertTrue( false === strpos( (string) get_option( 'gecx_public_key' ), 'MIIB...' ) );
+
+        delete_option( 'gecx_api_secret' );
     }
 
     public function test_half_keypair_is_not_discarded_while_lock_is_held(): void {
@@ -795,7 +781,6 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_generate_admin_jwt_returns_null_when_no_user(): void {
-        update_option( 'gecx_api_secret', 'test_shared_secret_123' );
         $this->assertNull( GECX_Auth::generate_admin_jwt() );
         $this->assertNull( GECX_Auth::generate_admin_jwt( 0 ) );
         $this->assertNull( GECX_Auth::generate_admin_jwt( -1 ) );
@@ -803,8 +788,6 @@ class AuthTest extends GECX_TestCase {
 
     public function test_generate_customer_jwt_explicit_zero_forces_guest_when_logged_in(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        $secret = 'test_shared_secret_123';
-        update_option( 'gecx_api_secret', $secret );
 
         $jwt = GECX_Auth::generate_customer_jwt( 0 );
         $this->assertNotNull( $jwt );
@@ -818,8 +801,6 @@ class AuthTest extends GECX_TestCase {
 
     public function test_generate_customer_jwt_negative_id_normalizes_to_guest(): void {
         $GLOBALS['gecx_test_current_user'] = null;
-        $secret = 'test_shared_secret_123';
-        update_option( 'gecx_api_secret', $secret );
 
         $jwt = GECX_Auth::generate_customer_jwt( -5 );
         $this->assertNotNull( $jwt );
@@ -833,8 +814,6 @@ class AuthTest extends GECX_TestCase {
 
     public function test_generate_customer_jwt_with_explicit_email_populates_user_and_roles(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        $secret = 'test_shared_secret_123';
-        update_option( 'gecx_api_secret', $secret );
 
         $jwt = GECX_Auth::generate_customer_jwt( 1, 3600, 'custom@example.com' );
         $this->assertNotNull( $jwt );
@@ -849,7 +828,6 @@ class AuthTest extends GECX_TestCase {
     public function test_generate_customer_jwt_never_claims_admin_for_explicit_admin_id(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com', [ 'customer' ] );
         $GLOBALS['gecx_test_users'][1]     = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        update_option( 'gecx_api_secret', 'test_shared_secret_123' );
 
         $jwt = GECX_Auth::generate_customer_jwt( 1 );
         $this->assertNotNull( $jwt );
@@ -865,7 +843,6 @@ class AuthTest extends GECX_TestCase {
 
     public function test_customer_jwt_payload_is_not_filterable(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com', [ 'customer' ] );
-        update_option( 'gecx_api_secret', 'test_shared_secret_123' );
 
         add_filter(
             'gecx_customer_jwt_payload',
@@ -899,7 +876,6 @@ class AuthTest extends GECX_TestCase {
 
     public function test_admin_jwt_payload_is_not_filterable(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 99, 'admin@example.com', [ 'administrator' ] );
-        update_option( 'gecx_api_secret', 'test_shared_secret_123' );
 
         add_filter(
             'gecx_admin_jwt_payload',
@@ -929,8 +905,6 @@ class AuthTest extends GECX_TestCase {
 
     public function test_admin_jwt_role_separation(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com', [ 'customer' ] );
-        $secret = 'test_shared_secret_123';
-        update_option( 'gecx_api_secret', $secret );
 
         $cust_jwt = GECX_Auth::generate_customer_jwt();
         $this->assertNotNull( $cust_jwt );

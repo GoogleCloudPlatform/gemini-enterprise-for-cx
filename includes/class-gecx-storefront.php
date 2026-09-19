@@ -77,7 +77,7 @@ class GECX_Storefront {
         }
 
         $urls    = $this->resolve_widget_urls();
-        $version = defined( 'GECX_VERSION' ) ? GECX_VERSION : '0.3.8';
+        $version = defined( 'GECX_VERSION' ) ? GECX_VERSION : '0.3.9';
 
         wp_enqueue_style( 'gecx-widget-style', $urls['style'], [], $version );
         wp_add_inline_style(

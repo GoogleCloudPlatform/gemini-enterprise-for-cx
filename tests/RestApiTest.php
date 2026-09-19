@@ -242,98 +242,28 @@ class RestApiTest extends GECX_TestCase {
         $this->assertEquals( 403, $perm->get_error_data()['status'] );
     }
 
-    public function test_save_secret_handler_persists_option(): void {
-        delete_option( 'gecx_api_secret' );
+    public function test_order_created_webhooks_handler_rejects_invalid_characters(): void {
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();
-        $request->set_param( 'secret', 'new_shared_secret_abc123' );
+        $request->set_param( 'consumer_secret', 'invalid secret with spaces <script>' );
 
-        $response = $rest_api->save_secret_handler( $request );
-        $this->assertTrue( $response instanceof WP_REST_Response );
-        $this->assertEquals( 200, $response->get_status() );
-        $this->assertEquals( [ 'success' => true ], $response->get_data() );
-        $this->assertEquals( 'new_shared_secret_abc123', get_option( 'gecx_api_secret' ) );
-    }
-
-    public function test_save_secret_handler_rejects_empty_secret(): void {
-        $rest_api = new GECX_Rest_API();
-        $request  = new WP_REST_Request();
-        $request->set_param( 'secret', '' );
-
-        $response = $rest_api->save_secret_handler( $request );
+        $response = $rest_api->order_created_webhooks_handler( $request );
         $this->assertTrue( $response instanceof WP_Error );
         $this->assertEquals( 'invalid_secret', $response->get_error_code() );
         $this->assertEquals( 400, $response->get_error_data()['status'] );
     }
 
-    public function test_save_secret_handler_rejects_invalid_characters(): void {
-        $rest_api = new GECX_Rest_API();
-        $request  = new WP_REST_Request();
-        $request->set_param( 'secret', 'invalid secret with spaces <script>' );
-
-        $response = $rest_api->save_secret_handler( $request );
-        $this->assertTrue( $response instanceof WP_Error );
-        $this->assertEquals( 'invalid_secret', $response->get_error_code() );
-        $this->assertEquals( 400, $response->get_error_data()['status'] );
-    }
-
-    public function test_save_secret_handler_accepts_base64_symbols(): void {
-        $rest_api            = new GECX_Rest_API();
-        $request             = new WP_REST_Request();
-        $valid_base64_secret = 'aB3+/=_--validBase64Token==';
-        $request->set_param( 'secret', $valid_base64_secret );
-
-        $response = $rest_api->save_secret_handler( $request );
-        $this->assertTrue( $response instanceof WP_REST_Response );
-        $this->assertEquals( 200, $response->get_status() );
-        $this->assertEquals( $valid_base64_secret, get_option( 'gecx_api_secret' ) );
-    }
-
-    public function test_save_secret_handler_does_not_autoload_the_secret(): void {
-        delete_option( 'gecx_api_secret' );
-        $rest_api = new GECX_Rest_API();
-        $request  = new WP_REST_Request();
-        $request->set_param( 'secret', 'new_shared_secret_abc123' );
-
-        $rest_api->save_secret_handler( $request );
-
-        $this->assertEquals( 'no', $GLOBALS['gecx_test_option_autoload']['gecx_api_secret'] ?? null );
-    }
-
-    public function test_save_secret_handler_rejects_over_length_secret(): void {
-        delete_option( 'gecx_api_secret' );
-        $rest_api = new GECX_Rest_API();
-        $request  = new WP_REST_Request();
-        $request->set_param( 'secret', str_repeat( 'a', 513 ) );
-
-        $response = $rest_api->save_secret_handler( $request );
-        $this->assertTrue( $response instanceof WP_Error );
-        $this->assertEquals( 'invalid_secret', $response->get_error_code() );
-        $this->assertEquals( 400, $response->get_error_data()['status'] );
-        $this->assertFalse( get_option( 'gecx_api_secret' ) );
-    }
-
-    public function test_save_secret_handler_accepts_secret_at_the_length_bound(): void {
-        delete_option( 'gecx_api_secret' );
+    public function test_order_created_webhooks_handler_accepts_consumer_secret_at_the_length_bound(): void {
+        delete_option( 'gecx_webhook_id' );
         $rest_api   = new GECX_Rest_API();
         $request    = new WP_REST_Request();
         $max_secret = str_repeat( 'a', 512 );
-        $request->set_param( 'secret', $max_secret );
+        $request->set_param( 'consumer_secret', $max_secret );
 
-        $response = $rest_api->save_secret_handler( $request );
+        $response = $rest_api->order_created_webhooks_handler( $request );
         $this->assertTrue( $response instanceof WP_REST_Response );
-        $this->assertEquals( $max_secret, get_option( 'gecx_api_secret' ) );
-    }
-
-    public function test_save_secret_handler_rejects_over_length_consumer_secret(): void {
-        $rest_api = new GECX_Rest_API();
-        $request  = new WP_REST_Request();
-        $request->set_param( 'consumer_secret', str_repeat( 'c', 513 ) );
-
-        $response = $rest_api->save_secret_handler( $request );
-        $this->assertTrue( $response instanceof WP_Error );
-        $this->assertEquals( 'invalid_secret', $response->get_error_code() );
-        $this->assertEquals( 400, $response->get_error_data()['status'] );
+        $webhook = $GLOBALS['gecx_test_webhooks'][ $response->get_data()['webhook_id'] ];
+        $this->assertEquals( $max_secret, $webhook['secret'] );
     }
 
     public function test_order_created_webhooks_handler_rejects_over_length_consumer_secret(): void {
@@ -347,15 +277,14 @@ class RestApiTest extends GECX_TestCase {
         $this->assertEquals( 400, $response->get_error_data()['status'] );
     }
 
-    public function test_save_secret_handler_registers_webhook_with_consumer_secret(): void {
-        delete_option( 'gecx_api_secret' );
+    public function test_order_created_webhooks_handler_registers_webhook_with_consumer_secret(): void {
         delete_option( 'gecx_webhook_id' );
 
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();
         $request->set_param( 'consumer_secret', 'cs_test_consumer_secret_12345' );
 
-        $response = $rest_api->save_secret_handler( $request );
+        $response = $rest_api->order_created_webhooks_handler( $request );
         $this->assertTrue( $response instanceof WP_REST_Response );
         $this->assertEquals( 200, $response->get_status() );
         $this->assertFalse( get_option( 'gecx_consumer_secret' ) );
@@ -370,28 +299,29 @@ class RestApiTest extends GECX_TestCase {
         $this->assertEquals( 'active', $webhook['status'] );
     }
 
-    public function test_save_secret_handler_prefers_consumer_secret_over_legacy_secret(): void {
-        delete_option( 'gecx_api_secret' );
+    public function test_order_created_webhooks_handler_ignores_legacy_shared_secret(): void {
         delete_option( 'gecx_webhook_id' );
+        // A store upgraded from a version that stored the shared secret must not
+        // have that value resurrected as the webhook's signing key.
+        update_option( 'gecx_api_secret', 'legacy_api_secret' );
 
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();
         $request->set_param( 'consumer_secret', 'cs_preferred_secret' );
-        $request->set_param( 'secret', 'legacy_api_secret' );
 
-        $response = $rest_api->save_secret_handler( $request );
+        $response = $rest_api->order_created_webhooks_handler( $request );
         $this->assertTrue( $response instanceof WP_REST_Response );
         $this->assertEquals( 200, $response->get_status() );
-        $this->assertFalse( get_option( 'gecx_consumer_secret' ) );
-        $this->assertEquals( 'legacy_api_secret', get_option( 'gecx_api_secret' ) );
 
         $webhook_id = get_option( 'gecx_webhook_id' );
         $this->assertNotNull( $webhook_id );
         $webhook = $GLOBALS['gecx_test_webhooks'][ $webhook_id ];
         $this->assertEquals( 'cs_preferred_secret', $webhook['secret'] );
+
+        delete_option( 'gecx_api_secret' );
     }
 
-    public function test_save_secret_handler_updates_existing_webhook_secret(): void {
+    public function test_order_created_webhooks_handler_updates_existing_webhook_secret(): void {
         $existing_webhook = new WC_Webhook();
         $existing_webhook->set_name( 'GECX Agent Order Created' );
         $existing_webhook->set_topic( 'order.created' );
@@ -405,7 +335,7 @@ class RestApiTest extends GECX_TestCase {
         $request  = new WP_REST_Request();
         $request->set_param( 'consumer_secret', 'new_consumer_secret_updated' );
 
-        $response = $rest_api->save_secret_handler( $request );
+        $response = $rest_api->order_created_webhooks_handler( $request );
         $this->assertTrue( $response instanceof WP_REST_Response );
         $this->assertEquals( 200, $response->get_status() );
         $this->assertEquals( $webhook_id, get_option( 'gecx_webhook_id' ) );
@@ -413,13 +343,15 @@ class RestApiTest extends GECX_TestCase {
         $this->assertEquals( 'new_consumer_secret_updated', $updated_webhook['secret'] );
     }
 
-    public function test_get_webhook_secret_helper_fallback(): void {
+    public function test_get_webhook_secret_helper_reads_webhook_only(): void {
         delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_webhook_id' );
         $this->assertEquals( '', GECX_Rest_API::get_webhook_secret() );
 
+        // The retired shared secret is never consulted, even when still present.
         update_option( 'gecx_api_secret', 'legacy_secret' );
-        $this->assertEquals( 'legacy_secret', GECX_Rest_API::get_webhook_secret() );
+        $this->assertEquals( '', GECX_Rest_API::get_webhook_secret() );
+        delete_option( 'gecx_api_secret' );
 
         $webhook = new WC_Webhook();
         $webhook->set_secret( 'webhook_consumer_secret' );
@@ -577,24 +509,6 @@ class RestApiTest extends GECX_TestCase {
         $this->assertCount( 1, $GLOBALS['gecx_test_webhooks'] );
     }
 
-    public function test_save_secret_handler_default_delivery_url(): void {
-        delete_option( 'gecx_api_secret' );
-        delete_option( 'gecx_webhook_id' );
-
-        $rest_api = new GECX_Rest_API();
-        $request  = new WP_REST_Request();
-        $request->set_param( 'consumer_secret', 'cs_default_url_test' );
-
-        $response = $rest_api->save_secret_handler( $request );
-        $this->assertTrue( $response instanceof WP_REST_Response );
-        $this->assertEquals( 200, $response->get_status() );
-
-        $webhook_id = get_option( 'gecx_webhook_id' );
-        $this->assertNotNull( $webhook_id );
-        $webhook = $GLOBALS['gecx_test_webhooks'][ $webhook_id ];
-        $this->assertEquals( 'https://gecx.cloud.google.com/woocommerce/webhook', $webhook['delivery_url'] );
-    }
-
     public function test_order_created_webhooks_handler_with_explicit_consumer_secret(): void {
         delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_webhook_id' );
@@ -652,12 +566,6 @@ class RestApiTest extends GECX_TestCase {
 
     public function test_enable_wc_auth_for_custom_endpoints_returns_true_for_custom_paths(): void {
         $rest_api = new GECX_Rest_API();
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/secret';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
-
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/secret/';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
-
         $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/webhooks/order-created';
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
@@ -668,12 +576,6 @@ class RestApiTest extends GECX_TestCase {
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
         $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/public-key/';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
-
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=%2Fgecx%2Fv1%2Fsecret';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
-
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=/gecx/v1/secret/';
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
         $_SERVER['REQUEST_URI'] = '/index.php?rest_route=%2Fgecx%2Fv1%2Fwebhooks%2Forder-created';
@@ -688,10 +590,10 @@ class RestApiTest extends GECX_TestCase {
         $_SERVER['REQUEST_URI'] = '/index.php?rest_route=/gecx/v1/public-key/';
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=///gecx/v1/secret';
+        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=///gecx/v1/public-key';
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=gecx/v1/secret';
+        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=gecx/v1/public-key';
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
 
@@ -705,14 +607,14 @@ class RestApiTest extends GECX_TestCase {
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
         // False positives: query parameter on unrelated endpoint.
-        $_SERVER['REQUEST_URI'] = '/wp-json/wp/v2/posts?x=gecx/v1/secret';
+        $_SERVER['REQUEST_URI'] = '/wp-json/wp/v2/posts?x=gecx/v1/public-key';
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
         // False positives: hypothetical subpath.
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/secret-rotate';
+        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/public-key-rotate';
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=%2Fgecx%2Fv1%2Fsecret-rotate';
+        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=%2Fgecx%2Fv1%2Fpublic-key-rotate';
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
 
@@ -731,10 +633,10 @@ class RestApiTest extends GECX_TestCase {
 
         $GLOBALS['wp']                          = new stdClass();
         $GLOBALS['wp']->query_vars              = [ 'rest_route' => '/wp/v2/users' ];
-        $_SERVER['REQUEST_URI']                 = '/wp-json/gecx/v1/secret';
+        $_SERVER['REQUEST_URI']                 = '/wp-json/gecx/v1/public-key';
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
-        $GLOBALS['wp']->query_vars['rest_route'] = '/gecx/v1/secret';
+        $GLOBALS['wp']->query_vars['rest_route'] = '/gecx/v1/public-key';
         $_SERVER['REQUEST_URI']                  = '/wp-json/wp/v2/users';
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
@@ -747,10 +649,10 @@ class RestApiTest extends GECX_TestCase {
     public function test_enable_wc_auth_refuses_rest_route_spoofing_an_authenticated_path(): void {
         $rest_api = new GECX_Rest_API();
 
-        $_SERVER['REQUEST_URI'] = '/gecx/v1/secret?rest_route=/wp/v2/users';
+        $_SERVER['REQUEST_URI'] = '/gecx/v1/public-key?rest_route=/wp/v2/users';
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/secret';
+        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/public-key';
         $_GET['rest_route']     = '/wp/v2/users';
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
@@ -766,11 +668,11 @@ class RestApiTest extends GECX_TestCase {
     public function test_enable_wc_auth_refuses_authenticated_route_name_outside_the_rest_prefix(): void {
         $rest_api = new GECX_Rest_API();
 
-        $_SERVER['REQUEST_URI'] = '/anything/gecx/v1/secret';
+        $_SERVER['REQUEST_URI'] = '/anything/gecx/v1/public-key';
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
         // A planted second prefix resolves to a route that is not on the list.
-        $_SERVER['REQUEST_URI'] = '/wp-json/x/wp-json/gecx/v1/secret';
+        $_SERVER['REQUEST_URI'] = '/wp-json/x/wp-json/gecx/v1/public-key';
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
 
@@ -782,15 +684,15 @@ class RestApiTest extends GECX_TestCase {
         $rest_api = new GECX_Rest_API();
 
         $_SERVER['SCRIPT_NAME'] = '/wp-admin/admin-ajax.php';
-        $_SERVER['REQUEST_URI'] = '/wp-admin/admin-ajax.php?rest_route=/gecx/v1/secret';
-        $_GET['rest_route']     = '/gecx/v1/secret';
+        $_SERVER['REQUEST_URI'] = '/wp-admin/admin-ajax.php?rest_route=/gecx/v1/public-key';
+        $_GET['rest_route']     = '/gecx/v1/public-key';
 
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
         // A route WordPress has already resolved is honoured whatever the
         // entry point, because that is what it is going to dispatch.
         $GLOBALS['wp']             = new stdClass();
-        $GLOBALS['wp']->query_vars = [ 'rest_route' => '/gecx/v1/secret' ];
+        $GLOBALS['wp']->query_vars = [ 'rest_route' => '/gecx/v1/public-key' ];
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
 
@@ -800,8 +702,8 @@ class RestApiTest extends GECX_TestCase {
     public function test_enable_wc_auth_refuses_array_valued_rest_route(): void {
         $rest_api = new GECX_Rest_API();
 
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route[]=/gecx/v1/secret';
-        $_GET['rest_route']     = [ '/gecx/v1/secret' ];
+        $_SERVER['REQUEST_URI'] = '/index.php?rest_route[]=/gecx/v1/public-key';
+        $_GET['rest_route']     = [ '/gecx/v1/public-key' ];
 
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
@@ -825,8 +727,6 @@ class RestApiTest extends GECX_TestCase {
 
     public function test_refresh_token_handler_success(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com', [ 'customer' ] );
-        $secret                            = 'test_shared_secret_123';
-        update_option( 'gecx_api_secret', $secret );
 
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();
@@ -844,8 +744,6 @@ class RestApiTest extends GECX_TestCase {
 
     public function test_refresh_token_handler_logged_out_returns_guest_jwt(): void {
         $GLOBALS['gecx_test_current_user'] = null;
-        $secret                            = 'test_shared_secret_123';
-        update_option( 'gecx_api_secret', $secret );
 
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();

@@ -267,7 +267,8 @@ class AdminTest extends GECX_TestCase {
 
     public function test_uninstall_cleans_up_options_and_webhooks(): void {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-123' );
-        update_option( 'gecx_api_secret', 'secret123' );
+        // Retired option: uninstall must still purge it on upgraded stores.
+        update_option( 'gecx_api_secret', 'legacy_secret123' );
         update_option( 'gecx_pending_oauth_states', [ 'state1' => time() + 300 ] );
 
         $webhook = new WC_Webhook();
@@ -316,7 +317,12 @@ class AdminTest extends GECX_TestCase {
         $GLOBALS['gecx_test_http_requests'] = [];
 
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-123' );
-        update_option( 'gecx_api_secret', 'secret123' );
+        // The uninstall notification is authenticated with the store's own
+        // keypair now, so the connected site needs one.
+        GECX_Auth::get_or_generate_keypair();
+        // A store upgraded from a version that stored the shared secret keeps
+        // the row until uninstall clears it. It must not sign anything.
+        update_option( 'gecx_api_secret', 'legacy_secret123' );
 
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
             define( 'WP_UNINSTALL_PLUGIN', true );
@@ -330,6 +336,11 @@ class AdminTest extends GECX_TestCase {
         $this->assertEquals( [ 1, 7, 9 ], $GLOBALS['gecx_test_switched_blogs'] );
         $this->assertEquals( [], $GLOBALS['gecx_test_blog_stack'] );
         $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
+
+        $headers = $GLOBALS['gecx_test_http_requests'][0]['args']['headers'];
+        $this->assertArrayHasKey( 'Authorization', $headers );
+        $this->assertArrayNotHasKey( 'X-WC-Webhook-Signature', $headers );
+
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertFalse( get_option( 'gecx_api_secret' ) );
         $this->assertFalse( get_option( 'gecx_public_key' ) );
@@ -354,7 +365,7 @@ class AdminTest extends GECX_TestCase {
         // before an agent is chosen, which is the only state that builds the
         // URL under test.
         delete_option( 'gecx_agent_name' );
-        update_option( 'gecx_api_secret', 'secret123' );
+        update_option( 'gecx_webhook_id', 4242 );
 
         $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
 
