@@ -61,10 +61,18 @@ jobs:
         # "application files are not permitted" because of the .dist
         # extension. git archive applies the export-ignore rules in
         # .gitattributes, which is what produces the release zip.
+        #
+        # The same export is packaged as a zip and uploaded below, so every
+        # pull request produces an installable build of itself.
+        id: export
         run: |
-          mkdir -p build
+          version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
+          mkdir -p build dist
           git archive --format=tar --prefix=gemini-enterprise-for-cx/ HEAD \
             | tar -x -C build
+          git archive --format=zip --prefix=gemini-enterprise-for-cx/ \
+            --output="dist/gemini-enterprise-for-cx-${version}.zip" HEAD
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
           find build -type f | sort
 
       - name: Run plugin check
@@ -73,6 +81,19 @@ jobs:
           build-dir: './build/gemini-enterprise-for-cx'
           # Warnings are surfaced in the job output; errors fail the build.
           ignore-warnings: true
+
+      - name: Upload the installable zip
+        # Downloadable from the run's Artifacts section, or with
+        # `gh run download <run-id> -n plugin-zip`. Uploaded even when the
+        # check fails, because that is when you most want to install it and
+        # look.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: plugin-zip
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
 
   version-consistency:
     name: Version declarations agree
