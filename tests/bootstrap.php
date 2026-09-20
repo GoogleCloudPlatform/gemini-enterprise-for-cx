@@ -41,6 +41,8 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_last_json_response']   = null;
     $GLOBALS['gecx_test_post_meta']            = [];
     $GLOBALS['gecx_test_is_product']           = false;
+    $GLOBALS['gecx_test_is_cart']              = false;
+    $GLOBALS['gecx_test_is_checkout']          = false;
     $GLOBALS['gecx_test_the_id']               = 101;
     $GLOBALS['gecx_test_queried_object_id']    = 101;
     $GLOBALS['gecx_test_wp_salt']              = 'secret_salt';
@@ -1104,6 +1106,20 @@ if ( ! function_exists( 'wp_remote_get' ) ) {
     }
 }
 
+/**
+ * Mirrors core: wp_safe_remote_post() sets reject_unsafe_urls and delegates.
+ *
+ * Kept faithful rather than aliased so a test can tell the two variants apart
+ * by inspecting the recorded args, which is the only observable difference
+ * without a real HTTP transport.
+ */
+if ( ! function_exists( 'wp_safe_remote_post' ) ) {
+    function wp_safe_remote_post( string $url, array $args = [] ) {
+        $args['reject_unsafe_urls'] = true;
+        return wp_remote_post( $url, $args );
+    }
+}
+
 if ( ! function_exists( 'wp_remote_retrieve_response_code' ) ) {
     function wp_remote_retrieve_response_code( $response ) {
         return is_array( $response ) ? ( $response['response']['code'] ?? '' ) : '';
@@ -1149,6 +1165,18 @@ if ( ! function_exists( 'register_rest_route' ) ) {
 if ( ! function_exists( 'is_product' ) ) {
     function is_product(): bool {
         return ! empty( $GLOBALS['gecx_test_is_product'] );
+    }
+}
+
+if ( ! function_exists( 'is_cart' ) ) {
+    function is_cart(): bool {
+        return ! empty( $GLOBALS['gecx_test_is_cart'] );
+    }
+}
+
+if ( ! function_exists( 'is_checkout' ) ) {
+    function is_checkout(): bool {
+        return ! empty( $GLOBALS['gecx_test_is_checkout'] );
     }
 }
 

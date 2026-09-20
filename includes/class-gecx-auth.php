@@ -714,8 +714,9 @@ class GECX_Auth {
         // "/index.php?rest_route=%2Fgecx%2Fv1%2Fpublic-key" would arrive here
         // as "/index.php?rest_route=gecxv1public-key" and no route would ever
         // match. The value is parsed for a route below and is never echoed or
-        // stored; the route that comes out of the parse is sanitized instead,
-        // the same way the $_GET tier above does it.
+        // stored, and neither is the route that comes out of the parse: every
+        // tier of this function returns the route WordPress itself would
+        // dispatch, unaltered.
         // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Parsed as a URL, never output. See above.
         $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : '';
 
@@ -727,7 +728,13 @@ class GECX_Auth {
         $query_params = [];
         parse_str( $query_str, $query_params );
         if ( isset( $query_params['rest_route'] ) && is_string( $query_params['rest_route'] ) ) {
-            return sanitize_text_field( $query_params['rest_route'] );
+            // Returned raw, for the same reason the $_GET tier above is.
+            // parse_str() has already percent-decoded this, so the octet
+            // stripping that broke the REQUEST_URI path has nothing left to
+            // strip in the ordinary case; a double-encoded value is the one
+            // that diverges, and it diverges in the direction of matching a
+            // route WordPress will not dispatch.
+            return $query_params['rest_route'];
         }
 
         return self::route_from_path( $request_uri );

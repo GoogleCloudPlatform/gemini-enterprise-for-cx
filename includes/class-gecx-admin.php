@@ -32,6 +32,16 @@ class GECX_Admin {
     private const CONSOLE_UNLINK_AGENT_PATH = '/woocommerce/unlink-agent';
 
     /**
+     * Characters permitted in an agent resource name or token broker name.
+     *
+     * Duplicated from GECX_Rest_API rather than shared. The two classes load
+     * independently and either can be the only one present, so a shared
+     * constant would introduce a load-order dependency for a one-line regex.
+     * Change both together.
+     */
+    private const RESOURCE_NAME_PATTERN = '/^[a-zA-Z0-9_\-\.\/]+$/';
+
+    /**
      * Minimum number of seconds between automatic agent state syncs.
      */
     private const SYNC_THROTTLE_SECONDS = 600;
@@ -1103,20 +1113,26 @@ class GECX_Admin {
         // required; it does not read Authorization. That header is also reserved
         // for Google account auth on this route, so sending a store-signed JWT
         // there would be rejected before reaching the handler.
-        $response = wp_remote_post(
+        // wp_safe_remote_post() rather than wp_remote_post(): the destination
+        // comes from an option and a filter, so it validates the resolved host
+        // against the private and loopback ranges. redirection 0 because the
+        // body carries a store-signed admin JWT and a 30x would hand it to
+        // whatever host the redirect names, unvalidated.
+        $response = wp_safe_remote_post(
             $console_base . self::CONSOLE_SYNC_STATE_PATH,
             [
-                'headers' => [
+                'headers'     => [
                     'Content-Type' => 'application/json',
                     'Accept'       => 'application/json',
                 ],
-                'body'    => wp_json_encode(
+                'body'        => wp_json_encode(
                     [
                         'admin_jwt'         => $admin_jwt,
                         'expected_agent_id' => $current_agent,
                     ]
                 ),
-                'timeout' => 3,
+                'timeout'     => 3,
+                'redirection' => 0,
             ]
         );
 
@@ -1182,6 +1198,22 @@ class GECX_Admin {
 
         $actual        = (string) ( $data['actualLinkedAgentId'] ?? $data['actual_linked_agent_id'] ?? '' );
         $actual_broker = (string) ( $data['tokenBrokerName'] ?? $data['token_broker_name'] ?? '' );
+
+        // Same allowlist GECX_Rest_API::link_agent_handler() applies to the
+        // values a caller supplies, applied here to the values the backend
+        // reports. Both end up in the same two options and in the widget's
+        // agent-name and token-broker attributes, so both have to mean the
+        // same thing. Validated raw and rejected, never sanitized into shape:
+        // stripping characters would turn a name this store should refuse into
+        // one it silently adopts.
+        if ( '' !== $actual && ! preg_match( self::RESOURCE_NAME_PATTERN, $actual ) ) {
+            $this->log_sync( 'response agent id is not a valid resource name, ignoring' );
+            return;
+        }
+        if ( '' !== $actual_broker && ! preg_match( self::RESOURCE_NAME_PATTERN, $actual_broker ) ) {
+            $this->log_sync( 'response token broker is not a valid resource name, ignoring' );
+            return;
+        }
 
         if ( 'WOOCOMMERCE_SYNC_STATUS_SYNCED' === $status ) {
             // Whatever the backend objected to before is resolved.
@@ -1309,14 +1341,15 @@ class GECX_Admin {
             return false;
         }
 
-        $response = wp_remote_post(
+        // Same reasoning as sync_agent_state() above.
+        $response = wp_safe_remote_post(
             $console_base . self::CONSOLE_UNLINK_AGENT_PATH,
             [
-                'headers' => [
+                'headers'     => [
                     'Content-Type' => 'application/json',
                     'Accept'       => 'application/json',
                 ],
-                'body'    => wp_json_encode(
+                'body'        => wp_json_encode(
                     [
                         'agent_id'  => $agent_id,
                         'admin_jwt' => $admin_jwt,
@@ -1324,7 +1357,8 @@ class GECX_Admin {
                 ),
                 // Allow enough headroom for VerifyAdminJwtWithSelfHealing to
                 // fetch /wp-json/gecx/v1/public-key if the store rotated keys.
-                'timeout' => 10,
+                'timeout'     => 10,
+                'redirection' => 0,
             ]
         );
 

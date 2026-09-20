@@ -372,6 +372,69 @@ class StorefrontTest extends GECX_TestCase {
         $this->assertTrue( in_array( 'gecx-widget-script', $GLOBALS['gecx_test_enqueued_scripts'], true ) );
     }
 
+    /**
+     * Localized config for a storefront page render.
+     *
+     * @return array<string, mixed>
+     */
+    private function localized_storefront_config(): array {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+
+        $storefront = new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront->enqueue_storefront_assets();
+
+        return (array) ( $GLOBALS['gecx_test_localized_scripts']['gecx-storefront-js']['gecxStorefrontConfig'] ?? [] );
+    }
+
+    public function test_storefront_config_carries_the_store_api_cart_url(): void {
+        $config = $this->localized_storefront_config();
+
+        // The script used to hardcode /wp-json/wc/store/v1/cart, which 404s on
+        // any store that is not at the domain root with the default prefix.
+        $this->assertEquals(
+            'https://example.com/wp-json/wc/store/v1/cart',
+            $config['cartRestUrl']
+        );
+    }
+
+    public function test_storefront_cart_url_follows_a_subdirectory_install(): void {
+        $GLOBALS['gecx_test_home_url'] = 'https://example.com/shop';
+
+        $config = $this->localized_storefront_config();
+
+        $this->assertEquals(
+            'https://example.com/shop/wp-json/wc/store/v1/cart',
+            $config['cartRestUrl']
+        );
+    }
+
+    public function test_storefront_cart_url_follows_a_renamed_rest_prefix(): void {
+        $GLOBALS['gecx_test_rest_url_prefix'] = 'api';
+
+        $config = $this->localized_storefront_config();
+
+        $this->assertEquals(
+            'https://example.com/api/wc/store/v1/cart',
+            $config['cartRestUrl']
+        );
+    }
+
+    public function test_storefront_config_reports_cart_and_checkout_pages(): void {
+        // A product page, including one whose slug merely starts with "cart",
+        // must not be reported: the script reloads the page when this is true,
+        // which would interrupt the conversation.
+        $this->assertFalse( $this->localized_storefront_config()['isCartOrCheckout'] );
+
+        $GLOBALS['gecx_test_is_cart'] = true;
+        $this->assertTrue( $this->localized_storefront_config()['isCartOrCheckout'] );
+
+        $GLOBALS['gecx_test_is_cart']     = false;
+        $GLOBALS['gecx_test_is_checkout'] = true;
+        $this->assertTrue( $this->localized_storefront_config()['isCartOrCheckout'] );
+    }
+
+
     public function test_storefront_assets_are_not_enqueued_off_a_page_render(): void {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );

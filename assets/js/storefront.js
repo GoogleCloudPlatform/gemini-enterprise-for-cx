@@ -16,6 +16,44 @@
 (function() {
 'use strict';
 
+/**
+ * The Store API cart endpoint for this store.
+ *
+ * Read from the localized config, which is built with rest_url() and so is
+ * correct on subdirectory installs, plain permalinks, and stores that have
+ * changed the REST url prefix. The literal is only a last resort for a page
+ * that somehow loaded this script without its config.
+ * @return {string}
+ */
+function gecxCartRestUrl() {
+  const config = window.gecxStorefrontConfig;
+  if (config && config.cartRestUrl) {
+    return config.cartRestUrl;
+  }
+  return '/wp-json/wc/store/v1/cart';
+}
+
+/**
+ * Whether the shopper is on the cart or checkout page, which are the only
+ * pages whose server-rendered markup goes stale when the agent edits the cart.
+ *
+ * WordPress answers this with is_cart()/is_checkout(), which respect the
+ * store's configured page IDs and therefore localized slugs such as /panier.
+ * The fallback requires a whole path segment so that a product URL like
+ * /product/cartridge-filter/ no longer triggers a reload mid-conversation.
+ * @return {boolean}
+ */
+function gecxIsCartOrCheckout() {
+  const config = window.gecxStorefrontConfig;
+  if (config && typeof config.isCartOrCheckout !== 'undefined') {
+    return !!config.isCartOrCheckout;
+  }
+  if (!window.location || !window.location.pathname) {
+    return false;
+  }
+  return /(^|\/)(cart|checkout)(\/|$)/.test(window.location.pathname);
+}
+
 function handleCartUpdate(e) {
   const cartId = (e.detail && (e.detail.cartId || e.detail.cart_id)) ?
       (e.detail.cartId || e.detail.cart_id) :
@@ -56,15 +94,13 @@ function handleCartUpdate(e) {
               if (cartStore && cartStore.receiveCart) {
                 cartStore.receiveCart(cart);
               }
-              if (window.location &&
-                  (window.location.pathname.indexOf('/cart') !== -1 ||
-                   window.location.pathname.indexOf('/checkout') !== -1)) {
+              if (gecxIsCartOrCheckout()) {
                 window.location.reload();
               }
             })
             .catch(function(err) {});
       } else {
-        fetch('/wp-json/wc/store/v1/cart', {
+        fetch(gecxCartRestUrl(), {
           method: 'GET',
           headers: Object.assign({'Content-Type': 'application/json'}, headers),
           credentials: 'include'
@@ -76,9 +112,7 @@ function handleCartUpdate(e) {
               if (cartStore && cartStore.receiveCart) {
                 cartStore.receiveCart(cart);
               }
-              if (window.location &&
-                  (window.location.pathname.indexOf('/cart') !== -1 ||
-                   window.location.pathname.indexOf('/checkout') !== -1)) {
+              if (gecxIsCartOrCheckout()) {
                 window.location.reload();
               }
             })

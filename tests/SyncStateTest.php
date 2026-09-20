@@ -153,6 +153,99 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertTrue( false !== get_option( 'gecx_sync_last_attempt' ) ); // Throttle is not released
     }
 
+    /**
+     * Resource names the backend must never talk this store into storing.
+     *
+     * @return array<string, array{0: string}>
+     */
+    public function provide_invalid_resource_names(): array {
+        return [
+            'markup'         => [ 'agents/<script>alert(1)</script>' ],
+            'percent octets' => [ 'agents/agent%2Fb' ],
+            'whitespace'     => [ "agents/agent_b\nX-Injected: 1" ],
+            'space'          => [ 'agents/agent b' ],
+        ];
+    }
+
+    /**
+     * @dataProvider provide_invalid_resource_names
+     */
+    public function test_link_required_refuses_an_invalid_agent_resource_name( string $agent ): void {
+        $this->seed_linked_store();
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => $agent,
+                        'tokenBrokerName'     => 'broker-2',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( 'agents/agent_a' );
+
+        // Refused outright rather than sanitized into shape. Stripping the
+        // offending characters would turn a name this store should reject into
+        // one it silently adopts, which is the bug class removed from the
+        // request-handling paths.
+        $this->assert_still_linked();
+    }
+
+    /**
+     * @dataProvider provide_invalid_resource_names
+     */
+    public function test_link_required_refuses_an_invalid_token_broker( string $broker ): void {
+        $this->seed_linked_store();
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => 'agents/agent_b',
+                        'tokenBrokerName'     => $broker,
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( 'agents/agent_a' );
+
+        $this->assert_still_linked();
+    }
+
+    public function test_sync_request_is_sent_safely_and_does_not_follow_redirects(): void {
+        $this->seed_linked_store();
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => 'agents/agent_a',
+                        'tokenBrokerName'     => 'broker-1',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( 'agents/agent_a' );
+
+        // The destination comes from an option and a filter, and the body
+        // carries a store-signed admin JWT, so the request must validate the
+        // host and must not hand the body to a redirect target.
+        $args = $GLOBALS['gecx_test_last_remote_post']['args'];
+        $this->assertTrue( $args['reject_unsafe_urls'] );
+        $this->assertSame( 0, $args['redirection'] );
+    }
+
+
     public function test_link_required_recovers_binding_when_nothing_is_stored_locally(): void {
         update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
         $this->queue(
