@@ -1,0 +1,74 @@
+name: Quality
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  phpcs:
+    name: WordPress coding standards
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '7.4'
+          coverage: none
+          tools: cs2pr
+
+      - name: Install dependencies
+        uses: ramsey/composer-install@a8d0d959dab41457692a5e2041bd9b757a119e3f # 3.2.1
+
+      - name: Run PHPCS
+        # Errors fail the build. Warnings are reported as annotations only,
+        # because the remaining ones are intentional (base64url for JWTs,
+        # WordPress hook signatures with unused parameters).
+        run: |
+          vendor/bin/phpcs --warning-severity=0 --report-full --report-checkstyle=./phpcs-report.xml
+        continue-on-error: false
+
+      - name: Annotate PHPCS results
+        if: always()
+        run: cs2pr ./phpcs-report.xml || true
+
+  plugin-check:
+    name: WordPress Plugin Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run plugin check
+        uses: WordPress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
+        with:
+          build-dir: './'
+          exclude-directories: 'tests,.github'
+          # Warnings are surfaced in the job output; errors fail the build.
+          ignore-warnings: true
+
+  version-consistency:
+    name: Version declarations agree
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '7.4'
+          coverage: none
+
+      - name: Compare plugin header, GECX_VERSION, stable tag and changelog
+        run: php .github/scripts/check-version.php
