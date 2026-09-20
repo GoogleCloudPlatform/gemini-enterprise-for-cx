@@ -1,0 +1,113 @@
+name: Quality
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  phpcs:
+    name: WordPress coding standards
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '7.4'
+          coverage: none
+          tools: cs2pr
+
+      - name: Install dependencies
+        uses: ramsey/composer-install@a8d0d959dab41457692a5e2041bd9b757a119e3f # 3.2.1
+
+      - name: Run PHPCS
+        # Errors fail the build. Warnings are reported as annotations only,
+        # because the remaining ones are intentional (base64url for JWTs,
+        # WordPress hook signatures with unused parameters).
+        run: |
+          vendor/bin/phpcs --warning-severity=0 --report-full --report-checkstyle=./phpcs-report.xml
+        continue-on-error: false
+
+      - name: Annotate PHPCS results
+        if: always()
+        run: cs2pr ./phpcs-report.xml || true
+
+  plugin-check:
+    name: WordPress Plugin Check
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # The action posts its report as a pull request comment.
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Export the plugin as it ships
+        # Plugin Check has to see the artifact a store installs, not the
+        # repository. Checking the repository root fails on files that never
+        # ship: .github and the dotfiles trip "hidden files are not
+        # permitted", and phpunit.xml.dist and phpcs.xml.dist trip
+        # "application files are not permitted" because of the .dist
+        # extension. git archive applies the export-ignore rules in
+        # .gitattributes, which is what produces the release zip.
+        #
+        # The same export is packaged as a zip and uploaded below, so every
+        # pull request produces an installable build of itself.
+        id: export
+        run: |
+          version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
+          mkdir -p build dist
+          git archive --format=tar --prefix=gemini-enterprise-for-cx/ HEAD \
+            | tar -x -C build
+          git archive --format=zip --prefix=gemini-enterprise-for-cx/ \
+            --output="dist/gemini-enterprise-for-cx-${version}.zip" HEAD
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          find build -type f | sort
+
+      - name: Run plugin check
+        uses: WordPress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
+        with:
+          build-dir: './build/gemini-enterprise-for-cx'
+          # Warnings are surfaced in the job output; errors fail the build.
+          ignore-warnings: true
+
+      - name: Upload the installable zip
+        # Downloadable from the run's Artifacts section, or with
+        # `gh run download <run-id> -n plugin-zip`. Uploaded even when the
+        # check fails, because that is when you most want to install it and
+        # look.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: plugin-zip
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  version-consistency:
+    name: Version declarations agree
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '7.4'
+          coverage: none
+
+      - name: Compare plugin header, GECX_VERSION, stable tag and changelog
+        run: php .github/scripts/check-version.php
