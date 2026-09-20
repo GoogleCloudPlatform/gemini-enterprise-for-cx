@@ -1,5 +1,12 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-09-20 - version 0.3.14
+* Resolve the Store API cart endpoint from `rest_url()` instead of assuming `/wp-json/`, so the storefront script reaches the cart on subdirectory installs, plain permalinks, and stores with a renamed REST prefix.
+* Decide whether to reload after an agent cart update with `is_cart()` and `is_checkout()` rather than matching `/cart` anywhere in the path, which reloaded product pages such as `/product/cartridge-filter/` and missed localized cart slugs.
+* Validate the agent resource name and token broker reported by SyncState against the same allowlist the link endpoint applies before storing either.
+* Resolve the REST route from the request URI without `sanitize_text_field()`, so a double-encoded separator can no longer be stripped into a route name the plugin would act on.
+* Send the SyncState and unlink requests with `wp_safe_remote_post()` and no redirect following, so the store-signed admin JWT in the body cannot be handed to a redirect target.
+
 2026-09-20 - version 0.3.13
 * Reference the chat widget script by its full URL in the readme, replacing a bare `www.gstatic.com` origin that returned a 404.
 * Localize the "Settings" plugin action link and the suggested-prompts placeholder.
