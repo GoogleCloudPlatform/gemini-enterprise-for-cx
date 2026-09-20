@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.12
+Stable tag: 0.3.13
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -77,11 +77,13 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 
 The complete release history is kept in changelog.txt at the plugin root.
 
-= 0.3.12 =
-* Resolve the logged-in user on `/wp-json/gecx/v1/auth-context` without calling `wp_set_current_user()`, passing the validated cookie user ID directly to `GECX_Auth::generate_customer_jwt()` and to `wp_create_nonce()` via the core `nonce_user_logged_out` filter.
+= 0.3.13 =
 * Reference the chat widget script by its full URL in the readme, replacing a bare `www.gstatic.com` origin that returned a 404.
 * Localize the "Settings" plugin action link and the suggested-prompts placeholder.
 * Resolve the REST route and the `Origin`, `Referer` and `Sec-Fetch-Site` headers without `sanitize_text_field()`, so the plugin matches the same bytes WordPress dispatches and compares the origin actually sent.
+
+= 0.3.12 =
+* Resolve the logged-in user on `/wp-json/gecx/v1/auth-context` without calling `wp_set_current_user()`, passing the validated cookie user ID directly to `GECX_Auth::generate_customer_jwt()` and to `wp_create_nonce()` via the core `nonce_user_logged_out` filter.
 
 = 0.3.11 =
 * Reconcile store state with the SyncState API on `admin_init` when the installed plugin version changes, so the backend records the new version on the first administrator page load after an upgrade without waiting out the sync throttle window.
@@ -98,7 +100,4 @@ The complete release history is kept in changelog.txt at the plugin root.
 * Remove the legacy `POST /wp-json/gecx/v1/secret` route and the `gecx_api_secret` filter. Order-created webhook registration and credential refresh now run solely through `POST /wp-json/gecx/v1/webhooks/order-created`, and webhook HMAC signatures are derived only from the webhook's own consumer secret.
 * Continue deleting `gecx_api_secret` on unlink and on uninstall so stores upgrading from earlier releases clear the stale option.
 
-= 0.3.8 =
-* Remove the `Cart-Token` from the sub-response `headers` that a `/wc/store/v1/batch` response repeats inside its JSON body. WordPress builds an envelope for each sub-response and puts its headers in the body as data, so the session credential WooCommerce issued for each cart sub-request was still leaving the store in the response payload, after 0.3.6 put it in the response header and 0.3.7 stopped mirroring it as `id`. Only `Cart-Token` is removed; every other sub-response header stays.
-
-Releases before 0.3.8 are listed in changelog.txt at the plugin root.
+Releases before 0.3.9 are listed in changelog.txt at the plugin root.
