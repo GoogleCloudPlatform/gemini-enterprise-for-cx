@@ -453,10 +453,17 @@ class GECX_Admin {
         );
 
         wp_localize_script( 'gecx-admin-js', 'gecx_admin_params', [
-            'save_nonce'     => wp_create_nonce( 'gecx_save_agent_nonce' ),
-            'dismiss_nonce'  => wp_create_nonce( 'gecx_dismiss_notice_nonce' ),
-            'statusActive'   => __( 'Connection Status: Active', 'gemini-enterprise-for-cx' ),
-            'statusInactive' => __( 'Connection Status: Inactive', 'gemini-enterprise-for-cx' ),
+            'save_nonce'           => wp_create_nonce( 'gecx_save_agent_nonce' ),
+            'dismiss_nonce'        => wp_create_nonce( 'gecx_dismiss_notice_nonce' ),
+            'statusActive'         => __( 'Connection Status: Active', 'gemini-enterprise-for-cx' ),
+            'statusInactive'       => __( 'Connection Status: Inactive', 'gemini-enterprise-for-cx' ),
+            'errorToggleWidget'    => __( 'Failed to update storefront chat widget status. Please try again.', 'gemini-enterprise-for-cx' ),
+            'errorTogglePrompts'   => __( 'Failed to update suggested prompts status. Please try again.', 'gemini-enterprise-for-cx' ),
+            'confirmDisconnect'    => __( 'Are you sure you want to disconnect this Gemini agent from your store?', 'gemini-enterprise-for-cx' ),
+            'disconnecting'        => __( 'Disconnecting...', 'gemini-enterprise-for-cx' ),
+            'disconnectLabel'      => __( 'Disconnect Agent', 'gemini-enterprise-for-cx' ),
+            'errorDisconnect'      => __( 'Failed to disconnect agent. Please try again.', 'gemini-enterprise-for-cx' ),
+            'errorDisconnectAjax'  => __( 'Error disconnecting agent.', 'gemini-enterprise-for-cx' ),
         ] );
     }
 
@@ -492,8 +499,8 @@ class GECX_Admin {
     public function add_settings_page(): void {
         $this->settings_page_hook = (string) add_submenu_page(
             'woocommerce-marketing',
-            'Gemini Enterprise for CX',
-            'Gemini Enterprise for CX',
+            __( 'Gemini Enterprise for CX', 'gemini-enterprise-for-cx' ),
+            __( 'Gemini Enterprise for CX', 'gemini-enterprise-for-cx' ),
             'manage_options',
             'gemini-enterprise-for-cx',
             [ $this, 'render_settings_page' ]

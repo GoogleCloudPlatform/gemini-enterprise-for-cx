@@ -45,7 +45,7 @@ $(function() {
         $('#gecx-status-indicator').css('background-color', revertedState ? '#46b450' : '#787c82');
         $('#gecx-status-text').text(revertedState ? gecx_admin_params.statusActive : gecx_admin_params.statusInactive);
       }
-      showNotice('error', 'Failed to update storefront chat widget status. Please try again.');
+      showNotice('error', gecx_admin_params.errorToggleWidget);
     }
 
     $.post(ajaxurl, {
@@ -70,7 +70,7 @@ $(function() {
 
     function revertPdpToggle() {
       $checkbox.prop('checked', !isChecked);
-      showNotice('error', 'Failed to update suggested prompts status. Please try again.');
+      showNotice('error', gecx_admin_params.errorTogglePrompts);
     }
 
     $.post(ajaxurl, {
@@ -157,12 +157,11 @@ $(function() {
   // Disconnect Agent Button
   $(document).on('click', '#gecx-unlink-agent-btn', function(e) {
     e.preventDefault();
-    if (!confirm(
-            'Are you sure you want to disconnect this Gemini agent from your store?')) {
+    if (!confirm(gecx_admin_params.confirmDisconnect)) {
       return;
     }
     const $btn = $(this);
-    $btn.prop('disabled', true).text('Disconnecting...');
+    $btn.prop('disabled', true).text(gecx_admin_params.disconnecting);
     $.post(ajaxurl, {action: 'gecx_unlink_agent', nonce: saveNonce})
         .done(function(res) {
           if (res && res.success) {
@@ -171,9 +170,9 @@ $(function() {
           } else {
             const errorMsg = (res && res.data && res.data.message) ?
                 res.data.message :
-                'Failed to disconnect agent. Please try again.';
+                gecx_admin_params.errorDisconnect;
             showNotice('error', errorMsg);
-            $btn.prop('disabled', false).text('Disconnect Agent');
+            $btn.prop('disabled', false).text(gecx_admin_params.disconnectLabel);
           }
         })
         .fail(function(jqXHR) {
@@ -181,9 +180,9 @@ $(function() {
                             jqXHR.responseJSON.data &&
                             jqXHR.responseJSON.data.message) ?
               jqXHR.responseJSON.data.message :
-              'Error disconnecting agent.';
+              gecx_admin_params.errorDisconnectAjax;
           showNotice('error', errorMsg);
-          $btn.prop('disabled', false).text('Disconnect Agent');
+          $btn.prop('disabled', false).text(gecx_admin_params.disconnectLabel);
         });
   });
 
