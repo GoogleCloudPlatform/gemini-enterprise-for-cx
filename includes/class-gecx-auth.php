@@ -12,6 +12,16 @@ if ( ! defined( 'ABSPATH' ) ) {
 class GECX_Auth {
 
     /**
+     * Number of polls while waiting for a concurrent keypair generation.
+     */
+    private const KEYPAIR_WAIT_ATTEMPTS = 20;
+
+    /**
+     * Pause between polls while waiting for a concurrent keypair generation.
+     */
+    private const KEYPAIR_WAIT_INTERVAL_MICROSECONDS = 100000;
+
+    /**
      * Capabilities that must never be reachable from a shopper credential.
      *
      * Filterable via 'gecx_cart_token_privileged_caps'. Widening the list is
@@ -1246,13 +1256,27 @@ class GECX_Auth {
      * @return array{public_key: string, private_key: string}|null
      */
     private static function wait_for_concurrent_keypair(): ?array {
-        for ( $i = 0; $i < 5; $i++ ) {
-            usleep( 100000 ); // 100ms
+        // Generating a 2048-bit RSA keypair can take well over half a second on
+        // constrained shared hosting. Giving up early mints no token at all,
+        // because 0.3.9 removed the shared-secret fallback, so the shopper's
+        // request fails outright. Two seconds of waiting on this cold path is
+        // cheaper than that.
+        for ( $i = 0; $i < self::KEYPAIR_WAIT_ATTEMPTS; $i++ ) {
+            usleep( self::KEYPAIR_WAIT_INTERVAL_MICROSECONDS );
             $stored = self::read_stored_keypair();
             if ( null !== $stored ) {
                 return $stored;
             }
         }
+
+        self::log(
+            sprintf(
+                'Timed out after %d ms waiting for a concurrent process to publish a keypair.',
+                (int) ( self::KEYPAIR_WAIT_ATTEMPTS * self::KEYPAIR_WAIT_INTERVAL_MICROSECONDS / 1000 )
+            ),
+            'warning'
+        );
+
         return null;
     }
 

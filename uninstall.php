@@ -38,6 +38,14 @@ if ( is_multisite() ) {
     ] );
 }
 
+// Notifying the backend costs up to 5 seconds per connected site, and a large
+// network can hold more connected stores than one PHP request can serve before
+// max_execution_time kills it, which would leave the remaining sites with their
+// options intact and the backend never told. Spend at most this long in total on
+// notifications; local cleanup always runs for every site.
+$gecx_notify_budget_seconds = 20.0;
+$gecx_notify_started_at     = microtime( true );
+
 foreach ( $gecx_site_ids as $gecx_site_id ) {
     if ( null !== $gecx_site_id ) {
         switch_to_blog( (int) $gecx_site_id );
@@ -215,11 +223,23 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             $gecx_webhook_url = esc_url_raw( rtrim( (string) $gecx_console_url, '/' ) . '/woocommerce/webhook' );
             $gecx_scheme      = (string) wp_parse_url( $gecx_webhook_url, PHP_URL_SCHEME );
 
-            if ( 'https' === $gecx_scheme && ( function_exists( 'wp_http_validate_url' ) ? wp_http_validate_url( $gecx_webhook_url ) : filter_var( $gecx_webhook_url, FILTER_VALIDATE_URL ) ) ) {
-                // Bounded at 5 seconds per connected site. Only sites that hold
-                // a credential reach this, so an uninstall costs time in
-                // proportion to the number of stores actually connected to the
-                // backend.
+            $gecx_budget_spent = ( microtime( true ) - $gecx_notify_started_at ) >= $gecx_notify_budget_seconds;
+
+            if ( $gecx_budget_spent ) {
+                if ( class_exists( 'GECX_Auth' ) ) {
+                    GECX_Auth::log( 'Uninstall notification skipped for ' . $gecx_store_url . ': the notification time budget is spent.', 'warning' );
+                }
+            } elseif ( 'https' === $gecx_scheme && ( function_exists( 'wp_http_validate_url' ) ? wp_http_validate_url( $gecx_webhook_url ) : filter_var( $gecx_webhook_url, FILTER_VALIDATE_URL ) ) ) {
+                if ( empty( $gecx_secret ) && class_exists( 'GECX_Auth' ) ) {
+                    // The backend requires the HMAC signature and rejects a
+                    // JWT-only uninstall, so record that this store's
+                    // installation entry will survive.
+                    GECX_Auth::log( 'Uninstall notification for ' . $gecx_store_url . ' carries no webhook secret, so the backend will not accept it.', 'warning' );
+                }
+
+                // Bounded at 5 seconds per connected site, and at
+                // $gecx_notify_budget_seconds across the whole network. Only
+                // sites that hold a credential reach this.
                 wp_remote_post( $gecx_webhook_url, [
                     'timeout'     => 5,
                     'headers'     => $gecx_headers,
