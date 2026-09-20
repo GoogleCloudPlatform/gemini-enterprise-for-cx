@@ -445,7 +445,14 @@ class GECX_Admin {
             return;
         }
 
-        $admin_js_ver = defined( 'GECX_VERSION' ) ? GECX_VERSION : '0.3.12';
+        // No literal fallback, matching GECX_Storefront::enqueue_storefront_assets().
+        // gecx-agent.php defines GECX_VERSION before this class is loaded, so an
+        // undefined constant means something is very wrong. null rather than ''
+        // because WordPress substitutes its own core version for an empty
+        // string, and a stale literal here would be one more version
+        // declaration to keep in step with the four that check-version.php
+        // already enforces.
+        $admin_js_ver = defined( 'GECX_VERSION' ) ? GECX_VERSION : null;
 
         wp_register_style( 'gecx-admin-css', false, [], $admin_js_ver );
         wp_enqueue_style( 'gecx-admin-css' );
@@ -479,16 +486,37 @@ class GECX_Admin {
 
     /**
      * Redirect user to onboarding settings page immediately upon plugin activation.
+     *
+     * The flag is consumed only by a request that can act on it. admin_init
+     * fires for admin-ajax.php too, so Heartbeat - which a logged-in admin
+     * screen starts within seconds of activation - used to reach this first,
+     * delete the flag and return, leaving the admin on the plugins list with
+     * onboarding never shown. Intermittent by nature, since it depends on
+     * which request arrives first.
      */
     public function redirect_on_activation(): void {
-        if ( get_option( 'gecx_do_activation_redirect', false ) ) {
-            delete_option( 'gecx_do_activation_redirect' );
-            // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-            if ( ! isset( $_GET['activate-multi'] ) && ! wp_doing_ajax() ) {
-                wp_safe_redirect( admin_url( 'admin.php?page=gemini-enterprise-for-cx' ) );
-                exit;
-            }
+        if ( ! get_option( 'gecx_do_activation_redirect', false ) ) {
+            return;
         }
+
+        // Leave the flag set: this request cannot redirect, but the page load
+        // that follows it can.
+        if ( wp_doing_ajax() ) {
+            return;
+        }
+
+        // Bulk activation does consume the flag. Redirecting away from a
+        // multi-plugin activation is hostile, and leaving the flag set would
+        // fire the redirect on whatever admin page the user opened next.
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        if ( isset( $_GET['activate-multi'] ) ) {
+            delete_option( 'gecx_do_activation_redirect' );
+            return;
+        }
+
+        delete_option( 'gecx_do_activation_redirect' );
+        wp_safe_redirect( admin_url( 'admin.php?page=gemini-enterprise-for-cx' ) );
+        exit;
     }
 
     /**
@@ -1133,6 +1161,9 @@ class GECX_Admin {
                 ),
                 'timeout'     => 3,
                 'redirection' => 0,
+                // The handler reads a handful of short string fields, so
+                // anything larger than this is not a response worth buffering.
+                'limit_response_size' => 10240,
             ]
         );
 
@@ -1359,6 +1390,9 @@ class GECX_Admin {
                 // fetch /wp-json/gecx/v1/public-key if the store rotated keys.
                 'timeout'     => 10,
                 'redirection' => 0,
+                // Same reasoning as sync_agent_state(): the response is a
+                // short status document, so cap what will be buffered.
+                'limit_response_size' => 10240,
             ]
         );
 

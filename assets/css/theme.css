@@ -356,7 +356,4 @@ chat-messenger[color-scheme=dark] {
   --chat-messenger-color--on-error-container: #f9dedc;
   --chat-messenger-color--link: #a8c7fa;
 }
-.grecaptcha-badge {
-  visibility: hidden;
-}
 /*# sourceMappingURL=chat-messenger-default.css.map */

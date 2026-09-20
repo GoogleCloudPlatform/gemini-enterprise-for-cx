@@ -252,11 +252,21 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                 // Bounded at $gecx_notify_timeout_seconds for this site, and at
                 // $gecx_notify_budget_seconds across the whole network. Only
                 // sites that hold a credential reach this.
-                wp_remote_post( $gecx_webhook_url, [
-                    'timeout'     => $gecx_notify_timeout_seconds,
-                    'headers'     => $gecx_headers,
-                    'body'        => $gecx_payload,
-                    'data_format' => 'body',
+                //
+                // wp_safe_remote_post() rather than wp_remote_post(), matching
+                // the two GECX_Admin call sites: the destination comes from an
+                // option, so the resolved host is validated against the private
+                // and loopback ranges. redirection 0 because the request
+                // carries the webhook HMAC signature and, on stores that have
+                // one, a store-signed JWT; a 30x would hand both to whatever
+                // host the redirect names.
+                wp_safe_remote_post( $gecx_webhook_url, [
+                    'timeout'             => $gecx_notify_timeout_seconds,
+                    'headers'             => $gecx_headers,
+                    'body'                => $gecx_payload,
+                    'data_format'         => 'body',
+                    'redirection'         => 0,
+                    'limit_response_size' => 10240,
                 ] );
             }
         }

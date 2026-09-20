@@ -337,9 +337,12 @@ class AdminTest extends GECX_TestCase {
         $this->assertEquals( [], $GLOBALS['gecx_test_blog_stack'] );
         $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
 
-        $headers = $GLOBALS['gecx_test_http_requests'][0]['args']['headers'];
+        $args    = $GLOBALS['gecx_test_http_requests'][0]['args'];
+        $headers = $args['headers'];
         $this->assertArrayHasKey( 'Authorization', $headers );
         $this->assertArrayNotHasKey( 'X-WC-Webhook-Signature', $headers );
+        $this->assertSame( 0, $args['redirection'] );
+        $this->assertSame( 10240, $args['limit_response_size'] );
 
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertFalse( get_option( 'gecx_api_secret' ) );
@@ -410,6 +413,61 @@ class AdminTest extends GECX_TestCase {
         $this->assertStringContainsString( 'id="gecx-authorize-btn"', $html );
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
         $this->assertFalse( get_option( 'gecx_private_key' ) );
+    }
+
+    /**
+     * An AJAX request must leave the activation flag for the page load.
+     *
+     * admin_init fires on admin-ajax.php too, and a logged-in admin screen
+     * starts Heartbeat within seconds of activation. When this consumed the
+     * flag unconditionally, whichever request arrived first won, and if that
+     * was Heartbeat the admin never saw onboarding.
+     */
+    public function test_activation_redirect_flag_survives_an_ajax_request(): void {
+        update_option( 'gecx_do_activation_redirect', true );
+        $GLOBALS['gecx_test_doing_ajax']   = true;
+        $GLOBALS['gecx_test_last_redirect'] = null;
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->redirect_on_activation();
+
+        $this->assertTrue( (bool) get_option( 'gecx_do_activation_redirect' ) );
+        $this->assertNull( $GLOBALS['gecx_test_last_redirect'] );
+
+        $GLOBALS['gecx_test_doing_ajax'] = false;
+    }
+
+    /**
+     * Bulk activation consumes the flag without redirecting.
+     *
+     * Leaving it set would fire the redirect on whatever admin page the user
+     * opened next, which is worse than not redirecting at all.
+     */
+    public function test_activation_redirect_flag_is_cleared_by_bulk_activation(): void {
+        update_option( 'gecx_do_activation_redirect', true );
+        $_GET['activate-multi']             = '1';
+        $GLOBALS['gecx_test_last_redirect'] = null;
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->redirect_on_activation();
+
+        $this->assertFalse( get_option( 'gecx_do_activation_redirect' ) );
+        $this->assertNull( $GLOBALS['gecx_test_last_redirect'] );
+
+        unset( $_GET['activate-multi'] );
+    }
+
+    /**
+     * Nothing happens when the flag was never set.
+     */
+    public function test_activation_redirect_is_inert_without_the_flag(): void {
+        delete_option( 'gecx_do_activation_redirect' );
+        $GLOBALS['gecx_test_last_redirect'] = null;
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->redirect_on_activation();
+
+        $this->assertNull( $GLOBALS['gecx_test_last_redirect'] );
     }
 }
 
