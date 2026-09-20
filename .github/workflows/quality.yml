@@ -44,15 +44,33 @@ jobs:
     name: WordPress Plugin Check
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+      # The action posts its report as a pull request comment.
+      pull-requests: write
+
     steps:
       - name: Checkout code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      - name: Export the plugin as it ships
+        # Plugin Check has to see the artifact a store installs, not the
+        # repository. Checking the repository root fails on files that never
+        # ship: .github and the dotfiles trip "hidden files are not
+        # permitted", and phpunit.xml.dist and phpcs.xml.dist trip
+        # "application files are not permitted" because of the .dist
+        # extension. git archive applies the export-ignore rules in
+        # .gitattributes, which is what produces the release zip.
+        run: |
+          mkdir -p build
+          git archive --format=tar --prefix=gemini-enterprise-for-cx/ HEAD \
+            | tar -x -C build
+          find build -type f | sort
+
       - name: Run plugin check
         uses: WordPress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
         with:
-          build-dir: './'
-          exclude-directories: 'tests,.github'
+          build-dir: './build/gemini-enterprise-for-cx'
           # Warnings are surfaced in the job output; errors fail the build.
           ignore-warnings: true
 
