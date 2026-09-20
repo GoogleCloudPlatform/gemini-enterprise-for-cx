@@ -691,7 +691,15 @@ class GECX_Auth {
         }
         // phpcs:enable WordPress.Security.NonceVerification
 
-        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+        // Deliberately not sanitize_text_field(). That strips every
+        // %[a-f0-9]{2} sequence, so the plain-permalink form
+        // "/index.php?rest_route=%2Fgecx%2Fv1%2Fpublic-key" would arrive here
+        // as "/index.php?rest_route=gecxv1public-key" and no route would ever
+        // match. The value is parsed for a route below and is never echoed or
+        // stored; the route that comes out of the parse is sanitized instead,
+        // the same way the $_GET tier above does it.
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Parsed as a URL, never output. See above.
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : '';
 
         // Duplicates the $_GET tier above and is unreachable under any SAPI
         // that populates $_GET, which is all of them. Kept because the tests
@@ -700,8 +708,8 @@ class GECX_Auth {
         $query_str    = (string) wp_parse_url( $request_uri, PHP_URL_QUERY );
         $query_params = [];
         parse_str( $query_str, $query_params );
-        if ( isset( $query_params['rest_route'] ) ) {
-            return $query_params['rest_route'];
+        if ( isset( $query_params['rest_route'] ) && is_string( $query_params['rest_route'] ) ) {
+            return sanitize_text_field( $query_params['rest_route'] );
         }
 
         return self::route_from_path( $request_uri );
