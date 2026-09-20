@@ -676,6 +676,22 @@ class RestApiTest extends GECX_TestCase {
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
 
+    /**
+     * A double-encoded separator must not collapse into a real route.
+     *
+     * parse_str() decodes once, leaving the literal "%2F".
+     * sanitize_text_field() used to strip that octet, turning
+     * "%2Fgecx/v1/public-key" into "gecx/v1/public-key" and enabling
+     * WooCommerce key authentication for a route WordPress would never
+     * dispatch. The route is matched raw now, so the two agree again.
+     */
+    public function test_enable_wc_auth_ignores_a_double_encoded_route_separator(): void {
+        $rest_api = new GECX_Rest_API();
+
+        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=%252Fgecx/v1/public-key';
+        $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
+    }
+
     public function test_enable_wc_auth_for_custom_endpoints_empty_uri(): void {
         $rest_api = new GECX_Rest_API();
         unset( $_SERVER['REQUEST_URI'] );

@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.13
+Stable tag: 0.3.14
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -77,6 +77,13 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 
 The complete release history is kept in changelog.txt at the plugin root.
 
+= 0.3.14 =
+* Resolve the Store API cart endpoint from `rest_url()` instead of assuming `/wp-json/`, so the storefront script reaches the cart on subdirectory installs, plain permalinks, and stores with a renamed REST prefix.
+* Decide whether to reload after an agent cart update with `is_cart()` and `is_checkout()` rather than matching `/cart` anywhere in the path, which reloaded product pages such as `/product/cartridge-filter/` and missed localized cart slugs.
+* Validate the agent resource name and token broker reported by SyncState against the same allowlist the link endpoint applies before storing either.
+* Resolve the REST route from the request URI without `sanitize_text_field()`, so a double-encoded separator can no longer be stripped into a route name the plugin would act on.
+* Send the SyncState and unlink requests with `wp_safe_remote_post()` and no redirect following, so the store-signed admin JWT in the body cannot be handed to a redirect target.
+
 = 0.3.13 =
 * Reference the chat widget script by its full URL in the readme, replacing a bare `www.gstatic.com` origin that returned a 404.
 * Localize the "Settings" plugin action link and the suggested-prompts placeholder.
@@ -95,9 +102,4 @@ The complete release history is kept in changelog.txt at the plugin root.
 * Serve fresh per-shopper auth context (`nonce` and `customer_jwt`) from `/wp-json/gecx/v1/auth-context` (`POST` and `GET`) with `no-store` cache headers, `Access-Control-Allow-Origin` suppression, and strict same-origin enforcement across `Sec-Fetch-Site`, `Origin`, and `Referer`.
 * Emit `rest-url` on `<gecx-woocommerce-chat-widget>` from `rest_url()` so the widget resolves WordPress REST routes on subdirectory installs, plain permalinks, and custom REST prefixes.
 
-= 0.3.9 =
-* Sign customer and admin JWTs exclusively with the store's RSA private key (RS256). A store that cannot produce a usable keypair now mints no token and logs an error instead of falling back to the retired `gecx_api_secret` shared secret.
-* Remove the legacy `POST /wp-json/gecx/v1/secret` route and the `gecx_api_secret` filter. Order-created webhook registration and credential refresh now run solely through `POST /wp-json/gecx/v1/webhooks/order-created`, and webhook HMAC signatures are derived only from the webhook's own consumer secret.
-* Continue deleting `gecx_api_secret` on unlink and on uninstall so stores upgrading from earlier releases clear the stale option.
-
-Releases before 0.3.9 are listed in changelog.txt at the plugin root.
+Releases before 0.3.10 are listed in changelog.txt at the plugin root.

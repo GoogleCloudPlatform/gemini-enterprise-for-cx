@@ -76,8 +76,14 @@ class GECX_Storefront {
             return;
         }
 
-        $urls    = $this->resolve_widget_urls();
-        $version = defined( 'GECX_VERSION' ) ? GECX_VERSION : '0.3.12';
+        $urls = $this->resolve_widget_urls();
+        // No literal fallback. gecx-agent.php defines GECX_VERSION before this
+        // class is loaded, so an undefined constant means something is very
+        // wrong. null rather than '' because WordPress substitutes its own
+        // core version for an empty string, and a stale literal here would be
+        // one more version declaration to keep in step with the four that
+        // check-version.php already enforces.
+        $version = defined( 'GECX_VERSION' ) ? GECX_VERSION : null;
 
         wp_enqueue_style( 'gecx-widget-style', $urls['style'], [], $version );
         wp_add_inline_style(
@@ -132,6 +138,17 @@ class GECX_Storefront {
             'placement'       => $placement,
             'buttonHtml'      => $this->get_agent_button_html(),
             'isWidgetEnabled' => $enabled,
+            // Resolved here rather than assembled in the browser. rest_url()
+            // accounts for subdirectory installs, a custom rest_url_prefix and
+            // the plain-permalink ?rest_route= form, none of which the script
+            // can infer from window.location.
+            'cartRestUrl'     => esc_url_raw( rest_url( 'wc/store/v1/cart' ) ),
+            // WooCommerce resolves these from the store's configured page IDs,
+            // so a store using localized slugs such as /panier still answers
+            // correctly, and a product whose slug merely starts with "cart"
+            // no longer does.
+            'isCartOrCheckout' => ( function_exists( 'is_cart' ) && is_cart() )
+                || ( function_exists( 'is_checkout' ) && is_checkout() ),
         ];
 
         if ( is_product() && $this->is_pdp_prompts_auto_inject_enabled() ) {
