@@ -488,7 +488,7 @@ class GECX_Admin {
      * @return array Modified links array.
      */
     public function add_plugin_action_links( array $links ): array {
-        $settings_link = '<a href="' . esc_url( admin_url( 'admin.php?page=gemini-enterprise-for-cx' ) ) . '">Settings</a>';
+        $settings_link = '<a href="' . esc_url( admin_url( 'admin.php?page=gemini-enterprise-for-cx' ) ) . '">' . esc_html__( 'Settings', 'gemini-enterprise-for-cx' ) . '</a>';
         array_unshift( $links, $settings_link );
         return $links;
     }
@@ -1431,7 +1431,8 @@ class GECX_Admin {
         woocommerce_wp_textarea_input( [
             'id'          => '_gecx_suggested_prompts_override',
             'label'       => __( 'GECX Prompts Override', 'gemini-enterprise-for-cx' ),
-            'placeholder' => "What is the return policy?\nIs this machine washable?\nCompare with similar items",
+            /* translators: Example prompts shown as placeholder text. One prompt per line; keep the newline separators. */
+            'placeholder' => __( "What is the return policy?\nIs this machine washable?\nCompare with similar items", 'gemini-enterprise-for-cx' ),
             'desc_tip'    => true,
             'description' => __( 'Enter one prompt per line to override AI-generated prompts for this product.', 'gemini-enterprise-for-cx' ),
         ] );

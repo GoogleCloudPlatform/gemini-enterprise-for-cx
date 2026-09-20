@@ -693,9 +693,18 @@ class GECX_Auth {
 
         foreach ( $sources as $source ) {
             if ( isset( $source['rest_route'] ) ) {
-                $route = wp_unslash( $source['rest_route'] );
-
-                return is_string( $route ) ? sanitize_text_field( $route ) : $route;
+                // Returned raw. Both consumers, is_store_api_route() and
+                // is_request_to_route(), match it against anchored allowlists
+                // and nothing echoes or stores it. sanitize_text_field() only
+                // removes characters, so running it here would leave the plugin
+                // matching against a different string from the one WordPress
+                // dispatches. That divergence is the bug already removed from
+                // the REQUEST_URI tier below.
+                //
+                // Non-string values (rest_route[]=x yields an array) are passed
+                // through untouched; both consumers reject anything that is not
+                // a string.
+                return wp_unslash( $source['rest_route'] );
             }
         }
         // phpcs:enable WordPress.Security.NonceVerification
