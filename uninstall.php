@@ -38,6 +38,22 @@ if ( is_multisite() ) {
     ] );
 }
 
+// Notifying the backend costs up to $gecx_notify_timeout_seconds per connected
+// site, and a large network can hold more connected stores than one PHP request
+// can serve before max_execution_time kills it, which would leave the remaining
+// sites with their options intact and the backend never told. Spend at most
+// $gecx_notify_budget_seconds in total on notifications; local cleanup always
+// runs for every site.
+//
+// The budget is a ceiling on elapsed time, not on time already spent. A request
+// dispatched at 19.9s would run to its own timeout and carry the total past the
+// number stated here, so a site is only contacted while a whole timeout still
+// fits inside the budget. That makes the worst case the budget itself rather
+// than the budget plus one timeout.
+$gecx_notify_timeout_seconds = 5.0;
+$gecx_notify_budget_seconds  = 20.0;
+$gecx_notify_started_at      = microtime( true );
+
 foreach ( $gecx_site_ids as $gecx_site_id ) {
     if ( null !== $gecx_site_id ) {
         switch_to_blog( (int) $gecx_site_id );
@@ -51,7 +67,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         // 1. Retrieve secret from webhook if available, then delete the webhook.
         $gecx_webhook_id   = get_option( 'gecx_webhook_id' );
         $gecx_secret       = '';
-        $gecx_wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+        $gecx_wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
 
         if ( $gecx_wc_available ) {
             if ( ! empty( $gecx_webhook_id ) ) {
@@ -167,8 +183,9 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         // The HMAC signature is derived from the WooCommerce webhook secret,
         // which is symmetric and readable from the backend's own storage, so on
         // its own it lets anyone who reads that storage forge an uninstall and
-        // delete a merchant's installation. The store-signed RS256 JWT is what
-        // the backend authenticates on now.
+        // delete a merchant's installation. The store-signed RS256 JWT closes
+        // that, and is what the backend is moving to; today's deployed handler
+        // still requires the signature and ignores the Authorization header.
         //
         // Both are sent. Dropping the signature would break every backend that
         // has not picked up the JWT path yet, and dropping the JWT would leave
@@ -215,13 +232,28 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             $gecx_webhook_url = esc_url_raw( rtrim( (string) $gecx_console_url, '/' ) . '/woocommerce/webhook' );
             $gecx_scheme      = (string) wp_parse_url( $gecx_webhook_url, PHP_URL_SCHEME );
 
-            if ( 'https' === $gecx_scheme && ( function_exists( 'wp_http_validate_url' ) ? wp_http_validate_url( $gecx_webhook_url ) : filter_var( $gecx_webhook_url, FILTER_VALIDATE_URL ) ) ) {
-                // Bounded at 5 seconds per connected site. Only sites that hold
-                // a credential reach this, so an uninstall costs time in
-                // proportion to the number of stores actually connected to the
-                // backend.
+            $gecx_notify_elapsed = microtime( true ) - $gecx_notify_started_at;
+            $gecx_budget_spent   = ( $gecx_notify_elapsed + $gecx_notify_timeout_seconds ) > $gecx_notify_budget_seconds;
+
+            if ( $gecx_budget_spent ) {
+                if ( class_exists( 'GECX_Auth' ) ) {
+                    GECX_Auth::log( 'Uninstall notification skipped for ' . $gecx_store_url . ': too little of the notification time budget remains to complete a request.', 'warning' );
+                }
+            } elseif ( 'https' === $gecx_scheme && ( function_exists( 'wp_http_validate_url' ) ? wp_http_validate_url( $gecx_webhook_url ) : filter_var( $gecx_webhook_url, FILTER_VALIDATE_URL ) ) ) {
+                if ( empty( $gecx_secret ) && class_exists( 'GECX_Auth' ) ) {
+                    // Sent JWT-only. Whether the backend accepts it depends on
+                    // the backend's deployed version, so this is recorded
+                    // rather than skipped: suppressing the request here would
+                    // permanently opt this store out of the JWT-only path on
+                    // every backend that does support it.
+                    GECX_Auth::log( 'Uninstall notification for ' . $gecx_store_url . ' carries no webhook secret and is signed only with the store JWT; older backends will reject it and the installation entry will survive.', 'warning' );
+                }
+
+                // Bounded at $gecx_notify_timeout_seconds for this site, and at
+                // $gecx_notify_budget_seconds across the whole network. Only
+                // sites that hold a credential reach this.
                 wp_remote_post( $gecx_webhook_url, [
-                    'timeout'     => 5,
+                    'timeout'     => $gecx_notify_timeout_seconds,
                     'headers'     => $gecx_headers,
                     'body'        => $gecx_payload,
                     'data_format' => 'body',

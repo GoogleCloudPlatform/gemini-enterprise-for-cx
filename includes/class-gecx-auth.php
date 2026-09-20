@@ -12,6 +12,25 @@ if ( ! defined( 'ABSPATH' ) ) {
 class GECX_Auth {
 
     /**
+     * Number of polls while waiting for a concurrent keypair generation.
+     */
+    private const KEYPAIR_WAIT_ATTEMPTS = 20;
+
+    /**
+     * Pause between polls while waiting for a concurrent keypair generation.
+     */
+    private const KEYPAIR_WAIT_INTERVAL_MICROSECONDS = 100000;
+
+    /**
+     * How long gecx_keypair_lock is honoured before it is treated as abandoned.
+     *
+     * Shared by the reclaim in acquire_keypair_lock() and the give-up check in
+     * wait_for_concurrent_keypair(), so a waiter can never outlive the lock it
+     * is waiting on.
+     */
+    private const KEYPAIR_LOCK_TTL_SECONDS = 30;
+
+    /**
      * Capabilities that must never be reachable from a shopper credential.
      *
      * Filterable via 'gecx_cart_token_privileged_caps'. Widening the list is
@@ -126,12 +145,12 @@ class GECX_Auth {
      *
      * Test seam only. This is security state: clearing it mid-request would
      * re-enable privileged endpoints for a cart-token request, so the body is
-     * inert unless the test harness has defined GECX_TESTING.
+     * inert unless the test harness has defined GECX_PHPUNIT_RUNNING.
      *
      * @internal
      */
     public static function reset_cart_token_state(): void {
-        if ( ! defined( 'GECX_TESTING' ) || ! GECX_TESTING ) {
+        if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
             return;
         }
 
@@ -681,7 +700,15 @@ class GECX_Auth {
         }
         // phpcs:enable WordPress.Security.NonceVerification
 
-        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+        // Deliberately not sanitize_text_field(). That strips every
+        // %[a-f0-9]{2} sequence, so the plain-permalink form
+        // "/index.php?rest_route=%2Fgecx%2Fv1%2Fpublic-key" would arrive here
+        // as "/index.php?rest_route=gecxv1public-key" and no route would ever
+        // match. The value is parsed for a route below and is never echoed or
+        // stored; the route that comes out of the parse is sanitized instead,
+        // the same way the $_GET tier above does it.
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Parsed as a URL, never output. See above.
+        $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : '';
 
         // Duplicates the $_GET tier above and is unreachable under any SAPI
         // that populates $_GET, which is all of them. Kept because the tests
@@ -690,8 +717,8 @@ class GECX_Auth {
         $query_str    = (string) wp_parse_url( $request_uri, PHP_URL_QUERY );
         $query_params = [];
         parse_str( $query_str, $query_params );
-        if ( isset( $query_params['rest_route'] ) ) {
-            return $query_params['rest_route'];
+        if ( isset( $query_params['rest_route'] ) && is_string( $query_params['rest_route'] ) ) {
+            return sanitize_text_field( $query_params['rest_route'] );
         }
 
         return self::route_from_path( $request_uri );
@@ -1226,13 +1253,13 @@ class GECX_Auth {
     }
 
     /**
-     * Acquire the gecx_keypair_lock mutex, reclaiming stale locks older than 30 seconds.
+     * Acquire the gecx_keypair_lock mutex, reclaiming locks older than the TTL.
      */
     private static function acquire_keypair_lock(): bool {
         $lock_acquired = function_exists( 'add_option' ) ? add_option( 'gecx_keypair_lock', time(), '', 'no' ) : true;
         if ( ! $lock_acquired && function_exists( 'get_option' ) ) {
             $lock_time = (int) get_option( 'gecx_keypair_lock', 0 );
-            if ( $lock_time > 0 && ( time() - $lock_time ) > 30 ) {
+            if ( $lock_time > 0 && ( time() - $lock_time ) > self::KEYPAIR_LOCK_TTL_SECONDS ) {
                 delete_option( 'gecx_keypair_lock' );
                 $lock_acquired = add_option( 'gecx_keypair_lock', time(), '', 'no' );
             }
@@ -1241,18 +1268,84 @@ class GECX_Auth {
     }
 
     /**
+     * Whether someone is still plausibly working under gecx_keypair_lock.
+     *
+     * False once the lock has been released, or once it is old enough that
+     * acquire_keypair_lock() would reclaim it, which means the holder died
+     * without releasing.
+     */
+    private static function keypair_lock_holder_is_live(): bool {
+        if ( ! function_exists( 'get_option' ) ) {
+            // No way to inspect the lock, so fall back to waiting it out.
+            return true;
+        }
+
+        $lock_time = (int) get_option( 'gecx_keypair_lock', 0 );
+        if ( $lock_time <= 0 ) {
+            return false;
+        }
+
+        return ( time() - $lock_time ) <= self::KEYPAIR_LOCK_TTL_SECONDS;
+    }
+
+    /**
      * Wait briefly for another process holding gecx_keypair_lock to finish publishing a keypair.
      *
      * @return array{public_key: string, private_key: string}|null
      */
     private static function wait_for_concurrent_keypair(): ?array {
-        for ( $i = 0; $i < 5; $i++ ) {
-            usleep( 100000 ); // 100ms
+        // Generating a 2048-bit RSA keypair can take well over half a second on
+        // constrained shared hosting. Giving up early mints no token at all,
+        // because 0.3.9 removed the shared-secret fallback, so the shopper's
+        // request fails outright. Two seconds of waiting on this cold path is
+        // cheaper than that.
+        //
+        // Two seconds is the ceiling, not the cost. Both callers are reachable
+        // from shopper traffic and usleep() pins the worker for the duration,
+        // so the loop stops the moment waiting cannot pay off: either the
+        // holder released the lock without publishing a keypair, or the lock
+        // aged past its TTL because the holder died. In both cases nobody is
+        // coming and the remaining sleeps are pure latency.
+        for ( $i = 0; $i < self::KEYPAIR_WAIT_ATTEMPTS; $i++ ) {
+            usleep( self::KEYPAIR_WAIT_INTERVAL_MICROSECONDS );
+
             $stored = self::read_stored_keypair();
             if ( null !== $stored ) {
                 return $stored;
             }
+
+            if ( self::keypair_lock_holder_is_live() ) {
+                continue;
+            }
+
+            // The holder publishes the keypair and only then releases the lock,
+            // so it can have done both in the gap between the read above and
+            // this check. Read once more before concluding there is nothing to
+            // wait for.
+            $stored = self::read_stored_keypair();
+            if ( null !== $stored ) {
+                return $stored;
+            }
+
+            self::log(
+                sprintf(
+                    'Gave up after %d ms waiting for a concurrent process to publish a keypair: the lock was released or expired without one appearing.',
+                    (int) ( ( $i + 1 ) * self::KEYPAIR_WAIT_INTERVAL_MICROSECONDS / 1000 )
+                ),
+                'warning'
+            );
+
+            return null;
         }
+
+        self::log(
+            sprintf(
+                'Timed out after %d ms waiting for a concurrent process to publish a keypair.',
+                (int) ( self::KEYPAIR_WAIT_ATTEMPTS * self::KEYPAIR_WAIT_INTERVAL_MICROSECONDS / 1000 )
+            ),
+            'warning'
+        );
+
         return null;
     }
 

@@ -83,6 +83,25 @@ class RestApiTest extends GECX_TestCase {
     }
 
     /**
+     * Regression guard for the same class of bug as
+     * test_order_created_webhooks_handler_rejects_percent_encoded_consumer_secret:
+     * sanitize_text_field() ahead of RESOURCE_NAME_PATTERN would delete the
+     * "%2f" and leave "projects/123/agentsagent-456", a name that matches the
+     * pattern and would be written to gecx_agent_name.
+     */
+    public function test_link_handler_rejects_percent_encoded_agent_name(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_param( 'agent_name', 'projects/123/agents%2fagent-456' );
+
+        $response = $rest_api->link_agent_handler( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $response );
+        $this->assertSame( 'gecx_invalid_agent_name', $response->get_error_code() );
+        $this->assertFalse( get_option( 'gecx_agent_name' ) );
+    }
+
+    /**
      * Without this the backend's Basic Auth call would not be recognised as a
      * WooCommerce API request and the endpoint would reject it.
      */
@@ -253,6 +272,28 @@ class RestApiTest extends GECX_TestCase {
         $this->assertEquals( 400, $response->get_error_data()['status'] );
     }
 
+    /**
+     * Regression guard. The consumer_secret becomes the HMAC key WooCommerce
+     * signs every order delivery with, so it has to be validated exactly as
+     * sent. Running sanitize_text_field() first strips the "%ab" and leaves
+     * "cs_12345678", which passes is_valid_secret() and gets stored, turning a
+     * 400 at registration into a signature mismatch on every later delivery.
+     *
+     * This only fails if the sanitize call comes back, and only because the
+     * bootstrap stub reproduces core's percent-octet loop. See
+     * SanitizeStubTest.
+     */
+    public function test_order_created_webhooks_handler_rejects_percent_encoded_consumer_secret(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_param( 'consumer_secret', 'cs_1234%ab5678' );
+
+        $response = $rest_api->order_created_webhooks_handler( $request );
+        $this->assertTrue( $response instanceof WP_Error );
+        $this->assertEquals( 'invalid_secret', $response->get_error_code() );
+        $this->assertEquals( 400, $response->get_error_data()['status'] );
+    }
+
     public function test_order_created_webhooks_handler_accepts_consumer_secret_at_the_length_bound(): void {
         delete_option( 'gecx_webhook_id' );
         $rest_api   = new GECX_Rest_API();
@@ -392,6 +433,23 @@ class RestApiTest extends GECX_TestCase {
         $res = GECX_Rest_API::ensure_order_webhook( 'javascript:alert(1)', 'cs_test_secret' );
         $this->assertTrue( $res instanceof WP_Error );
         $this->assertEquals( 'invalid_delivery_url', $res->get_error_code() );
+        $this->assertEquals( 400, $res->get_error_data()['status'] );
+    }
+
+    /**
+     * Regression guard. sanitize_text_field() ahead of is_valid_session_id()
+     * would strip the "%2f" and leave "sessabcdef", which passes the
+     * allowlist and would be written into the WooCommerce customer session as
+     * if the caller had sent it.
+     */
+    public function test_save_session_handler_rejects_percent_encoded_session_id(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_param( 'session_id', 'sess%2fabcdef' );
+
+        $res = $rest_api->save_session_handler( $request );
+        $this->assertTrue( $res instanceof WP_Error );
+        $this->assertEquals( 'invalid_session_id', $res->get_error_code() );
         $this->assertEquals( 400, $res->get_error_data()['status'] );
     }
 

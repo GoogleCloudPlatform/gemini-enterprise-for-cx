@@ -349,7 +349,11 @@ class GECX_Rest_API {
      * Handle the POST request to save the session ID in the WooCommerce customer session.
      */
     public function save_session_handler( \WP_REST_Request $request ) {
-        $session_id = sanitize_text_field( (string) $request->get_param( 'session_id' ) );
+        // Validated raw against is_valid_session_id(), which is a strict
+        // allowlist. Sanitizing first can only remove the characters that
+        // allowlist rejects, so it converts a 400 into a silently mangled
+        // accept: "sess<script>alert(1)</script>" would be stored as "sess".
+        $session_id = trim( (string) $request->get_param( 'session_id' ) );
         if ( empty( $session_id ) ) {
             return new \WP_Error( 'missing_session_id', __( 'Session ID is required.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
@@ -737,14 +741,19 @@ class GECX_Rest_API {
      * Apply an agent link reported by Google Cloud.
      */
     public function link_agent_handler( \WP_REST_Request $request ) {
-        $agent_name = (string) $request->get_param( 'agent_name' );
-        $agent_name = sanitize_text_field( $agent_name );
+        // Both values are validated raw against RESOURCE_NAME_PATTERN, a strict
+        // allowlist. sanitize_text_field() would run first and can only delete
+        // characters the allowlist rejects, so it turns a malformed name into a
+        // plausible one: "projects/123/agents/<script>alert(1)</script>" comes
+        // out of it as "projects/123/agents/", which matches the pattern and
+        // would be written to gecx_agent_name.
+        $agent_name = trim( (string) $request->get_param( 'agent_name' ) );
 
         if ( '' === $agent_name || ! preg_match( self::RESOURCE_NAME_PATTERN, $agent_name ) ) {
             return new \WP_Error( 'gecx_invalid_agent_name', __( 'Missing or malformed agent_name.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 
-        $token_broker = sanitize_text_field( (string) $request->get_param( 'token_broker_name' ) );
+        $token_broker = trim( (string) $request->get_param( 'token_broker_name' ) );
         if ( '' !== $token_broker && ! preg_match( self::RESOURCE_NAME_PATTERN, $token_broker ) ) {
             return new \WP_Error( 'gecx_invalid_token_broker', __( 'Malformed token_broker_name.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
@@ -841,7 +850,7 @@ class GECX_Rest_API {
      * @return \WC_Webhook|\WP_Error Webhook instance or WP_Error on failure.
      */
     public static function ensure_order_webhook( string $delivery_url = '', string $secret = '' ) {
-        if ( ! class_exists( 'WC_Webhook' ) || ( defined( 'GECX_TESTING' ) && ! empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) ) ) {
+        if ( ! class_exists( 'WC_Webhook' ) || ( defined( 'GECX_PHPUNIT_RUNNING' ) && ! empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) ) ) {
             return new \WP_Error( 'woocommerce_not_active', __( 'WooCommerce WC_Webhook class not available.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
         }
 
@@ -1100,7 +1109,7 @@ class GECX_Rest_API {
      * @param string $status Target WooCommerce webhook status ('active', 'paused', or 'disabled').
      */
     public static function set_order_webhook_status( string $status ): void {
-        $wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+        $wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
         if ( ! $wc_available ) {
             return;
         }
@@ -1168,7 +1177,7 @@ class GECX_Rest_API {
      */
     public static function delete_order_webhook(): void {
         $stored_id    = (int) get_option( 'gecx_webhook_id', 0 );
-        $wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+        $wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
 
         if ( $wc_available ) {
             if ( $stored_id > 0 ) {
@@ -1254,7 +1263,7 @@ class GECX_Rest_API {
         $agent_name = (string) get_option( 'gecx_agent_name', '' );
         if ( '' === $agent_name ) {
             $has_stored_webhook = ! empty( get_option( 'gecx_webhook_id' ) );
-            $wc_available       = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+            $wc_available       = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
             if ( $has_stored_webhook || $wc_available ) {
                 self::delete_order_webhook();
             }

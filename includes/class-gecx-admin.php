@@ -384,7 +384,7 @@ class GECX_Admin {
         if ( ! $transient_valid && ! $option_valid ) {
             set_transient( 'gecx_admin_notice_error', __( 'Security validation failed: invalid or expired session state. Please try linking again.', 'gemini-enterprise-for-cx' ), 60 );
             wp_safe_redirect( admin_url( 'admin.php?page=gemini-enterprise-for-cx' ) );
-            if ( ! defined( 'GECX_TESTING' ) || ! GECX_TESTING ) {
+            if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
                 exit;
             }
             return;
@@ -415,7 +415,7 @@ class GECX_Admin {
         // read, because this request cannot be authenticated -- the state that
         // got us here travelled off-site inside return_url.
         wp_safe_redirect( admin_url( 'admin.php?page=gemini-enterprise-for-cx&connected=1' ) );
-        if ( ! defined( 'GECX_TESTING' ) || ! GECX_TESTING ) {
+        if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
             exit;
         }
         return;

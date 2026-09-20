@@ -36,3 +36,29 @@ and the newest `changelog.txt` entry all name the same release.
 
 `readme.txt` is the only supported place to declare `Tested up to`. Do not add it
 back to the plugin headers.
+
+If you change the URL of a remote asset or service the plugin contacts — the
+chat widget SDK on `gstatic.com`, or the console on `gecx.cloud.google.com` —
+update the "3rd Party Services" and FAQ disclosures in `readme.txt` in the same
+pull request. The WordPress.org directory requires every remote request to be
+disclosed, and an out-of-date disclosure is grounds for removal.
+
+## Releases
+
+Releases are built by `.github/workflows/release.yml` from a `v*` tag. The
+archive is produced with `git archive`, so the `export-ignore` rules in
+`.gitattributes` decide what ships; never hand-zip the working tree. The
+workflow refuses to publish if the tag and the plugin version disagree, if the
+four version declarations disagree, or if development files reach the archive.
+
+Publishing to WordPress.org is a manual step, on purpose — it is the one action
+that is not reversible:
+
+1. Tag the release (`git tag v0.3.12 && git push origin v0.3.12`) and let the
+   workflow build and attach the zip.
+2. Download that zip. It is the exact artifact to publish; do not rebuild it.
+3. Copy its contents into the `trunk/` directory of the plugin's SVN checkout,
+   `svn cp trunk tags/<version>`, and `svn ci`.
+4. Confirm `Stable tag` in `trunk/readme.txt` names the tag you just created.
+   WordPress.org serves whichever release the stable tag names, regardless of
+   what else is in SVN.

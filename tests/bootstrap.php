@@ -15,8 +15,8 @@ if ( ! defined( 'WP_DEBUG' ) ) {
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
     define( 'HOUR_IN_SECONDS', 3600 );
 }
-if ( ! defined( 'GECX_TESTING' ) ) {
-    define( 'GECX_TESTING', true );
+if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) ) {
+    define( 'GECX_PHPUNIT_RUNNING', true );
 }
 if ( ! defined( 'GECX_VERSION' ) ) {
     define( 'GECX_VERSION', '1.0.0' );
@@ -1287,15 +1287,92 @@ if ( ! function_exists( 'trailingslashit' ) ) {
     }
 }
 
+if ( ! function_exists( '_gecx_test_sanitize_text_fields' ) ) {
+    /**
+     * Port of WordPress core's _sanitize_text_fields() (wp-includes/formatting.php).
+     *
+     * This is deliberately faithful rather than convenient. The previous stub
+     * was trim( strip_tags() ), which silently omitted the percent-octet
+     * stripping loop and the whitespace collapsing. Any test that asserted a
+     * value survives sanitization, or that a malformed value is still rejected
+     * after it, passed here and would have been wrong in production.
+     *
+     * Behaviour reproduced, in core's order:
+     *   1. Invalid UTF-8 yields an empty string.
+     *   2. If the input contains "<", stray less-than signs are escaped, then
+     *      script/style blocks and all tags are removed.
+     *   3. Newlines and tabs collapse into single spaces unless they are kept.
+     *   4. Every /%[a-f0-9]{2}/i sequence is removed, repeatedly, and the
+     *      whitespace that removal leaves behind is collapsed again.
+     *
+     * @param string $str           Value to sanitize.
+     * @param bool   $keep_newlines Whether to preserve newlines.
+     * @return string The sanitized value.
+     */
+    function _gecx_test_sanitize_text_fields( string $str, bool $keep_newlines = false ): string {
+        if ( '' === $str ) {
+            return '';
+        }
+
+        // wp_check_invalid_utf8(): core returns an empty string for input the
+        // PCRE UTF-8 matcher rejects.
+        if ( 1 !== preg_match( '/^./us', $str ) ) {
+            return '';
+        }
+
+        $filtered = $str;
+
+        if ( false !== strpos( $filtered, '<' ) ) {
+            // wp_pre_kses_less_than(): escape a "<" that does not open a tag.
+            $filtered = preg_replace_callback(
+                '%<[^>]*?((?=<)|>|$)%',
+                static function ( array $matches ): string {
+                    if ( false === strpos( $matches[0], '>' ) ) {
+                        return htmlspecialchars( $matches[0], ENT_QUOTES, 'UTF-8' );
+                    }
+                    return $matches[0];
+                },
+                $filtered
+            );
+
+            // wp_strip_all_tags(): drop script and style bodies, then all tags.
+            $filtered = preg_replace( '@<(script|style)[^>]*?>.*?</\\1>@si', '', $filtered );
+            $filtered = trim( strip_tags( $filtered ) );
+
+            $filtered = str_replace( "<\n", "&lt;\n", $filtered );
+        }
+
+        if ( ! $keep_newlines ) {
+            $filtered = preg_replace( '/[\r\n\t ]+/', ' ', $filtered );
+        }
+        $filtered = trim( $filtered );
+
+        // Remove percent-encoded characters. This is the step the old stub
+        // omitted, and the reason "cs_1234%ab5678" looks well-formed to an
+        // allowlist that runs after sanitization.
+        $found = false;
+        while ( preg_match( '/%[a-f0-9]{2}/i', $filtered, $match ) ) {
+            $filtered = str_replace( $match[0], '', $filtered );
+            $found    = true;
+        }
+
+        if ( $found ) {
+            $filtered = trim( preg_replace( '/ +/', ' ', $filtered ) );
+        }
+
+        return $filtered;
+    }
+}
+
 if ( ! function_exists( 'sanitize_text_field' ) ) {
     function sanitize_text_field( string $str ): string {
-        return trim( strip_tags( $str ) );
+        return _gecx_test_sanitize_text_fields( $str, false );
     }
 }
 
 if ( ! function_exists( 'sanitize_textarea_field' ) ) {
     function sanitize_textarea_field( string $str ): string {
-        return trim( strip_tags( $str ) );
+        return _gecx_test_sanitize_text_fields( $str, true );
     }
 }
 
