@@ -22,6 +22,15 @@ class GECX_Auth {
     private const KEYPAIR_WAIT_INTERVAL_MICROSECONDS = 100000;
 
     /**
+     * How long gecx_keypair_lock is honoured before it is treated as abandoned.
+     *
+     * Shared by the reclaim in acquire_keypair_lock() and the give-up check in
+     * wait_for_concurrent_keypair(), so a waiter can never outlive the lock it
+     * is waiting on.
+     */
+    private const KEYPAIR_LOCK_TTL_SECONDS = 30;
+
+    /**
      * Capabilities that must never be reachable from a shopper credential.
      *
      * Filterable via 'gecx_cart_token_privileged_caps'. Widening the list is
@@ -1244,18 +1253,39 @@ class GECX_Auth {
     }
 
     /**
-     * Acquire the gecx_keypair_lock mutex, reclaiming stale locks older than 30 seconds.
+     * Acquire the gecx_keypair_lock mutex, reclaiming locks older than the TTL.
      */
     private static function acquire_keypair_lock(): bool {
         $lock_acquired = function_exists( 'add_option' ) ? add_option( 'gecx_keypair_lock', time(), '', 'no' ) : true;
         if ( ! $lock_acquired && function_exists( 'get_option' ) ) {
             $lock_time = (int) get_option( 'gecx_keypair_lock', 0 );
-            if ( $lock_time > 0 && ( time() - $lock_time ) > 30 ) {
+            if ( $lock_time > 0 && ( time() - $lock_time ) > self::KEYPAIR_LOCK_TTL_SECONDS ) {
                 delete_option( 'gecx_keypair_lock' );
                 $lock_acquired = add_option( 'gecx_keypair_lock', time(), '', 'no' );
             }
         }
         return (bool) $lock_acquired;
+    }
+
+    /**
+     * Whether someone is still plausibly working under gecx_keypair_lock.
+     *
+     * False once the lock has been released, or once it is old enough that
+     * acquire_keypair_lock() would reclaim it, which means the holder died
+     * without releasing.
+     */
+    private static function keypair_lock_holder_is_live(): bool {
+        if ( ! function_exists( 'get_option' ) ) {
+            // No way to inspect the lock, so fall back to waiting it out.
+            return true;
+        }
+
+        $lock_time = (int) get_option( 'gecx_keypair_lock', 0 );
+        if ( $lock_time <= 0 ) {
+            return false;
+        }
+
+        return ( time() - $lock_time ) <= self::KEYPAIR_LOCK_TTL_SECONDS;
     }
 
     /**
@@ -1269,12 +1299,43 @@ class GECX_Auth {
         // because 0.3.9 removed the shared-secret fallback, so the shopper's
         // request fails outright. Two seconds of waiting on this cold path is
         // cheaper than that.
+        //
+        // Two seconds is the ceiling, not the cost. Both callers are reachable
+        // from shopper traffic and usleep() pins the worker for the duration,
+        // so the loop stops the moment waiting cannot pay off: either the
+        // holder released the lock without publishing a keypair, or the lock
+        // aged past its TTL because the holder died. In both cases nobody is
+        // coming and the remaining sleeps are pure latency.
         for ( $i = 0; $i < self::KEYPAIR_WAIT_ATTEMPTS; $i++ ) {
             usleep( self::KEYPAIR_WAIT_INTERVAL_MICROSECONDS );
+
             $stored = self::read_stored_keypair();
             if ( null !== $stored ) {
                 return $stored;
             }
+
+            if ( self::keypair_lock_holder_is_live() ) {
+                continue;
+            }
+
+            // The holder publishes the keypair and only then releases the lock,
+            // so it can have done both in the gap between the read above and
+            // this check. Read once more before concluding there is nothing to
+            // wait for.
+            $stored = self::read_stored_keypair();
+            if ( null !== $stored ) {
+                return $stored;
+            }
+
+            self::log(
+                sprintf(
+                    'Gave up after %d ms waiting for a concurrent process to publish a keypair: the lock was released or expired without one appearing.',
+                    (int) ( ( $i + 1 ) * self::KEYPAIR_WAIT_INTERVAL_MICROSECONDS / 1000 )
+                ),
+                'warning'
+            );
+
+            return null;
         }
 
         self::log(

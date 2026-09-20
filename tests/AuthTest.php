@@ -1270,6 +1270,109 @@ class AuthTest extends GECX_TestCase {
             $this->assertSame( 'rest_forbidden', $dispatch_result->get_error_code() );
         }
     }
+
+    /**
+     * @dataProvider keypair_lock_liveness_cases
+     *
+     * @param int|null $lock_age_seconds How long ago the lock was taken, null for no lock,
+     *                                   or a negative value for a corrupt zero timestamp.
+     */
+    public function test_keypair_lock_holder_is_live( ?int $lock_age_seconds, bool $expected, string $why ): void {
+        if ( null === $lock_age_seconds ) {
+            delete_option( 'gecx_keypair_lock' );
+        } elseif ( $lock_age_seconds < 0 ) {
+            update_option( 'gecx_keypair_lock', 0 );
+        } else {
+            // Resolved here rather than in the provider: providers run before
+            // the suite does, so a timestamp built there would have aged by the
+            // time this assertion runs and a case one second inside the TTL
+            // would drift outside it.
+            update_option( 'gecx_keypair_lock', time() - $lock_age_seconds );
+        }
+
+        $method = new ReflectionMethod( GECX_Auth::class, 'keypair_lock_holder_is_live' );
+        $method->setAccessible( true );
+
+        $this->assertSame( $expected, $method->invoke( null ), $why );
+    }
+
+    public function keypair_lock_liveness_cases(): array {
+        return [
+            'no lock at all' => [
+                null,
+                false,
+                'Nothing holds the lock, so there is nobody to wait for.',
+            ],
+            'lock taken just now' => [
+                0,
+                true,
+                'A fresh holder is still plausibly generating a keypair.',
+            ],
+            'lock taken one second inside the TTL' => [
+                29,
+                true,
+                'Still inside the window acquire_keypair_lock() honours.',
+            ],
+            'lock older than the TTL' => [
+                31,
+                false,
+                'Past the TTL the holder is treated as dead, and acquire_keypair_lock() would reclaim it.',
+            ],
+            'lock with a corrupt timestamp' => [
+                -1,
+                false,
+                'A zero timestamp cannot be aged, so it must not hold waiters for the full two seconds.',
+            ],
+        ];
+    }
+
+    /**
+     * The wait is a ceiling, not a cost. Both callers are reachable from
+     * shopper traffic and the loop is a blocking usleep(), so a waiter must not
+     * sit through the whole thing once the lock says nobody is coming.
+     */
+    public function test_wait_for_concurrent_keypair_gives_up_when_no_holder_is_coming(): void {
+        delete_option( 'gecx_public_key' );
+        delete_option( 'gecx_private_key' );
+
+        // A lock row that exists, so acquire_keypair_lock() cannot take it, but
+        // whose timestamp is unusable, so no holder can be inferred from it.
+        update_option( 'gecx_keypair_lock', 0 );
+
+        $method = new ReflectionMethod( GECX_Auth::class, 'wait_for_concurrent_keypair' );
+        $method->setAccessible( true );
+
+        $started = microtime( true );
+        $result  = $method->invoke( null );
+        $elapsed = microtime( true ) - $started;
+
+        $this->assertNull( $result, 'No keypair was published, so the wait has nothing to return.' );
+        $this->assertLessThan(
+            1.0,
+            $elapsed,
+            sprintf( 'Expected the wait to abandon after roughly one poll, but it took %.3fs of the 2s ceiling.', $elapsed )
+        );
+    }
+
+    /**
+     * The converse: a live holder still gets waited on, and the keypair it
+     * publishes is picked up rather than regenerated.
+     */
+    public function test_wait_for_concurrent_keypair_returns_a_keypair_published_under_a_live_lock(): void {
+        update_option( 'gecx_keypair_lock', time() );
+
+        $generate = new ReflectionMethod( GECX_Auth::class, 'generate_and_store_keypair' );
+        $generate->setAccessible( true );
+        $published = $generate->invoke( null );
+        $this->assertNotNull( $published, 'Test setup failed: could not generate a keypair to publish.' );
+
+        $method = new ReflectionMethod( GECX_Auth::class, 'wait_for_concurrent_keypair' );
+        $method->setAccessible( true );
+        $result = $method->invoke( null );
+
+        $this->assertNotNull( $result );
+        $this->assertSame( $published['public_key'], $result['public_key'] );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {
