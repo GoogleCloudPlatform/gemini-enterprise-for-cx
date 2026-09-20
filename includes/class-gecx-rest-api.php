@@ -953,7 +953,15 @@ class GECX_Rest_API {
      * Handle the POST request to register or update WooCommerce order.created webhook.
      */
     public function order_created_webhooks_handler( \WP_REST_Request $request ) {
-        $consumer_secret = trim( sanitize_text_field( (string) $request->get_param( 'consumer_secret' ) ) );
+        // Deliberately not sanitized. is_valid_secret() below is a strict
+        // allowlist, and this value becomes the HMAC key WooCommerce signs
+        // order deliveries with, so it has to be validated byte for byte.
+        // sanitize_text_field() strips percent-octets and tags, which would
+        // turn a malformed secret into a well-formed one: "cs_1234%ab5678"
+        // would be rejected today but would silently become "cs_12345678"
+        // and be stored as the signing key, producing signature mismatches
+        // on every delivery instead of a 400 at registration time.
+        $consumer_secret = trim( (string) $request->get_param( 'consumer_secret' ) );
         if ( ! empty( $consumer_secret ) && ! self::is_valid_secret( $consumer_secret ) ) {
             return new \WP_Error( 'invalid_secret', __( 'Consumer secret is invalid.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
