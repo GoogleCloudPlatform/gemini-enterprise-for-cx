@@ -46,8 +46,8 @@ This plugin connects to 3rd-party services provided by Google to function:
 
 = Minimum Requirements =
 
-* WordPress 5.0 or greater
-* WooCommerce 5.0 or greater
+* WordPress 6.2 or greater
+* WooCommerce 7.1 or greater
 * PHP version 7.4 or greater
 
 = Automatic installation =
@@ -98,101 +98,4 @@ The complete release history is kept in changelog.txt at the plugin root.
 = 0.3.8 =
 * Remove the `Cart-Token` from the sub-response `headers` that a `/wc/store/v1/batch` response repeats inside its JSON body. WordPress builds an envelope for each sub-response and puts its headers in the body as data, so the session credential WooCommerce issued for each cart sub-request was still leaving the store in the response payload, after 0.3.6 put it in the response header and 0.3.7 stopped mirroring it as `id`. Only `Cart-Token` is removed; every other sub-response header stays.
 
-= 0.3.7 =
-* Stop mirroring the Store API cart token into the cart response body as `id`. The token is a bearer credential, and both cart and batch responses now return it in the CORS-exposed `Cart-Token` response header, which is the supported way to read it. Mirroring it into the body exposed it to any script on the page through `wp.data`, and to session-replay and error tools that capture response bodies.
-* Stop overwriting the `id` of Store API cart item sub-resources, which is the product ID, as a side effect of that mirroring.
-
-= 0.3.6 =
-* Return the cart token in the `Cart-Token` response header on `/wc/store/v1/batch`, as the Store API already does on `/wc/store/v1/cart`. The batch route is not a cart route, so WooCommerce sets no token on the batch response; it survives only inside the JSON body, in the envelope WordPress builds for each sub-response. A client reading response headers now sees the same thing on both routes.
-* This adds a header and removes nothing. The token still appears in the batch response body, because the envelope WordPress builds for each sub-response repeats that sub-response's headers. Taking it out of the body is a later change, once clients read the header.
-
-= 0.3.5 =
-* Restrict Cart-Token authentication strictly to Store API cart and batch endpoints (`/wc/store/v1/cart` and `/wc/store/v1/batch`), preventing order enumeration or guest order access via `/order/*` and `/checkout/*`.
-* Accept a Cart-Token only on requests WordPress is actually about to dispatch to the WooCommerce Store API. The REST prefix must now sit at the site root rather than anywhere in the path, so a crafted path can no longer present a non-Store-API request as a Store API one.
-* Refuse a Cart-Token on anything that is not the site's front controller, including admin, cron and AJAX requests, and on an `index.php` that is not WordPress's own.
-* Reject tokens carrying a non-numeric or non-integer expiry, and treat the expiry second itself as expired.
-* Report a refused Cart-Token with a stable machine-readable code and the capability that caused it, so a store can alert on refusals.
-* Log an unrecognised token issuer at most once an hour per issuer instead of on every request.
-
-= 0.3.4 =
-* Receive the linked agent from Google Cloud over the store's own WooCommerce API credentials, on a new authenticated `POST /wp-json/gecx/v1/link-agent` route, instead of reading it out of the browser redirect back from the console.
-* Stop persisting anything from the connection callback. The redirect now only consumes its one-time state and reports the outcome; it can no longer create, change, or clear the agent link.
-
-= 0.3.3 =
-* Bundle the storefront chat widget stylesheet (`assets/css/theme.css`) locally with the plugin to comply with WordPress.org Guideline 7, and load it via `plugins_url()`.
-
-= 0.3.2 =
-* Reconcile agent binding with the backend SyncState API when the settings page loads.
-* Adopt the agent Google actually has linked when the locally saved agent differs, and clear the local binding only when Google has no link for the store.
-* Warn the administrator and reopen the store authorization step when Google cannot verify the store identity or use the saved WooCommerce API keys.
-* Keep appearance settings when the agent is unlinked, so re-linking does not lose customization.
-* Throttle the reconciliation call to once every 10 minutes to protect settings page load time.
-
-= 0.3.1 =
-* Maintain relative centering for floating chat widget with page content when chat panel opens.
-* Improve mobile header placement for topnav launcher with automatic candidate detection and floating action button fallback.
-* Add dynamic viewport resize handling to maintain agent button visibility across responsive viewports.
-* Customer JWTs no longer assert `is_admin`. The claim was previously derived from the shopper's own capabilities, so an administrator browsing their own storefront published an admin-flagged token into the page DOM for an hour.
-* Removed the `gecx_customer_jwt_payload` and `gecx_admin_jwt_payload` filters. Any plugin on the store could reach them to have a claim signed with the store's own key. Removing them costs nothing: the agent backend reads a fixed set of claims and discards the rest, so a filter could never attach anything it would act on.
-* Scope WooCommerce API key authentication to the route WordPress will dispatch rather than the request path. A request whose path named `/gecx/v1/secret` but whose `rest_route` named a core route previously authenticated that core route with the key.
-
-= 0.3.0 =
-* Restrict Cart-Token authentication to versioned WooCommerce Store API routes, matching WordPress rest_route dispatch precedence.
-* Refuse to resolve a Cart-Token to any user holding administrative capabilities, and reject Cart-Token authenticated requests on plugin admin routes.
-* Note: this includes `edit_posts`, which contributors and authors hold. On a site that runs a blog alongside the store, those shoppers keep their own cart, but the agent's requests are not authenticated as their account, so an order placed through the agent is not attached to it. Filter `gecx_cart_token_privileged_caps` to change the list.
-* Pin the Store API issuer claim and verify the token signature before evaluating its claims. Both issuers WooCommerce has used are accepted (`wc/store` and `wc/store/v1` on 7.1-9.9, `store-api` on 10.0+). WooCommerce before 7.1 stamps no issuer at all and is no longer supported.
-* Report refusals to `gecx_cart_token_refused`, and a signed token carrying an unrecognised issuer to `gecx_cart_token_unknown_issuer`, so neither can fail silently on a WooCommerce version that stamps something new.
-* Refuse Cart-Token authenticated requests at REST dispatch when the resolved route is not a Store API route, rather than in individual permission callbacks.
-
-= 0.2.9 =
-* Refactor JWT signing to eliminate redundant header and signing input serialization.
-* Add OpenSSL error logging on keypair generation and RS256 signing failures.
-* Normalize REST API route parsing in WooCommerce custom endpoint authentication.
-
-= 0.2.8 =
-* Migrate webhook signing to use WooCommerce consumer_secret without storing shared secret in database.
-* Expose dedicated POST /wp-json/gecx/v1/webhooks/order-created REST route.
-* Validate webhook delivery URLs using wp_http_validate_url.
-* Harden admin redirect parameter handling and REST authentication checks.
-
-= 0.2.7 =
-* Sign shopper customer JWTs and admin session JWTs using RS256 with the store's decrypted RSA private key.
-* Gracefully fall back to HS256 HMAC signature if RSA private key is unavailable or signing fails.
-
-= 0.2.6 =
-* Generate 2048-bit RSA keypair on activation or lazy demand.
-* Encrypt private key using AES-256-GCM derived from WordPress salts via HKDF-SHA256.
-* Expose GET /wp-json/gecx/v1/public-key REST route with WooCommerce authentication.
-
-= 0.2.5 =
-* Fix OAuth return URL encoding by URL-encoding nested callback URLs to prevent query parameter splitting.
-* Add dual-layer transient and persistent options storage for OAuth state tokens to ensure resilience with object caching.
-* Center and widen the admin settings interface layout across screen sizes.
-
-= 0.2.4 =
-* Add support for Full-Site Editing (FSE) block themes via WooCommerce Single Product Gutenberg block filters.
-* Add secondary hook and client-side DOM injection fallback for Page Builders (Elementor, Divi, Bricks, Oxygen).
-* Add duplicate suppression to prevent multiple PDP prompt renders per request.
-* Support queried object ID resolution outside the WordPress loop during asset enqueueing.
-
-= 0.2.3 =
-* Improve admin connection status page layout and eliminate text overflow.
-* Add default placeholder labels for button configuration.
-* Synchronize Suggested Prompts toggle dependency with Storefront Chat Widget state.
-* Update Connection Status indicator and text on chat widget toggle.
-* Fix raw API secret handling in webhook configuration.
-
-= 0.2.2 =
-* Add .gitattributes release packaging rules to exclude developer tools and tests from production archives.
-* Add Changelog section to readme.txt for WordPress.org directory compliance.
-* Add standard Requires at least and Requires PHP plugin header tags.
-
-= 0.2.1 =
-* Add launcher placement options (Navigation Menu vs Floating Bubble) and floating positions to native admin settings.
-* Add launcher button style, custom full label, collapsed mobile short label, and shimmer animation toggles.
-* Add AJAX save endpoint for button configuration with instant visual feedback.
-
-= 0.2.0 =
-* Replace iframe embed with native WordPress admin stepper onboarding flow and management dashboard.
-* Add AJAX actions for manual config, chat widget toggle, PDP prompts toggle, and agent disconnect.
-* Add OAuth linking redirect handler with transient state validation and token broker fallback.
+Releases before 0.3.8 are listed in changelog.txt at the plugin root.

@@ -16,8 +16,8 @@ This plugin connects to the Gemini Enterprise for CX Software as a Service (SaaS
 
 ## Requirements
 
-* WordPress 5.0+
-* WooCommerce 5.0+
+* WordPress 6.2+
+* WooCommerce 7.1+
 * PHP 7.4+
 
 ## License

@@ -46,7 +46,7 @@ register_deactivation_hook( __FILE__, [ 'GECX_Admin', 'deactivate_plugin' ] );
  * authenticates WooCommerce Store API requests. The "Requires Plugins" header
  * keeps WordPress from activating this plugin without WooCommerce, but that
  * header is only honoured on WordPress 6.5 and later and this plugin supports
- * 5.9, so on 5.9 through 6.4 a store can deactivate WooCommerce and leave this
+ * 6.2, so on 6.2 through 6.4 a store can deactivate WooCommerce and leave this
  * plugin running against classes and functions that no longer exist.
  *
  * Runs on plugins_loaded so that the check sees the final plugin set.
