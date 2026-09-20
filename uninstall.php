@@ -51,7 +51,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         // 1. Retrieve secret from webhook if available, then delete the webhook.
         $gecx_webhook_id   = get_option( 'gecx_webhook_id' );
         $gecx_secret       = '';
-        $gecx_wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+        $gecx_wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
 
         if ( $gecx_wc_available ) {
             if ( ! empty( $gecx_webhook_id ) ) {

@@ -15,8 +15,8 @@ if ( ! defined( 'WP_DEBUG' ) ) {
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
     define( 'HOUR_IN_SECONDS', 3600 );
 }
-if ( ! defined( 'GECX_TESTING' ) ) {
-    define( 'GECX_TESTING', true );
+if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) ) {
+    define( 'GECX_PHPUNIT_RUNNING', true );
 }
 if ( ! defined( 'GECX_VERSION' ) ) {
     define( 'GECX_VERSION', '1.0.0' );

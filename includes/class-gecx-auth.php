@@ -126,12 +126,12 @@ class GECX_Auth {
      *
      * Test seam only. This is security state: clearing it mid-request would
      * re-enable privileged endpoints for a cart-token request, so the body is
-     * inert unless the test harness has defined GECX_TESTING.
+     * inert unless the test harness has defined GECX_PHPUNIT_RUNNING.
      *
      * @internal
      */
     public static function reset_cart_token_state(): void {
-        if ( ! defined( 'GECX_TESTING' ) || ! GECX_TESTING ) {
+        if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
             return;
         }
 

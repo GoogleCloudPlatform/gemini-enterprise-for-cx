@@ -841,7 +841,7 @@ class GECX_Rest_API {
      * @return \WC_Webhook|\WP_Error Webhook instance or WP_Error on failure.
      */
     public static function ensure_order_webhook( string $delivery_url = '', string $secret = '' ) {
-        if ( ! class_exists( 'WC_Webhook' ) || ( defined( 'GECX_TESTING' ) && ! empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) ) ) {
+        if ( ! class_exists( 'WC_Webhook' ) || ( defined( 'GECX_PHPUNIT_RUNNING' ) && ! empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) ) ) {
             return new \WP_Error( 'woocommerce_not_active', __( 'WooCommerce WC_Webhook class not available.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
         }
 
@@ -1100,7 +1100,7 @@ class GECX_Rest_API {
      * @param string $status Target WooCommerce webhook status ('active', 'paused', or 'disabled').
      */
     public static function set_order_webhook_status( string $status ): void {
-        $wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+        $wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
         if ( ! $wc_available ) {
             return;
         }
@@ -1168,7 +1168,7 @@ class GECX_Rest_API {
      */
     public static function delete_order_webhook(): void {
         $stored_id    = (int) get_option( 'gecx_webhook_id', 0 );
-        $wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+        $wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
 
         if ( $wc_available ) {
             if ( $stored_id > 0 ) {
@@ -1254,7 +1254,7 @@ class GECX_Rest_API {
         $agent_name = (string) get_option( 'gecx_agent_name', '' );
         if ( '' === $agent_name ) {
             $has_stored_webhook = ! empty( get_option( 'gecx_webhook_id' ) );
-            $wc_available       = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_TESTING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+            $wc_available       = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
             if ( $has_stored_webhook || $wc_available ) {
                 self::delete_order_webhook();
             }
