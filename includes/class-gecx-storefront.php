@@ -135,7 +135,7 @@ class GECX_Storefront {
         ];
 
         if ( is_product() && $this->is_pdp_prompts_auto_inject_enabled() ) {
-            $product_id               = (int) ( get_the_ID() ?: ( function_exists( 'get_queried_object_id' ) ? get_queried_object_id() : 0 ) );
+            $product_id               = self::resolve_current_product_id();
             $config['isPdp']          = true;
             $config['pdpPromptsHtml'] = $this->get_suggested_prompts_html( $product_id );
         }
@@ -355,7 +355,7 @@ class GECX_Storefront {
             return $block_content;
         }
 
-        $product_id                 = (int) ( get_the_ID() ?: ( function_exists( 'get_queried_object_id' ) ? get_queried_object_id() : 0 ) );
+        $product_id                 = self::resolve_current_product_id();
         $prompts_html               = $this->get_suggested_prompts_html( $product_id );
         $this->pdp_prompts_injected = true;
 
@@ -375,7 +375,7 @@ class GECX_Storefront {
         } elseif ( isset( $atts['product_id'] ) ) {
             $product_id = absint( $atts['product_id'] );
         } elseif ( is_product() ) {
-            $product_id = (int) ( get_the_ID() ?: ( function_exists( 'get_queried_object_id' ) ? get_queried_object_id() : 0 ) );
+            $product_id = self::resolve_current_product_id();
         }
 
         if ( ! $product_id ) {
@@ -425,9 +425,31 @@ class GECX_Storefront {
      * @param int $product_id Product ID.
      * @return string HTML output.
      */
+    /**
+     * Resolves the product ID of the product currently being displayed.
+     *
+     * get_the_ID() returns false outside the loop, which is the case while
+     * enqueueing assets and on block themes, so fall back to the queried
+     * object when the loop cannot answer.
+     *
+     * @return int Product ID, or 0 when none can be resolved.
+     */
+    private static function resolve_current_product_id(): int {
+        $product_id = (int) get_the_ID();
+        if ( $product_id > 0 ) {
+            return $product_id;
+        }
+
+        if ( function_exists( 'get_queried_object_id' ) ) {
+            return (int) get_queried_object_id();
+        }
+
+        return 0;
+    }
+
     public function get_suggested_prompts_html( int $product_id = 0 ): string {
         if ( $product_id <= 0 && is_product() ) {
-            $product_id = (int) ( get_the_ID() ?: ( function_exists( 'get_queried_object_id' ) ? get_queried_object_id() : 0 ) );
+            $product_id = self::resolve_current_product_id();
         }
 
         $attrs = [

@@ -895,7 +895,7 @@ class GECX_Admin {
         $display_style  = isset( $_POST['display_style'] ) && in_array( $_POST['display_style'], $allowed_styles, true ) ? sanitize_text_field( wp_unslash( $_POST['display_style'] ) ) : 'responsive';
         $label          = isset( $_POST['label'] ) ? sanitize_text_field( wp_unslash( $_POST['label'] ) ) : '';
         $short_label    = isset( $_POST['short_label'] ) ? sanitize_text_field( wp_unslash( $_POST['short_label'] ) ) : '';
-        $enable_shimmer = isset( $_POST['enable_shimmer'] ) && $_POST['enable_shimmer'] === '1' ? 1 : 0;
+        $enable_shimmer = isset( $_POST['enable_shimmer'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enable_shimmer'] ) ) ? 1 : 0;
 
         update_option( 'gecx_button_placement', $placement );
         update_option( 'gecx_floating_position', $floating_pos );
@@ -916,7 +916,7 @@ class GECX_Admin {
             wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
         }
 
-        $enabled = isset( $_POST['enabled'] ) && $_POST['enabled'] === '1' ? 1 : 0;
+        $enabled = isset( $_POST['enabled'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enabled'] ) ) ? 1 : 0;
         update_option( 'gecx_agent_enabled', $enabled );
         if ( class_exists( 'GECX_Rest_API' ) ) {
             GECX_Rest_API::set_order_webhook_status( 1 === $enabled ? 'active' : 'paused' );
@@ -933,7 +933,7 @@ class GECX_Admin {
             wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
         }
 
-        $enabled = isset( $_POST['enabled'] ) && $_POST['enabled'] === '1' ? 1 : 0;
+        $enabled = isset( $_POST['enabled'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enabled'] ) ) ? 1 : 0;
         update_option( 'gecx_pdp_prompts_enabled', $enabled );
         wp_send_json_success( [ 'enabled' => $enabled ] );
     }

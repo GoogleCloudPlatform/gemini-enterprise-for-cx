@@ -299,7 +299,7 @@ class GECX_Rest_API {
                     $session_key, $serialized_data, $expiry, $serialized_data, $expiry
                 ) );
 
-                if ( $sync_result !== false ) {
+                if ( false !== $sync_result ) {
                     // Invalidate WooCommerce session object cache to force browser reload from database
                     $cache_group = defined( 'WC_SESSION_CACHE_GROUP' )
                         ? WC_SESSION_CACHE_GROUP
@@ -1128,14 +1128,16 @@ class GECX_Rest_API {
                                 try {
                                     $candidate->delete( true );
                                 } catch ( \Throwable $e ) {
-                                    // Suppress candidate delete error.
+                                    // A duplicate webhook that cannot be deleted is not worth
+                                    // failing the request over, but it should be visible.
+                                    GECX_Auth::log( 'Failed to delete duplicate order webhook: ' . $e->getMessage(), 'debug' );
                                 }
                             }
                         }
                     }
                 }
             } catch ( \Throwable $e ) {
-                // Suppress webhook query error.
+                GECX_Auth::log( 'Failed to query order webhooks: ' . $e->getMessage(), 'debug' );
             }
         }
 
@@ -1145,7 +1147,8 @@ class GECX_Rest_API {
                 try {
                     $primary->save();
                 } catch ( \Throwable $e ) {
-                    // Suppress save error to prevent fatal during lifecycle hooks.
+                    // Raising here would fatal inside an activation or deactivation hook.
+                    GECX_Auth::log( 'Failed to save order webhook status: ' . $e->getMessage(), 'debug' );
                 }
             }
         }
@@ -1167,7 +1170,8 @@ class GECX_Rest_API {
                         $webhook->delete( true );
                     }
                 } catch ( \Throwable $e ) {
-                    // Continue cleanup.
+                    // Cleanup continues with the remaining webhooks either way.
+                    GECX_Auth::log( 'Failed to delete order webhook by stored id: ' . $e->getMessage(), 'debug' );
                 }
             }
             if ( function_exists( 'wc_get_webhooks' ) ) {
@@ -1183,13 +1187,13 @@ class GECX_Rest_API {
                                 try {
                                     $candidate->delete( true );
                                 } catch ( \Throwable $e ) {
-                                    // Continue candidate cleanup.
+                                    GECX_Auth::log( 'Failed to delete order webhook candidate: ' . $e->getMessage(), 'debug' );
                                 }
                             }
                         }
                     }
                 } catch ( \Throwable $e ) {
-                    // Suppress query error.
+                    GECX_Auth::log( 'Failed to query order webhooks during cleanup: ' . $e->getMessage(), 'debug' );
                 }
             }
         } else {

@@ -62,7 +62,10 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                         $gecx_webhook->delete( true );
                     }
                 } catch ( \Exception $e ) {
-                    // Suppress exception during uninstallation cleanup.
+                    // Uninstall must finish regardless, but record why the webhook survived.
+                    if ( class_exists( 'GECX_Auth' ) ) {
+                        GECX_Auth::log( 'Uninstall could not delete the stored webhook: ' . $e->getMessage(), 'debug' );
+                    }
                 }
             }
 
@@ -84,53 +87,31 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                         }
                     }
                 } catch ( \Throwable $e ) {
-                    // Suppress query error.
+                    if ( class_exists( 'GECX_Auth' ) ) {
+                        GECX_Auth::log( 'Uninstall could not query webhooks: ' . $e->getMessage(), 'debug' );
+                    }
                 }
             }
-        } else {
+        } elseif ( isset( $wpdb ) && is_object( $wpdb ) ) {
             // WooCommerce is deactivated or unavailable: clean up directly via $wpdb
             // so the webhook row does not survive and resume firing when WooCommerce
             // is re-activated later.
-            if ( isset( $wpdb ) && is_object( $wpdb ) ) {
-                $gecx_table_name   = $wpdb->prefix . 'wc_webhooks';
-                $gecx_table_exists = true;
-                if ( method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) ) {
-                    $gecx_escaped_like = method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( $gecx_table_name ) : $gecx_table_name;
-                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                    $gecx_table_exists = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $gecx_escaped_like ) ) === $gecx_table_name );
-                }
-                if ( $gecx_table_exists ) {
-                    if ( ! empty( $gecx_webhook_id ) ) {
-                        if ( empty( $gecx_secret ) && method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) ) {
-                            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                            $gecx_found_secret = $wpdb->get_var(
-                                $wpdb->prepare(
-                                    'SELECT secret FROM %i WHERE webhook_id = %d',
-                                    $gecx_table_name,
-                                    (int) $gecx_webhook_id
-                                )
-                            );
-                            if ( ! empty( $gecx_found_secret ) ) {
-                                $gecx_secret = (string) $gecx_found_secret;
-                            }
-                        }
-                        if ( method_exists( $wpdb, 'delete' ) ) {
-                            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                            $wpdb->delete( $gecx_table_name, [ 'webhook_id' => (int) $gecx_webhook_id ], [ '%d' ] );
-                        }
-                        if ( function_exists( 'wp_cache_delete' ) ) {
-                            wp_cache_delete( (int) $gecx_webhook_id, 'webhooks' );
-                        }
-                    }
-
+            $gecx_table_name   = $wpdb->prefix . 'wc_webhooks';
+            $gecx_table_exists = true;
+            if ( method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) ) {
+                $gecx_escaped_like = method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( $gecx_table_name ) : $gecx_table_name;
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+                $gecx_table_exists = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $gecx_escaped_like ) ) === $gecx_table_name );
+            }
+            if ( $gecx_table_exists ) {
+                if ( ! empty( $gecx_webhook_id ) ) {
                     if ( empty( $gecx_secret ) && method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) ) {
                         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
                         $gecx_found_secret = $wpdb->get_var(
                             $wpdb->prepare(
-                                'SELECT secret FROM %i WHERE name = %s AND topic = %s LIMIT 1',
+                                'SELECT secret FROM %i WHERE webhook_id = %d',
                                 $gecx_table_name,
-                                'GECX Agent Order Created',
-                                'order.created'
+                                (int) $gecx_webhook_id
                             )
                         );
                         if ( ! empty( $gecx_found_secret ) ) {
@@ -139,21 +120,43 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                     }
                     if ( method_exists( $wpdb, 'delete' ) ) {
                         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                        $wpdb->delete(
+                        $wpdb->delete( $gecx_table_name, [ 'webhook_id' => (int) $gecx_webhook_id ], [ '%d' ] );
+                    }
+                    if ( function_exists( 'wp_cache_delete' ) ) {
+                        wp_cache_delete( (int) $gecx_webhook_id, 'webhooks' );
+                    }
+                }
+
+                if ( empty( $gecx_secret ) && method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) ) {
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+                    $gecx_found_secret = $wpdb->get_var(
+                        $wpdb->prepare(
+                            'SELECT secret FROM %i WHERE name = %s AND topic = %s LIMIT 1',
                             $gecx_table_name,
-                            [
-                                'name'  => 'GECX Agent Order Created',
-                                'topic' => 'order.created',
-                            ],
-                            [ '%s', '%s' ]
-                        );
+                            'GECX Agent Order Created',
+                            'order.created'
+                        )
+                    );
+                    if ( ! empty( $gecx_found_secret ) ) {
+                        $gecx_secret = (string) $gecx_found_secret;
                     }
-                    if ( function_exists( 'delete_transient' ) ) {
-                        delete_transient( 'woocommerce_webhook_ids' );
-                        delete_transient( 'woocommerce_webhook_ids_status_active' );
-                        delete_transient( 'woocommerce_webhook_ids_status_paused' );
-                        delete_transient( 'woocommerce_webhook_ids_status_disabled' );
-                    }
+                }
+                if ( method_exists( $wpdb, 'delete' ) ) {
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+                    $wpdb->delete(
+                        $gecx_table_name,
+                        [
+                            'name'  => 'GECX Agent Order Created',
+                            'topic' => 'order.created',
+                        ],
+                        [ '%s', '%s' ]
+                    );
+                }
+                if ( function_exists( 'delete_transient' ) ) {
+                    delete_transient( 'woocommerce_webhook_ids' );
+                    delete_transient( 'woocommerce_webhook_ids_status_active' );
+                    delete_transient( 'woocommerce_webhook_ids_status_paused' );
+                    delete_transient( 'woocommerce_webhook_ids_status_disabled' );
                 }
             }
         }
