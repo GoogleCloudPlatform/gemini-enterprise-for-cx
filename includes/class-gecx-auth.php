@@ -31,6 +31,27 @@ class GECX_Auth {
     private const KEYPAIR_LOCK_TTL_SECONDS = 30;
 
     /**
+     * Option holding the store's RSA keypair.
+     *
+     * Both halves live in one option, and that is load-bearing rather than
+     * tidiness. They used to be two, written by two update_option() calls, and
+     * gecx_keypair_lock is not a strong enough mutex to guarantee those four
+     * writes never interleave: add_option() checks for the option with
+     * get_option() and only then issues INSERT ... ON DUPLICATE KEY UPDATE, so
+     * two workers arriving together can both be told they hold the lock.
+     *
+     * Interleaved writes produced one worker's public key beside another's
+     * private key. Nothing detected it - the private key still decrypted, and
+     * openssl_sign() still signed with it - but every JWT the store minted then
+     * failed verification against the public key the backend read, including
+     * the re-fetch in VerifyAdminJwtWithSelfHealing, since that reads the same
+     * mismatched record. One option makes that unrepresentable: a single row
+     * write is atomic, so a lost race costs a wasted keypair generation rather
+     * than a store that can no longer authenticate.
+     */
+    private const KEYPAIR_OPTION = 'gecx_keypair';
+
+    /**
      * Capabilities that must never be reachable from a shopper credential.
      *
      * Filterable via 'gecx_cart_token_privileged_caps'. Widening the list is
@@ -1239,19 +1260,86 @@ class GECX_Auth {
      * @return array{public_key: string, private_key: string}|null
      */
     private static function read_stored_keypair(): ?array {
-        $public_key = function_exists( 'get_option' ) ? get_option( 'gecx_public_key', '' ) : '';
-        $encrypted  = function_exists( 'get_option' ) ? get_option( 'gecx_private_key', null ) : null;
+        $stored = function_exists( 'get_option' ) ? get_option( self::KEYPAIR_OPTION, null ) : null;
 
-        if ( ! empty( $public_key ) && is_string( $public_key ) && is_array( $encrypted ) ) {
-            $decrypted = self::decrypt_private_key( $encrypted );
-            if ( ! empty( $decrypted ) ) {
-                return [
+        if ( is_array( $stored ) ) {
+            $public_key = $stored['public_key'] ?? '';
+            $encrypted  = $stored['private_key'] ?? null;
+
+            if ( ! empty( $public_key ) && is_string( $public_key ) && is_array( $encrypted ) ) {
+                $decrypted = self::decrypt_private_key( $encrypted );
+                if ( ! empty( $decrypted ) ) {
+                    return [
+                        'public_key'  => $public_key,
+                        'private_key' => $decrypted,
+                    ];
+                }
+            }
+
+            // Present but unusable. Do not fall back to the legacy options: they
+            // are whatever this record replaced, so trusting them would resurrect
+            // a superseded key.
+            return null;
+        }
+
+        return self::migrate_legacy_keypair();
+    }
+
+    /**
+     * Fold a pre-0.3.15 two-option keypair into the single option, if one exists.
+     *
+     * Stores written before the consolidation live in gecx_public_key plus
+     * gecx_private_key. They are read once, rewritten as one record, and the old
+     * pair is deleted, so every install converges on a single source of truth
+     * rather than carrying two layouts indefinitely.
+     *
+     * Safe to run unlocked and concurrently: it derives the new record from a
+     * pair that is already written, so racing callers compute identical bytes,
+     * and whichever write lands last is the same as the one before it.
+     *
+     * @return array{public_key: string, private_key: string}|null
+     */
+    private static function migrate_legacy_keypair(): ?array {
+        if ( ! function_exists( 'get_option' ) ) {
+            return null;
+        }
+
+        $public_key = get_option( 'gecx_public_key', '' );
+        $encrypted  = get_option( 'gecx_private_key', null );
+
+        if ( empty( $public_key ) || ! is_string( $public_key ) || ! is_array( $encrypted ) ) {
+            return null;
+        }
+
+        $decrypted = self::decrypt_private_key( $encrypted );
+        if ( empty( $decrypted ) ) {
+            return null;
+        }
+
+        if ( function_exists( 'update_option' ) ) {
+            $migrated = update_option(
+                self::KEYPAIR_OPTION,
+                [
+                    'version'     => 1,
                     'public_key'  => $public_key,
-                    'private_key' => $decrypted,
-                ];
+                    'private_key' => $encrypted,
+                ],
+                'no'
+            );
+
+            // Only drop the old pair once the new record is actually on disk.
+            // Deleting first would leave a store with no keypair at all if the
+            // write failed.
+            if ( $migrated && function_exists( 'delete_option' ) ) {
+                delete_option( 'gecx_public_key' );
+                delete_option( 'gecx_private_key' );
             }
         }
-        return null;
+
+        return [
+            'public_key'  => $public_key,
+            'private_key' => $decrypted,
+        ];
     }
 
     /**
@@ -1259,10 +1347,13 @@ class GECX_Auth {
      *
      * Callers MUST hold gecx_keypair_lock before invoking this helper so a
      * concurrent worker in the middle of writing or rotating a keypair does not
-     * have its newly written half deleted out from under it.
+     * have its newly written record deleted out from under it.
      */
     private static function discard_keypair(): void {
         if ( function_exists( 'delete_option' ) ) {
+            delete_option( self::KEYPAIR_OPTION );
+            // Pre-0.3.15 layout. Cleared too, so a discard cannot leave a
+            // superseded pair behind for migrate_legacy_keypair() to adopt.
             delete_option( 'gecx_public_key' );
             delete_option( 'gecx_private_key' );
         }
@@ -1405,8 +1496,25 @@ class GECX_Auth {
         }
 
         if ( function_exists( 'update_option' ) ) {
-            update_option( 'gecx_public_key', $public_key_pem, 'no' );
-            update_option( 'gecx_private_key', $encrypted_payload, 'no' );
+            // One write. See KEYPAIR_OPTION: this is what makes a lost lock race
+            // survivable, because the row either holds this worker's pair or
+            // another worker's, never one half of each.
+            update_option(
+                self::KEYPAIR_OPTION,
+                [
+                    'version'     => 1,
+                    'public_key'  => $public_key_pem,
+                    'private_key' => $encrypted_payload,
+                ],
+                'no'
+            );
+
+            // Clear the pre-0.3.15 pair if this store still had one, so a later
+            // read cannot migrate a keypair this one just replaced.
+            if ( function_exists( 'delete_option' ) ) {
+                delete_option( 'gecx_public_key' );
+                delete_option( 'gecx_private_key' );
+            }
         }
 
         return [
@@ -1460,12 +1568,13 @@ class GECX_Auth {
             return $stored;
         }
 
-        // Acquire gecx_keypair_lock BEFORE inspecting or discarding damaged state.
-        // Without this lock, a reader arriving while another worker is between
-        // update_option('gecx_public_key') and update_option('gecx_private_key')
-        // sees half a keypair and deletes gecx_public_key mid-generation; and after
-        // a salt rotation, concurrent callers each discard and overwrite the fresh
-        // keypair produced by the first holder.
+        // Acquire gecx_keypair_lock BEFORE inspecting or discarding damaged
+        // state, so that after a salt rotation concurrent callers do not each
+        // discard and overwrite the fresh keypair produced by the first holder.
+        //
+        // The lock is advisory rather than reliable - see KEYPAIR_OPTION - so
+        // the storage layout, not this lock, is what guarantees a reader never
+        // sees half a keypair.
         if ( ! self::acquire_keypair_lock() ) {
             return self::wait_for_concurrent_keypair();
         }
@@ -1478,23 +1587,40 @@ class GECX_Auth {
                 return $stored;
             }
 
-            $public_key = function_exists( 'get_option' ) ? get_option( 'gecx_public_key', '' ) : '';
-            $encrypted  = function_exists( 'get_option' ) ? get_option( 'gecx_private_key', null ) : null;
-            $has_pub    = ! empty( $public_key ) && is_string( $public_key );
-            $has_priv   = ! empty( $encrypted );
+            $record = function_exists( 'get_option' ) ? get_option( self::KEYPAIR_OPTION, null ) : null;
 
-            if ( $has_pub && $has_priv ) {
+            if ( is_array( $record ) ) {
+                // read_stored_keypair() already refused this record, and the two
+                // halves were written together, so the pair is intact and the
+                // key that decrypts it is gone.
                 self::log(
                     'Failed to decrypt RSA private key; salts were most likely rotated. Discarding the unusable keypair and generating a new one.',
                     'error'
                 );
                 self::discard_keypair();
-            } elseif ( $has_pub || $has_priv ) {
-                self::log(
-                    'Keypair state desynchronized in database; public or private key is missing. Discarding the remaining half and generating a new keypair.',
-                    'error'
-                );
-                self::discard_keypair();
+            } else {
+                $public_key = function_exists( 'get_option' ) ? get_option( 'gecx_public_key', '' ) : '';
+                $encrypted  = function_exists( 'get_option' ) ? get_option( 'gecx_private_key', null ) : null;
+                $has_pub    = ! empty( $public_key ) && is_string( $public_key );
+                $has_priv   = ! empty( $encrypted );
+
+                if ( $has_pub && $has_priv ) {
+                    // A pre-0.3.15 pair that migrate_legacy_keypair() could not
+                    // read, which means the same salt rotation as above.
+                    self::log(
+                        'Failed to decrypt the pre-0.3.15 RSA private key; salts were most likely rotated. Discarding the unusable keypair and generating a new one.',
+                        'error'
+                    );
+                    self::discard_keypair();
+                } elseif ( $has_pub || $has_priv ) {
+                    // Only reachable for a store that never migrated, since the
+                    // current layout cannot express half a keypair.
+                    self::log(
+                        'Pre-0.3.15 keypair state desynchronized in database; public or private key is missing. Discarding the remaining half and generating a new keypair.',
+                        'error'
+                    );
+                    self::discard_keypair();
+                }
             }
 
             return self::generate_and_store_keypair();

@@ -634,6 +634,7 @@ class AuthTest extends GECX_TestCase {
     public function test_generate_customer_jwt_returns_null_when_no_secret_and_no_keypair(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com' );
         delete_option( 'gecx_api_secret' );
+        delete_option( 'gecx_keypair' );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
         $GLOBALS['gecx_test_wp_salt'] = '';
@@ -717,6 +718,7 @@ class AuthTest extends GECX_TestCase {
 
     public function test_generate_jwt_returns_null_when_no_private_key(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 55, 'fallback@example.com', [ 'customer' ] );
+        delete_option( 'gecx_keypair' );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
         $GLOBALS['gecx_test_wp_salt'] = '';
@@ -924,6 +926,8 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_get_or_generate_keypair_generates_valid_rsa_keypair(): void {
+        delete_option( 'gecx_keypair' );
+        delete_option( 'gecx_keypair' );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
 
@@ -935,15 +939,20 @@ class AuthTest extends GECX_TestCase {
         $this->assertStringContainsString( 'BEGIN PUBLIC KEY', $keypair['public_key'] );
         $this->assertStringContainsString( 'BEGIN PRIVATE KEY', $keypair['private_key'] );
 
-        // Check options stored
-        $stored_pub = get_option( 'gecx_public_key' );
-        $stored_priv = get_option( 'gecx_private_key' );
-        $this->assertEquals( $keypair['public_key'], $stored_pub );
+        // Both halves live in one option so that a write can never land half
+        // applied. Nothing may be left behind in the pre-0.3.15 options.
+        $record = get_option( 'gecx_keypair' );
+        $this->assertTrue( is_array( $record ) );
+        $this->assertEquals( 1, $record['version'] );
+        $this->assertEquals( $keypair['public_key'], $record['public_key'] );
+        $stored_priv = $record['private_key'];
         $this->assertTrue( is_array( $stored_priv ) );
         $this->assertEquals( 1, $stored_priv['version'] );
         $this->assertFalse( empty( $stored_priv['iv'] ) );
         $this->assertFalse( empty( $stored_priv['ciphertext'] ) );
         $this->assertFalse( empty( $stored_priv['tag'] ) );
+        $this->assertFalse( get_option( 'gecx_public_key' ) );
+        $this->assertFalse( get_option( 'gecx_private_key' ) );
     }
 
     public function test_encrypt_and_decrypt_private_key_roundtrip(): void {
@@ -959,6 +968,7 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_get_public_key_and_private_key_persistence(): void {
+        delete_option( 'gecx_keypair' );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
 
@@ -1031,12 +1041,11 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_salt_rotation_replaces_the_unreadable_keypair(): void {
-        delete_option( 'gecx_public_key' );
-        delete_option( 'gecx_private_key' );
+        delete_option( 'gecx_keypair' );
 
-        $keypair              = GECX_Auth::get_or_generate_keypair();
-        $original_pub         = $keypair['public_key'];
-        $original_priv_option = get_option( 'gecx_private_key' );
+        $keypair         = GECX_Auth::get_or_generate_keypair();
+        $original_pub    = $keypair['public_key'];
+        $original_record = get_option( 'gecx_keypair' );
 
         // Simulate salt rotation: changing the salt causes decryption to fail.
         $GLOBALS['gecx_test_wp_salt'] = 'new_rotated_salt';
@@ -1051,11 +1060,14 @@ class AuthTest extends GECX_TestCase {
         $this->assertTrue( null !== GECX_Auth::get_public_key() );
 
         // The dead keypair is gone, replaced rather than kept alongside.
-        $this->assertTrue( $original_pub !== get_option( 'gecx_public_key' ) );
-        $this->assertTrue( $original_priv_option !== get_option( 'gecx_private_key' ) );
+        $new_record = get_option( 'gecx_keypair' );
+        $this->assertTrue( is_array( $new_record ) );
+        $this->assertTrue( $original_pub !== $new_record['public_key'] );
+        $this->assertTrue( $original_record !== $new_record );
     }
 
     public function test_desynchronized_public_or_private_key_is_regenerated(): void {
+        delete_option( 'gecx_keypair' );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
 
@@ -1068,6 +1080,7 @@ class AuthTest extends GECX_TestCase {
         $this->assertTrue( false === strpos( (string) get_option( 'gecx_public_key' ), 'MIIB...' ) );
 
         // Case 2: Only private key exists.
+        delete_option( 'gecx_keypair' );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
         update_option( 'gecx_private_key', [ 'version' => 1, 'iv' => 'abc', 'ciphertext' => 'def', 'tag' => 'ghi' ] );
@@ -1077,7 +1090,80 @@ class AuthTest extends GECX_TestCase {
         $this->assertTrue( null !== GECX_Auth::get_private_key() );
     }
 
+    public function test_pre_0315_two_option_keypair_is_folded_into_one_record(): void {
+        // Produce a real pair, then put the store back into the old layout.
+        $original = GECX_Auth::get_or_generate_keypair();
+        $this->assertNotNull( $original );
+        $encrypted = GECX_Auth::encrypt_private_key( $original['private_key'] );
+        delete_option( 'gecx_keypair' );
+        update_option( 'gecx_public_key', $original['public_key'] );
+        update_option( 'gecx_private_key', $encrypted );
+
+        $read = GECX_Auth::get_or_generate_keypair();
+
+        // The existing key is adopted, not thrown away: regenerating here would
+        // invalidate every signature the agent has already been handed.
+        $this->assertEquals( $original['public_key'], $read['public_key'] );
+        $this->assertEquals( $original['private_key'], $read['private_key'] );
+
+        $record = get_option( 'gecx_keypair' );
+        $this->assertTrue( is_array( $record ) );
+        $this->assertEquals( $original['public_key'], $record['public_key'] );
+        $this->assertEquals( $encrypted, $record['private_key'] );
+
+        // The old layout is cleared so there is exactly one source of truth.
+        $this->assertFalse( get_option( 'gecx_public_key' ) );
+        $this->assertFalse( get_option( 'gecx_private_key' ) );
+    }
+
+    public function test_migrated_keypair_still_signs_and_verifies(): void {
+        $original = GECX_Auth::get_or_generate_keypair();
+        $encrypted = GECX_Auth::encrypt_private_key( $original['private_key'] );
+        delete_option( 'gecx_keypair' );
+        update_option( 'gecx_public_key', $original['public_key'] );
+        update_option( 'gecx_private_key', $encrypted );
+
+        $private_key = GECX_Auth::get_private_key();
+        $public_key  = GECX_Auth::get_public_key();
+        $this->assertNotNull( $private_key );
+        $this->assertNotNull( $public_key );
+
+        $signature = '';
+        $this->assertTrue( openssl_sign( 'payload', $signature, $private_key, OPENSSL_ALGO_SHA256 ) );
+        $this->assertEquals( 1, openssl_verify( 'payload', $signature, $public_key, OPENSSL_ALGO_SHA256 ) );
+    }
+
+    public function test_unreadable_record_does_not_resurrect_the_legacy_keypair(): void {
+        $superseded = GECX_Auth::get_or_generate_keypair();
+        $this->assertNotNull( $superseded );
+        $superseded_encrypted = GECX_Auth::encrypt_private_key( $superseded['private_key'] );
+
+        // A store mid-way through an interrupted migration: the current record
+        // is unreadable and the pair it replaced is still sitting there.
+        update_option(
+            'gecx_keypair',
+            [
+                'version'     => 1,
+                'public_key'  => '-----BEGIN PUBLIC KEY-----\nCURRENT\n-----END PUBLIC KEY-----',
+                'private_key' => [ 'version' => 1, 'iv' => 'abc', 'ciphertext' => 'def', 'tag' => 'ghi' ],
+            ]
+        );
+        update_option( 'gecx_public_key', $superseded['public_key'] );
+        update_option( 'gecx_private_key', $superseded_encrypted );
+
+        $keypair = GECX_Auth::get_or_generate_keypair();
+
+        // Adopting the old pair would silently roll the store back to a key the
+        // agent was already told to stop trusting, so a fresh one is generated.
+        $this->assertNotNull( $keypair );
+        $this->assertTrue( $superseded['public_key'] !== $keypair['public_key'] );
+        $this->assertTrue( false === strpos( $keypair['public_key'], 'CURRENT' ) );
+        $this->assertFalse( get_option( 'gecx_public_key' ) );
+        $this->assertFalse( get_option( 'gecx_private_key' ) );
+    }
+
     public function test_stale_lock_is_broken_and_allows_generation(): void {
+        delete_option( 'gecx_keypair' );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
 
@@ -1332,6 +1418,7 @@ class AuthTest extends GECX_TestCase {
      * sit through the whole thing once the lock says nobody is coming.
      */
     public function test_wait_for_concurrent_keypair_gives_up_when_no_holder_is_coming(): void {
+        delete_option( 'gecx_keypair' );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
 
