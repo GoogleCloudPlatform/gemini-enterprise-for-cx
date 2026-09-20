@@ -205,6 +205,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             ];
             if ( ! empty( $gecx_secret ) ) {
                 // Our C++ Backend relies on a standard HMAC-SHA256 signature, base64 encoded.
+                // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- standard base64 HMAC signature encoding, not obfuscation.
                 $gecx_headers['X-WC-Webhook-Signature'] = base64_encode( hash_hmac( 'sha256', $gecx_payload, $gecx_secret, true ) );
             }
             if ( ! empty( $gecx_jwt ) ) {

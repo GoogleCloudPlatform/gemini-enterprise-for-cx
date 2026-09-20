@@ -944,13 +944,14 @@ class GECX_Auth {
             'exp'        => $expires_at,
         ];
 
-        $payload_encoded = self::to_base_64_url( (string) json_encode( $payload ) );
+        $payload_encoded = self::to_base_64_url( (string) wp_json_encode( $payload ) );
 
         $signing_input = self::build_signing_input( 'RS256', $payload_encoded );
         $raw_signature = '';
 
         // Suppress OpenSSL error output on corrupt/invalid private key strings;
         // the queued errors are drained into the log lines below instead.
+        // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- OpenSSL warnings on a corrupt key are drained into the log lines below.
         if ( @openssl_sign( $signing_input, $raw_signature, $private_key, OPENSSL_ALGO_SHA256 ) && ! empty( $raw_signature ) ) {
             return $signing_input . '.' . self::to_base_64_url( $raw_signature );
         }
@@ -971,6 +972,7 @@ class GECX_Auth {
         $private_key = self::regenerate_keypair_locked( $private_key );
         if ( ! empty( $private_key ) ) {
             $raw_signature = '';
+            // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- OpenSSL warnings on a corrupt key are drained into the log lines below.
             if ( @openssl_sign( $signing_input, $raw_signature, $private_key, OPENSSL_ALGO_SHA256 ) && ! empty( $raw_signature ) ) {
                 return $signing_input . '.' . self::to_base_64_url( $raw_signature );
             }
@@ -984,9 +986,12 @@ class GECX_Auth {
      * Decodes a string encoded using URL-safe base64.
      */
     public static function from_base_64_url( string $string ): string {
-        if ( strlen( $string ) % 4 !== 0 ) {
-            return self::from_base_64_url( $string . '=' );
+        $remainder = strlen( $string ) % 4;
+        if ( 0 !== $remainder ) {
+            $string .= str_repeat( '=', 4 - $remainder );
         }
+
+        // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- base64url decoding of a JWT segment, not obfuscation.
         return (string) base64_decode(
             str_replace(
                 [ '-', '_' ],
@@ -1003,6 +1008,7 @@ class GECX_Auth {
         return str_replace(
             [ '+', '/', '=' ],
             [ '-', '_', '' ],
+            // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- base64url encoding of a JWT segment, not obfuscation.
             base64_encode( $string )
         );
     }
@@ -1011,7 +1017,7 @@ class GECX_Auth {
      * Builds the serialized signing input for a JWT given an algorithm and base64url-encoded payload.
      */
     private static function build_signing_input( string $alg, string $payload_encoded ): string {
-        $header_encoded = self::to_base_64_url( (string) json_encode( [
+        $header_encoded = self::to_base_64_url( (string) wp_json_encode( [
             'typ' => 'JWT',
             'alg' => $alg,
         ] ) );
@@ -1102,12 +1108,14 @@ class GECX_Auth {
         if ( false === $ciphertext || empty( $tag ) ) {
             return null;
         }
+        // phpcs:disable WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- binary AES-GCM output has to be stored as text in an option.
         return [
             'version'    => 1,
             'iv'         => base64_encode( $iv ),
             'ciphertext' => base64_encode( $ciphertext ),
             'tag'        => base64_encode( $tag ),
         ];
+        // phpcs:enable WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
     }
 
     /**
@@ -1131,9 +1139,11 @@ class GECX_Auth {
         if ( empty( $enc_key ) ) {
             return null;
         }
+        // phpcs:disable WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- reverses the encoding applied by encrypt_private_key().
         $iv         = base64_decode( $encrypted_data['iv'], true );
         $ciphertext = base64_decode( $encrypted_data['ciphertext'], true );
         $tag        = base64_decode( $encrypted_data['tag'], true );
+        // phpcs:enable WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode
 
         if ( false === $iv || false === $ciphertext || false === $tag ) {
             return null;

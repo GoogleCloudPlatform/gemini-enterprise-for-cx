@@ -953,7 +953,7 @@ class GECX_Rest_API {
      * Handle the POST request to register or update WooCommerce order.created webhook.
      */
     public function order_created_webhooks_handler( \WP_REST_Request $request ) {
-        $consumer_secret = trim( (string) $request->get_param( 'consumer_secret' ) );
+        $consumer_secret = trim( sanitize_text_field( (string) $request->get_param( 'consumer_secret' ) ) );
         if ( ! empty( $consumer_secret ) && ! self::is_valid_secret( $consumer_secret ) ) {
             return new \WP_Error( 'invalid_secret', __( 'Consumer secret is invalid.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
