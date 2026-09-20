@@ -346,6 +346,7 @@ class AdminTest extends GECX_TestCase {
 
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertFalse( get_option( 'gecx_api_secret' ) );
+        $this->assertFalse( get_option( 'gecx_keypair' ) );
         $this->assertFalse( get_option( 'gecx_public_key' ) );
         $this->assertFalse( get_option( 'gecx_private_key' ) );
     }
@@ -412,6 +413,7 @@ class AdminTest extends GECX_TestCase {
 
         $this->assertStringContainsString( 'id="gecx-authorize-btn"', $html );
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertFalse( get_option( 'gecx_keypair' ) );
         $this->assertFalse( get_option( 'gecx_private_key' ) );
     }
 

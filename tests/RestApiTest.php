@@ -838,8 +838,7 @@ class RestApiTest extends GECX_TestCase {
     public function test_refresh_token_handler_no_secret_returns_500(): void {
         $GLOBALS['gecx_test_current_user'] = null;
         delete_option( 'gecx_api_secret' );
-        delete_option( 'gecx_public_key' );
-        delete_option( 'gecx_private_key' );
+        delete_option( 'gecx_keypair' );
         $GLOBALS['gecx_test_wp_salt'] = '';
 
         $rest_api = new GECX_Rest_API();
@@ -853,8 +852,7 @@ class RestApiTest extends GECX_TestCase {
     }
 
     public function test_get_public_key_handler_success(): void {
-        delete_option( 'gecx_public_key' );
-        delete_option( 'gecx_private_key' );
+        delete_option( 'gecx_keypair' );
 
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();
@@ -868,8 +866,7 @@ class RestApiTest extends GECX_TestCase {
     }
 
     public function test_get_public_key_handler_failure_returns_500(): void {
-        delete_option( 'gecx_public_key' );
-        delete_option( 'gecx_private_key' );
+        delete_option( 'gecx_keypair' );
         $GLOBALS['gecx_test_wp_salt'] = '';
 
         $rest_api = new GECX_Rest_API();
@@ -1476,8 +1473,7 @@ class RestApiTest extends GECX_TestCase {
 
     public function test_auth_context_handler_returns_null_customer_jwt_when_no_secret(): void {
         $GLOBALS['gecx_test_current_user'] = null;
-        delete_option( 'gecx_public_key' );
-        delete_option( 'gecx_private_key' );
+        delete_option( 'gecx_keypair' );
         $GLOBALS['gecx_test_wp_salt'] = '';
 
         $rest_api = new GECX_Rest_API();

@@ -399,8 +399,7 @@ class WebhookLifecycleTest extends TestCase {
         delete_option( 'gecx_webhook_id' );
         delete_option( 'gecx_agent_name' );
         delete_option( 'gecx_auth_complete' );
-        delete_option( 'gecx_public_key' );
-        delete_option( 'gecx_private_key' );
+        delete_option( 'gecx_keypair' );
         $GLOBALS['gecx_test_http_requests'] = [];
 
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
@@ -410,16 +409,21 @@ class WebhookLifecycleTest extends TestCase {
         include dirname( __DIR__ ) . '/uninstall.php';
 
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
-        $this->assertFalse( get_option( 'gecx_public_key' ) );
-        $this->assertFalse( get_option( 'gecx_private_key' ) );
+        $this->assertFalse( get_option( 'gecx_keypair' ) );
     }
 
     public function test_uninstall_omits_authorization_header_when_stored_keypair_is_corrupt(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $this->create_gecx_webhook( 'active', 'wh_db_secret_789' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
-        update_option( 'gecx_public_key', '-----BEGIN PUBLIC KEY-----\nMIIB...\n-----END PUBLIC KEY-----' );
-        update_option( 'gecx_private_key', [ 'iv' => 'bad', 'tag' => 'bad', 'ciphertext' => 'unreadable' ] );
+        update_option(
+            'gecx_keypair',
+            [
+                'version'     => 1,
+                'public_key'  => '-----BEGIN PUBLIC KEY-----\nMIIB...\n-----END PUBLIC KEY-----',
+                'private_key' => [ 'iv' => 'bad', 'tag' => 'bad', 'ciphertext' => 'unreadable' ],
+            ]
+        );
         $GLOBALS['gecx_test_http_requests'] = [];
 
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {

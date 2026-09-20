@@ -293,7 +293,7 @@ class SyncStateTest extends GECX_TestCase {
 
         $this->assertEquals( '', $status );
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
-        $this->assertFalse( get_option( 'gecx_private_key' ) );
+        $this->assertFalse( get_option( 'gecx_keypair' ) );
         $this->assertFalse( get_option( 'gecx_sync_last_attempt' ) );
     }
 

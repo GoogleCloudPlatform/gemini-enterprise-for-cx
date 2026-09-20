@@ -200,6 +200,9 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         // otherwise valid HMAC-signed uninstall webhook.
         $gecx_was_connected = ! empty( $gecx_secret )
             || ! empty( $gecx_agent_name )
+            || ! empty( get_option( 'gecx_keypair' ) )
+            // Pre-0.3.15 layout, for a store uninstalled before anything read
+            // the keypair and migrated it.
             || ! empty( get_option( 'gecx_private_key' ) )
             || ! empty( get_option( 'gecx_auth_complete', 0 ) );
 
@@ -274,6 +277,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         // 3. Clear all plugin options from the local WordPress database.
         // Legacy shared secret, retired in favour of the store's RSA keypair.
         delete_option( 'gecx_api_secret' );
+        delete_option( 'gecx_keypair' );
+        // Pre-0.3.15 layout, deleted too for stores that never migrated.
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
         delete_option( 'gecx_keypair_lock' );
