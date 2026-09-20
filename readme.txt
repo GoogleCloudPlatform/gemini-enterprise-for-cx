@@ -65,7 +65,7 @@ Yes. The plugin connects your WooCommerce store to Google's Gemini Enterprise fo
 
 = What external endpoints and CDNs are called? =
 * `https://gecx.cloud.google.com` is used in the admin settings dashboard to manage your GECX agent and connect store APIs.
-* `https://www.gstatic.com` is used on the customer storefront to load the chat widget client SDK (`woocommerce-chat-widget.js`). The widget stylesheet is served from the plugin directory, not from a remote origin.
+* `https://www.gstatic.com/gecx/chat-widget/woocommerce-chat-widget.js` is loaded on the customer storefront to provide the chat widget client SDK. The widget stylesheet is served from the plugin directory, not from a remote origin.
 
 = What data is sent to Google? =
 During merchant setup, store URL and WooCommerce API credentials are authenticated. During storefront usage, customer chat queries and viewed product context are processed to return relevant answers. Standard request headers (such as IP address) are processed by Google's infrastructure in accordance with the Google Privacy Policy.
@@ -79,6 +79,9 @@ The complete release history is kept in changelog.txt at the plugin root.
 
 = 0.3.12 =
 * Resolve the logged-in user on `/wp-json/gecx/v1/auth-context` without calling `wp_set_current_user()`, passing the validated cookie user ID directly to `GECX_Auth::generate_customer_jwt()` and to `wp_create_nonce()` via the core `nonce_user_logged_out` filter.
+* Reference the chat widget script by its full URL in the readme, replacing a bare `www.gstatic.com` origin that returned a 404.
+* Localize the "Settings" plugin action link and the suggested-prompts placeholder.
+* Resolve the REST route and the `Origin`, `Referer` and `Sec-Fetch-Site` headers without `sanitize_text_field()`, so the plugin matches the same bytes WordPress dispatches and compares the origin actually sent.
 
 = 0.3.11 =
 * Reconcile store state with the SyncState API on `admin_init` when the installed plugin version changes, so the backend records the new version on the first administrator page load after an upgrade without waiting out the sync throttle window.

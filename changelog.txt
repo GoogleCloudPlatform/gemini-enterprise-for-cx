@@ -1,7 +1,10 @@
 *** Gemini Enterprise for CX Changelog ***
 
-2026-09-19 - version 0.3.12
+2026-09-20 - version 0.3.12
 * Resolve the logged-in user on `/wp-json/gecx/v1/auth-context` without calling `wp_set_current_user()`, passing the validated cookie user ID directly to `GECX_Auth::generate_customer_jwt()` and to `wp_create_nonce()` via the core `nonce_user_logged_out` filter.
+* Reference the chat widget script by its full URL in the readme, replacing a bare `www.gstatic.com` origin that returned a 404.
+* Localize the "Settings" plugin action link and the suggested-prompts placeholder.
+* Resolve the REST route and the `Origin`, `Referer` and `Sec-Fetch-Site` headers without `sanitize_text_field()`, so the plugin matches the same bytes WordPress dispatches and compares the origin actually sent.
 
 2026-09-19 - version 0.3.11
 * Reconcile store state with the SyncState API on `admin_init` when the installed plugin version changes, so the backend records the new version on the first administrator page load after an upgrade without waiting out the sync throttle window.

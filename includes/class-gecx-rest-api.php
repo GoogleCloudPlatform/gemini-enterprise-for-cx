@@ -507,8 +507,13 @@ class GECX_Rest_API {
     private static function read_request_header( \WP_REST_Request $request, string $header_name, string $server_key ): string {
         $value = (string) $request->get_header( $header_name );
         if ( '' === $value && isset( $_SERVER[ $server_key ] ) ) {
-            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via sanitize_text_field.
-            $value = sanitize_text_field( wp_unslash( (string) $_SERVER[ $server_key ] ) );
+            // Not sanitized, so that this fallback answers with the same bytes
+            // the get_header() path above returns. The callers parse the value
+            // as a URL and compare host and port; sanitize_text_field() strips
+            // percent-octets, which would let a header that is not same-origin
+            // be reduced to one that is.
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Parsed as a URL by is_same_origin(), never output. See above.
+            $value = (string) wp_unslash( $_SERVER[ $server_key ] );
         }
         return $value;
     }
