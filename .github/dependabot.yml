@@ -1,0 +1,36 @@
+version: 2
+
+updates:
+  # The Actions are SHA-pinned, which is correct but means a pin is only as
+  # current as the last person who looked at it. This is what keeps them moving.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - "dependencies"
+
+  # Everything in composer.json is require-dev, so nothing here reaches a store.
+  # It still governs what the test and lint jobs run.
+  - package-ecosystem: "composer"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+    # PHPUnit 10 dropped the configuration format phpunit.xml.dist uses, and a
+    # WPCS major brings a new PHP_CodeSniffer major with a changed standard
+    # layout. Both need a deliberate migration rather than an automatic bump.
+    ignore:
+      - dependency-name: "phpunit/phpunit"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "wp-coding-standards/wpcs"
+        update-types: ["version-update:semver-major"]

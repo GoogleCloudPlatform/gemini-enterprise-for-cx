@@ -54,6 +54,74 @@ function gecxIsCartOrCheckout() {
   return /(^|\/)(cart|checkout)(\/|$)/.test(window.location.pathname);
 }
 
+/**
+ * Reports a failure that would otherwise be invisible.
+ *
+ * Every fetch below used to end in an empty catch, so a cart that failed to
+ * refresh looked identical to one that refreshed correctly, both to the
+ * shopper and to anyone reading a console log afterwards.
+ * @param {string} context What was being attempted.
+ * @param {*} err The rejection value.
+ */
+function gecxReportError(context, err) {
+  if (window.console && window.console.warn) {
+    window.console.warn('[gecx] ' + context + ' failed:', err);
+  }
+}
+
+/** @type {?Promise<string>} In-flight or settled nonce lookup for this page view. */
+let gecxRestNoncePromise = null;
+
+/**
+ * Resolves a REST nonce valid for this shopper.
+ *
+ * Fetched rather than read from the page. Storefront HTML is cached, so any
+ * nonce rendered into it expires while the cached copy is still being served,
+ * which is what made the Store API answer 403 for logged-in shoppers. The
+ * chat widget resolves its own nonce the same way.
+ *
+ * Caches the in-flight Promise so concurrent cart updates share one request,
+ * and clears the cached Promise on failure so a subsequent cart update can
+ * retry instead of being stuck with an empty nonce for the lifetime of the
+ * page view.
+ * @return {!Promise<string>}
+ */
+function gecxResolveRestNonce() {
+  if (null !== gecxRestNoncePromise) {
+    return gecxRestNoncePromise;
+  }
+
+  const config = window.gecxStorefrontConfig;
+  const url = (config && config.authContextUrl) ? config.authContextUrl : '';
+  if (!url) {
+    gecxRestNoncePromise = Promise.resolve('');
+    return gecxRestNoncePromise;
+  }
+
+  gecxRestNoncePromise =
+      fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {'Content-Type': 'application/json'}
+      })
+          .then(function(res) {
+            if (!res.ok) {
+              throw new Error('auth-context responded ' + res.status);
+            }
+            return res.json();
+          })
+          .then(function(data) {
+            return (data && data.nonce) ? data.nonce : '';
+          })
+          .catch(function(err) {
+            gecxReportError('nonce lookup', err);
+            gecxRestNoncePromise = null;
+            return '';
+          });
+
+  return gecxRestNoncePromise;
+}
+
 function handleCartUpdate(e) {
   const cartId = (e.detail && (e.detail.cartId || e.detail.cart_id)) ?
       (e.detail.cartId || e.detail.cart_id) :
@@ -67,9 +135,6 @@ function handleCartUpdate(e) {
   if (window.wp && window.wp.data && window.wp.data.dispatch) {
     try {
       const coreStore = window.wp.data.dispatch('core/data');
-      if (coreStore && coreStore.invalidateResolution) {
-        coreStore.invalidateResolution('wc/store/cart', 'getCartData', []);
-      }
       const cartStore = window.wp.data.dispatch('wc/store/cart');
       if (cartStore && cartStore.setIsCartDataStale) {
         cartStore.setIsCartDataStale(true);
@@ -83,42 +148,62 @@ function handleCartUpdate(e) {
         headers['Cart-Token'] = cartId;
       }
 
-      if (window.wp.apiFetch) {
-        window.wp
-            .apiFetch({
-              path: '/wc/store/v1/cart',
-              headers: headers,
-              credentials: 'include'
-            })
-            .then(function(cart) {
-              if (cartStore && cartStore.receiveCart) {
-                cartStore.receiveCart(cart);
-              }
-              if (gecxIsCartOrCheckout()) {
-                window.location.reload();
-              }
-            })
-            .catch(function(err) {});
-      } else {
-        fetch(gecxCartRestUrl(), {
-          method: 'GET',
-          headers: Object.assign({'Content-Type': 'application/json'}, headers),
-          credentials: 'include'
-        })
-            .then(function(res) {
-              return res.json();
-            })
-            .then(function(cart) {
-              if (cartStore && cartStore.receiveCart) {
-                cartStore.receiveCart(cart);
-              }
-              if (gecxIsCartOrCheckout()) {
-                window.location.reload();
-              }
-            })
-            .catch(function(err) {});
-      }
+      // Resolve a fresh REST nonce before both invalidateResolution() and
+      // wp.apiFetch(). On cached storefront HTML, wp.apiFetch.nonceMiddleware
+      // is seeded with whatever guest or expired nonce was baked into the
+      // page at cache time, and wp-api-fetch is always loaded alongside
+      // wc-blocks-data-store, so updating nonceMiddleware.nonce is required
+      // to keep logged-in cart reads from failing with 403.
+      gecxResolveRestNonce()
+          .then(function(nonce) {
+            if (nonce && window.wp.apiFetch &&
+                window.wp.apiFetch.nonceMiddleware) {
+              window.wp.apiFetch.nonceMiddleware.nonce = nonce;
+            }
+            if (coreStore && coreStore.invalidateResolution) {
+              coreStore.invalidateResolution(
+                  'wc/store/cart', 'getCartData', []);
+            }
+
+            const requestHeaders = Object.assign({}, headers);
+            if (nonce) {
+              requestHeaders['X-WP-Nonce'] = nonce;
+            }
+
+            if (window.wp.apiFetch) {
+              return window.wp.apiFetch({
+                path: '/wc/store/v1/cart',
+                headers: requestHeaders,
+                credentials: 'include'
+              });
+            }
+
+            requestHeaders['Content-Type'] = 'application/json';
+            return fetch(gecxCartRestUrl(), {
+                     method: 'GET',
+                     headers: requestHeaders,
+                     credentials: 'include'
+                   })
+                .then(function(res) {
+                  if (!res.ok) {
+                    throw new Error('cart responded ' + res.status);
+                  }
+                  return res.json();
+                });
+          })
+          .then(function(cart) {
+            if (cartStore && cartStore.receiveCart) {
+              cartStore.receiveCart(cart);
+            }
+            if (gecxIsCartOrCheckout()) {
+              window.location.reload();
+            }
+          })
+          .catch(function(err) {
+            gecxReportError('cart refresh', err);
+          });
     } catch (err) {
+      gecxReportError('cart store update', err);
     }
   }
 

@@ -143,6 +143,15 @@ class GECX_Storefront {
             // the plain-permalink ?rest_route= form, none of which the script
             // can infer from window.location.
             'cartRestUrl'     => esc_url_raw( rest_url( 'wc/store/v1/cart' ) ),
+            // The nonce itself is deliberately not localized here. This config
+            // is rendered into the page body, and storefront HTML is cached by
+            // WP Rocket, LiteSpeed and Cloudflare, so a nonce baked in at
+            // render time is stale within 12-24 hours and the Store API answers
+            // 403. The script fetches a fresh one from this route instead,
+            // which is uncacheable by construction (nocache_headers() plus
+            // Cache-Control: no-store). Same approach the chat widget bundle
+            // takes.
+            'authContextUrl'  => esc_url_raw( rest_url( 'gecx/v1/auth-context' ) ),
             // WooCommerce resolves these from the store's configured page IDs,
             // so a store using localized slugs such as /panier still answers
             // correctly, and a product whose slug merely starts with "cart"

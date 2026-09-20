@@ -396,6 +396,10 @@ class StorefrontTest extends GECX_TestCase {
             'https://example.com/wp-json/wc/store/v1/cart',
             $config['cartRestUrl']
         );
+        $this->assertEquals(
+            'https://example.com/wp-json/gecx/v1/auth-context',
+            $config['authContextUrl']
+        );
     }
 
     public function test_storefront_cart_url_follows_a_subdirectory_install(): void {
@@ -407,6 +411,10 @@ class StorefrontTest extends GECX_TestCase {
             'https://example.com/shop/wp-json/wc/store/v1/cart',
             $config['cartRestUrl']
         );
+        $this->assertEquals(
+            'https://example.com/shop/wp-json/gecx/v1/auth-context',
+            $config['authContextUrl']
+        );
     }
 
     public function test_storefront_cart_url_follows_a_renamed_rest_prefix(): void {
@@ -417,6 +425,10 @@ class StorefrontTest extends GECX_TestCase {
         $this->assertEquals(
             'https://example.com/api/wc/store/v1/cart',
             $config['cartRestUrl']
+        );
+        $this->assertEquals(
+            'https://example.com/api/gecx/v1/auth-context',
+            $config['authContextUrl']
         );
     }
 
