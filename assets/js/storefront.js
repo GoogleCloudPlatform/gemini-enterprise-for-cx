@@ -16,6 +16,54 @@
 (function() {
 'use strict';
 
+/** @type {string} Latest Store API Cart-Token observed from cart responses or events. */
+let gecxLatestCartToken = '';
+
+if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
+  const originalFetch = window.fetch;
+  window.fetch = function(input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+    if (gecxLatestCartToken && /\/gecx\/v1\/session(\b|$)/.test(url)) {
+      init = Object.assign({}, init);
+      if (typeof Headers !== 'undefined') {
+        const headers = new Headers(init.headers || {});
+        if (!headers.has('Cart-Token')) {
+          headers.set('Cart-Token', gecxLatestCartToken);
+        }
+        init.headers = headers;
+      } else {
+        const headers = Object.assign({}, init.headers || {});
+        let hasToken = false;
+        for (const key in headers) {
+          if (Object.prototype.hasOwnProperty.call(headers, key) && key.toLowerCase() === 'cart-token') {
+            hasToken = true;
+            break;
+          }
+        }
+        if (!hasToken) {
+          headers['Cart-Token'] = gecxLatestCartToken;
+        }
+        init.headers = headers;
+      }
+    }
+    return originalFetch.call(this, input, init).then(function(response) {
+      try {
+        if (response && response.headers && /\/wc\/store\/v\d+\/cart(\b|\/|$)/.test(url)) {
+          const token = (typeof response.headers.get === 'function') ?
+              (response.headers.get('Cart-Token') || response.headers.get('cart-token')) :
+              '';
+          if (token) {
+            gecxLatestCartToken = token;
+          }
+        }
+      } catch (err) {
+        // Ignore header inspection errors on opaque responses.
+      }
+      return response;
+    });
+  };
+}
+
 /**
  * The Store API cart endpoint for this store.
  *
@@ -126,6 +174,9 @@ function handleCartUpdate(e) {
   const cartId = (e.detail && (e.detail.cartId || e.detail.cart_id)) ?
       (e.detail.cartId || e.detail.cart_id) :
       '';
+  if (cartId) {
+    gecxLatestCartToken = cartId;
+  }
   const totalQuantity = (e.detail && e.detail.totalQuantity !== undefined) ?
       e.detail.totalQuantity :
       null;

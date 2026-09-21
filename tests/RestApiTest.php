@@ -1667,7 +1667,7 @@ class RestApiTest extends GECX_TestCase {
 
         $this->assertArrayHasKey( 'wp_woocommerce_session_testcookiehash', $_COOKIE );
         $cookie_val = $_COOKIE['wp_woocommerce_session_testcookiehash'];
-        $this->assertStringStartsWith( 't_guest_shopper_999|', $cookie_val );
+        $this->assertStringStartsWith( 't_guest_shopper_999||', $cookie_val );
         $this->assertArrayHasKey( 't_guest_shopper_999', $wpdb->wc_sessions );
     }
 
