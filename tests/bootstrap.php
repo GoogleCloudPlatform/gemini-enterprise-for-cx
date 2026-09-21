@@ -258,7 +258,9 @@ if ( ! class_exists( 'WC_Session_Handler' ) ) {
         public bool $cookie_set = false;
         public int $cookie_set_calls = 0;
         public int $save_data_calls = 0;
-        public string $customer_id = 'guest_session_123';
+        // WooCommerce generates guest customer IDs with a t_ prefix. See
+        // WC_Session_Handler::generate_customer_id() and is_customer_guest().
+        public string $customer_id = 't_guest_session_123';
         public bool $has_active_session = false;
         public function init(): void {}
         public function get( string $key, $default = null ) {

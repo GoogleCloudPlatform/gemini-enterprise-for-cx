@@ -80,6 +80,7 @@ The complete release history is kept in changelog.txt at the plugin root.
 = 0.3.15 =
 * Avoid forcing guest WooCommerce session cookies on non-mutating REST requests and empty guest carts, preventing guest nonce invalidation on account and registration pages.
 * Bridge Store API `Cart-Token` to browser cookie when non-empty guest carts are fetched, and forward `Cart-Token` from storefront fetch calls to `/gecx/v1/session` for order attribution.
+* Restrict the session cookie bridge to WooCommerce guest session keys, so a `Cart-Token` minted before the shopper logged out can no longer write a numeric customer ID that WooCommerce would reject and destroy that user's saved cart over.
 * Use core-compatible HMAC MD5 hash and double-pipe delimiter for guest session cookies.
 
 = 0.3.14 =

@@ -1574,9 +1574,9 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 1, WC()->session->cookie_set_calls );
         $this->assertTrue( WC()->session->cookie_set );
         $this->assertSame( 1, WC()->cart->persistent_cart_updates );
-        $this->assertArrayHasKey( 'guest_session_123', $wpdb->wc_sessions );
+        $this->assertArrayHasKey( 't_guest_session_123', $wpdb->wc_sessions );
 
-        $stored = maybe_unserialize( $wpdb->wc_sessions['guest_session_123'] );
+        $stored = maybe_unserialize( $wpdb->wc_sessions['t_guest_session_123'] );
         $this->assertSame( WC()->cart->cart_for_session, $stored['cart'] );
         $this->assertNotEmpty( $GLOBALS['gecx_test_deleted_cache_keys'] );
     }
@@ -1603,7 +1603,7 @@ class RestApiTest extends GECX_TestCase {
 
         $this->assertSame( 0, WC()->session->cookie_set_calls );
         $this->assertSame( 1, WC()->cart->persistent_cart_updates );
-        $this->assertArrayHasKey( 'guest_session_123', $wpdb->wc_sessions );
+        $this->assertArrayHasKey( 't_guest_session_123', $wpdb->wc_sessions );
     }
 
     public function test_save_session_handler_does_not_force_cookie_for_uncookied_guest_without_cart(): void {
@@ -1621,7 +1621,7 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 0, WC()->session->save_data_calls );
 
         // Once the browser already has a WooCommerce session cookie, save_session_handler persists and refreshes it.
-        $_COOKIE['wp_woocommerce_session_test'] = 'guest_session_123||12345||12345||hash';
+        $_COOKIE['wp_woocommerce_session_test'] = 't_guest_session_123||12345||12345||hash';
         $res_with_cookie                        = $rest_api->save_session_handler( $request );
         $this->assertInstanceOf( WP_REST_Response::class, $res_with_cookie );
         $this->assertSame( 1, WC()->session->cookie_set_calls );
@@ -1677,6 +1677,28 @@ class RestApiTest extends GECX_TestCase {
         WC()->cart->cart_for_session = [];
 
         $token = $this->generate_jwt( 't_guest_empty' );
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+        $request->set_header( 'Cart-Token', $token );
+
+        unset( $_COOKIE['wp_woocommerce_session_testcookiehash'] );
+        $GLOBALS['gecx_test_cookies'] = [];
+
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+        $this->assertArrayNotHasKey( 'wp_woocommerce_session_testcookiehash', $_COOKIE );
+    }
+
+    public function test_sync_cart_session_does_not_bridge_a_numeric_cart_token_user_id_to_a_cookie(): void {
+        // A Cart-Token minted while the shopper was logged in carries a numeric
+        // user_id and stays valid after logout. Writing it as a session cookie for a
+        // logged-out browser makes WC_Session_Handler::is_session_cookie_valid() fail,
+        // which destroys that user's session row and empties their saved cart.
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 2 ] ];
+
+        $token = $this->generate_jwt( '5' );
 
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );

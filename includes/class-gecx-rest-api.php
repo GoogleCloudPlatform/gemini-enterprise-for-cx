@@ -237,7 +237,7 @@ class GECX_Rest_API {
      *
      * @param string $customer_id Guest customer ID (e.g. t_...).
      */
-    public static function set_guest_session_cookie( string $customer_id ): void {
+    private static function set_guest_session_cookie( string $customer_id ): void {
         if ( empty( $customer_id ) ) {
             return;
         }
@@ -436,7 +436,10 @@ class GECX_Rest_API {
                     $raw_cart_token = $this->find_cart_token( $request->get_headers() );
                 }
                 if ( '' === $raw_cart_token && ! empty( $_SERVER['HTTP_CART_TOKEN'] ) ) {
-                    $raw_cart_token = (string) $_SERVER['HTTP_CART_TOKEN'];
+                    // wp_unslash() only. sanitize_text_field() strips percent-octets,
+                    // which would corrupt a JWT and fail its HMAC verification.
+                    // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Value is HMAC-verified by GECX_Auth::get_cart_token_customer_id().
+                    $raw_cart_token = (string) wp_unslash( $_SERVER['HTTP_CART_TOKEN'] );
                 }
                 if ( '' !== $raw_cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
                     $session_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
@@ -457,7 +460,14 @@ class GECX_Rest_API {
             // Set the WooCommerce session cookie for un-cookied guests with cart items:
             // 1) when bridging a Cart-Token cart to the browser on GET /wc/store/v1/cart, or
             // 2) when a non-empty cart was mutated directly by the browser without a Cart-Token.
-            if ( ! $has_cookie && $has_cart_items && 0 === get_current_user_id() && ! empty( $session_key ) ) {
+            //
+            // Only guest session keys are eligible. A Cart-Token minted while the shopper was
+            // logged in carries a numeric user_id, and that token stays valid after the shopper
+            // logs out. Writing a numeric key as a session cookie for a logged-out browser makes
+            // WC_Session_Handler::is_session_cookie_valid() fail, which calls destroy_session()
+            // and deletes that user's row from the sessions table along with their saved cart.
+            $is_guest_session_key = ( 0 === strpos( $session_key, 't_' ) );
+            if ( ! $has_cookie && $has_cart_items && 0 === get_current_user_id() && $is_guest_session_key ) {
                 if ( $is_cart_token_cart_read || ( $is_mutation && ! $has_cart_token ) ) {
                     self::set_guest_session_cookie( $session_key );
                 }
@@ -608,7 +618,10 @@ class GECX_Rest_API {
             $raw_cart_token = (string) ( $request->get_param( 'cart_token' ) ?? $request->get_param( 'cartId' ) ?? $request->get_param( 'cart_id' ) ?? '' );
         }
         if ( '' === $raw_cart_token && ! empty( $_SERVER['HTTP_CART_TOKEN'] ) ) {
-            $raw_cart_token = (string) $_SERVER['HTTP_CART_TOKEN'];
+            // wp_unslash() only. sanitize_text_field() strips percent-octets,
+            // which would corrupt a JWT and fail its HMAC verification.
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Value is HMAC-verified by GECX_Auth::get_cart_token_customer_id().
+            $raw_cart_token = (string) wp_unslash( $_SERVER['HTTP_CART_TOKEN'] );
         }
         if ( '' !== $raw_cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
             $session_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
@@ -1425,7 +1438,10 @@ class GECX_Rest_API {
                 $cart_token = $this->find_cart_token( $request->get_headers() );
             }
             if ( '' === $cart_token && ! empty( $_SERVER['HTTP_CART_TOKEN'] ) ) {
-                $cart_token = (string) $_SERVER['HTTP_CART_TOKEN'];
+                // wp_unslash() only. sanitize_text_field() strips percent-octets,
+                // which would corrupt a JWT and fail its HMAC verification.
+                // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Value is HMAC-verified by GECX_Auth::get_cart_token_customer_id().
+                $cart_token = (string) wp_unslash( $_SERVER['HTTP_CART_TOKEN'] );
             }
             if ( '' !== $cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
                 $customer_id = GECX_Auth::get_cart_token_customer_id( $cart_token );
