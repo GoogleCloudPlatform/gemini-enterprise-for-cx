@@ -24,6 +24,27 @@ if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) ) {
 if ( ! defined( 'GECX_VERSION' ) ) {
     define( 'GECX_VERSION', '1.0.0' );
 }
+if ( ! defined( 'COOKIEHASH' ) ) {
+    define( 'COOKIEHASH', 'testcookiehash' );
+}
+if ( ! defined( 'COOKIEPATH' ) ) {
+    define( 'COOKIEPATH', '/' );
+}
+if ( ! defined( 'COOKIE_DOMAIN' ) ) {
+    define( 'COOKIE_DOMAIN', '' );
+}
+
+if ( ! function_exists( 'wc_setcookie' ) ) {
+    function wc_setcookie( $name, $value, $expire = 0, $secure = false, $httponly = false ) {
+        $GLOBALS['gecx_test_cookies'][ $name ] = [
+            'value'    => $value,
+            'expire'   => $expire,
+            'secure'   => $secure,
+            'httponly' => $httponly,
+        ];
+        $_COOKIE[ $name ] = $value;
+    }
+}
 
 /**
  * Resets every global the harness owns.
@@ -541,6 +562,9 @@ if ( ! class_exists( 'WP_REST_Request' ) ) {
         }
         public function get_header( string $name ): ?string {
             return $this->headers[ strtolower( $name ) ] ?? null;
+        }
+        public function get_headers(): array {
+            return $this->headers;
         }
         public function set_param( string $key, $value ): void {
             $this->params[ $key ] = $value;
@@ -1690,6 +1714,12 @@ if ( ! class_exists( 'PHPUnit\Framework\TestCase' ) ) {
         public function assertLessThan( $expected, $actual, string $message = '' ): void {
             if ( ! ( $actual < $expected ) ) {
                 throw new \AssertionError( ( $message ?: 'Failed asserting that actual is less than expected.' ) . " Expected < $expected, Actual: $actual" );
+            }
+        }
+
+        public function assertStringStartsWith( string $prefix, string $string, string $message = '' ): void {
+            if ( strpos( $string, $prefix ) !== 0 ) {
+                throw new \AssertionError( ( $message ?: 'Failed asserting that string starts with prefix.' ) . "\nPrefix: $prefix\nString: $string" );
             }
         }
     }

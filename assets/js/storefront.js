@@ -160,10 +160,6 @@ function handleCartUpdate(e) {
                 window.wp.apiFetch.nonceMiddleware) {
               window.wp.apiFetch.nonceMiddleware.nonce = nonce;
             }
-            if (coreStore && coreStore.invalidateResolution) {
-              coreStore.invalidateResolution(
-                  'wc/store/cart', 'getCartData', []);
-            }
 
             const requestHeaders = Object.assign({}, headers);
             if (nonce) {
@@ -192,6 +188,10 @@ function handleCartUpdate(e) {
                 });
           })
           .then(function(cart) {
+            if (coreStore && coreStore.invalidateResolution) {
+              coreStore.invalidateResolution(
+                  'wc/store/cart', 'getCartData', []);
+            }
             if (cartStore && cartStore.receiveCart) {
               cartStore.receiveCart(cart);
             }
