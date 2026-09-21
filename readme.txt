@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.14
+Stable tag: 0.3.15
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -76,6 +76,11 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.15 =
+* Avoid forcing guest WooCommerce session cookies on non-mutating REST requests and empty guest carts, preventing guest nonce invalidation on account and registration pages.
+* Bridge Store API `Cart-Token` to browser cookie when non-empty guest carts are fetched, and forward `Cart-Token` from storefront fetch calls to `/gecx/v1/session` for order attribution.
+* Use core-compatible HMAC MD5 hash and double-pipe delimiter for guest session cookies.
 
 = 0.3.14 =
 * Resolve the Store API cart endpoint from `rest_url()` instead of assuming `/wp-json/`, so the storefront script reaches the cart on subdirectory installs, plain permalinks, and stores with a renamed REST prefix.
