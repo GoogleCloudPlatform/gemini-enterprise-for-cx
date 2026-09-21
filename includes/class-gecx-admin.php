@@ -86,6 +86,18 @@ class GECX_Admin {
     public const PENDING_NOTICES_OPTION = 'gecx_pending_sync_notices';
 
     /**
+     * Action hook used by WP-Cron to execute version upgrade SyncState
+     * reconciliation asynchronously without blocking admin_init.
+     */
+    public const VERSION_SYNC_CRON_HOOK = 'gecx_scheduled_version_sync';
+
+    /**
+     * Non-autoloaded option holding the administrator user ID that triggered
+     * the pending version upgrade sync.
+     */
+    public const VERSION_SYNC_USER_OPTION = 'gecx_version_sync_user_id';
+
+    /**
      * Triggered upon plugin activation.
      */
     public static function activate_plugin(): void {
@@ -102,6 +114,12 @@ class GECX_Admin {
      * Pauses the order webhook so no orders are transmitted while deactivated.
      */
     public static function deactivate_plugin(): void {
+        if ( function_exists( 'wp_clear_scheduled_hook' ) ) {
+            wp_clear_scheduled_hook( self::VERSION_SYNC_CRON_HOOK );
+        }
+        if ( function_exists( 'as_unschedule_all_actions' ) ) {
+            as_unschedule_all_actions( self::VERSION_SYNC_CRON_HOOK, [], 'gecx' );
+        }
         if ( class_exists( 'GECX_Rest_API' ) ) {
             GECX_Rest_API::set_order_webhook_status( 'paused' );
         }
@@ -124,6 +142,14 @@ class GECX_Admin {
     private bool $defer_notices = false;
 
     /**
+     * Product IDs already processed by save_product_prompts_override_field()
+     * in the current request so dual WooCommerce save hooks write once.
+     *
+     * @var array<int, bool>
+     */
+    private array $saved_product_prompt_ids = [];
+
+    /**
      * Constructor.
      *
      * @param string $plugin_file Path to the main plugin file.
@@ -136,12 +162,15 @@ class GECX_Admin {
         add_action( 'admin_init', [ $this, 'redirect_on_activation' ] );
         add_action( 'admin_init', [ $this, 'handle_connection_callback' ] );
         add_action( 'admin_init', [ $this, 'maybe_sync_on_version_change' ] );
+        add_action( self::VERSION_SYNC_CRON_HOOK, [ $this, 'run_scheduled_version_sync' ], 10, 1 );
+        add_action( 'admin_post_gecx_connect_agent', [ $this, 'handle_connect_agent_redirect' ] );
         add_action( 'admin_notices', [ $this, 'show_activation_notice' ] );
         add_action( 'admin_notices', [ $this, 'show_pending_sync_notices' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
 
-        // Register product settings override hooks.
+        // Register product settings override hooks (WooCommerce CRUD + legacy post meta fallback).
         add_action( 'woocommerce_product_options_general_product_data', [ $this, 'add_product_prompts_override_field' ] );
+        add_action( 'woocommerce_admin_process_product_object', [ $this, 'save_product_prompts_override_field' ] );
         add_action( 'woocommerce_process_product_meta', [ $this, 'save_product_prompts_override_field' ] );
 
         // Register plugin action link next to Deactivate.
@@ -160,9 +189,9 @@ class GECX_Admin {
      *
      * WordPress does not run register_activation_hook() during plugin upgrades.
      * Comparing GECX_VERSION against the stored gecx_plugin_version option on
-     * admin_init ensures the backend refreshes the installation's recorded
-     * plugin version as soon as an administrator loads wp-admin after an
-     * upgrade, without waiting out the sync throttle window.
+     * admin_init schedules a single asynchronous WP-Cron event so the backend
+     * refreshes the installation's recorded plugin version without blocking
+     * unrelated admin page loads on an outbound HTTP call.
      *
      * The recorded version is only advanced once a sync actually succeeds, so a
      * backend that is unreachable during a rollout is retried on a later admin
@@ -203,33 +232,87 @@ class GECX_Admin {
             return;
         }
 
-        // This runs on whichever admin screen happened to load first after the
-        // upgrade, which is usually not the settings page, and settings_errors()
-        // is only called there. Collect the notices so they survive to a screen
-        // that can show them.
-        //
-        // Only the first attempt for a new version forces past an unexpired
-        // window (which was stamped by the previous release). Once this
-        // version has claimed a window, retries respect the throttle cooldown.
+        $last_stamp = (string) get_option( self::SYNC_THROTTLE_OPTION, '' );
+        $suffix     = ':' . $current_version;
+        $force      = substr( $last_stamp, -strlen( $suffix ) ) !== $suffix;
+        if ( ! $force ) {
+            $last_attempt = (int) strtok( $last_stamp, ':' );
+            if ( $last_attempt > 0 && ( time() - $last_attempt ) < self::SYNC_THROTTLE_SECONDS ) {
+                return;
+            }
+        }
+
+        $admin_user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+        if ( $admin_user_id > 0 ) {
+            update_option( self::VERSION_SYNC_USER_OPTION, $admin_user_id, false );
+        }
+
+        // Prefer WooCommerce Action Scheduler when available so async version
+        // sync still drains on admin requests even if DISABLE_WP_CRON is true.
+        if ( function_exists( 'as_enqueue_async_action' ) ) {
+            if ( ! function_exists( 'as_has_scheduled_action' ) || ! as_has_scheduled_action( self::VERSION_SYNC_CRON_HOOK, [], 'gecx' ) ) {
+                as_enqueue_async_action( self::VERSION_SYNC_CRON_HOOK, [], 'gecx' );
+            }
+            return;
+        }
+
+        $cron_disabled = defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON;
+        if ( ! $cron_disabled && function_exists( 'wp_schedule_single_event' ) ) {
+            if ( ! function_exists( 'wp_next_scheduled' ) || ! wp_next_scheduled( self::VERSION_SYNC_CRON_HOOK ) ) {
+                wp_schedule_single_event( time(), self::VERSION_SYNC_CRON_HOOK );
+            }
+            return;
+        }
+
+        $this->run_scheduled_version_sync( $admin_user_id );
+    }
+
+    /**
+     * Executes the version-upgrade SyncState reconciliation scheduled by
+     * maybe_sync_on_version_change().
+     *
+     * @param int $user_id Optional administrator user ID captured when the event was scheduled.
+     */
+    public function run_scheduled_version_sync( int $user_id = 0 ): void {
+        if ( ! defined( 'GECX_VERSION' ) || '' === (string) GECX_VERSION ) {
+            return;
+        }
+
+        $current_version  = (string) GECX_VERSION;
+        $recorded_version = (string) get_option( self::PLUGIN_VERSION_OPTION, '' );
+        if ( $recorded_version === $current_version ) {
+            return;
+        }
+
+        $current_agent = (string) get_option( 'gecx_agent_name', '' );
+        $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
+        if ( ! $auth_complete && ! $this->has_existing_state( $current_agent ) ) {
+            update_option( self::PLUGIN_VERSION_OPTION, $current_version, false );
+            delete_option( self::VERSION_SYNC_USER_OPTION );
+            return;
+        }
+
+        if ( $user_id <= 0 ) {
+            $user_id = (int) get_option( self::VERSION_SYNC_USER_OPTION, 0 );
+        }
+
         $last_stamp = (string) get_option( self::SYNC_THROTTLE_OPTION, '' );
         $suffix     = ':' . $current_version;
         $force      = substr( $last_stamp, -strlen( $suffix ) ) !== $suffix;
 
         $this->defer_notices = true;
         try {
-            $status = $this->sync_agent_state( $current_agent, $force );
+            $status = $this->sync_agent_state( $current_agent, $force, $user_id > 0 ? $user_id : null );
         } finally {
             $this->defer_notices = false;
         }
 
         if ( '' === $status ) {
-            // Nothing usable came back. sync_agent_state() has already stamped
-            // the throttle window with this version, so the retry on a later
-            // admin page load is rate limited rather than immediate.
             return;
         }
 
         update_option( self::PLUGIN_VERSION_OPTION, $current_version, false );
+        delete_option( self::VERSION_SYNC_USER_OPTION );
     }
 
     /**
@@ -428,7 +511,6 @@ class GECX_Admin {
         if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
             exit;
         }
-        return;
     }
 
     /**
@@ -468,6 +550,14 @@ class GECX_Admin {
             $admin_js_ver,
             true
         );
+
+        if ( function_exists( 'wp_set_script_translations' ) ) {
+            wp_set_script_translations(
+                'gecx-admin-js',
+                'gemini-enterprise-for-cx',
+                plugin_dir_path( $this->plugin_file ) . 'languages'
+            );
+        }
 
         wp_localize_script( 'gecx-admin-js', 'gecx_admin_params', [
             'save_nonce'           => wp_create_nonce( 'gecx_save_agent_nonce' ),
@@ -576,6 +666,9 @@ class GECX_Admin {
         register_setting( 'gecx_agent_group', 'gecx_button_enable_shimmer', [
             'sanitize_callback' => 'absint',
         ] );
+        register_setting( 'gecx_agent_group', 'gecx_defer_widget_until_interaction', [
+            'sanitize_callback' => 'absint',
+        ] );
     }
 
     /**
@@ -584,6 +677,106 @@ class GECX_Admin {
     private function get_console_base_url(): string {
         $console_base_option = get_option( 'gecx_console_base_url', 'https://gecx.cloud.google.com' );
         return (string) apply_filters( 'gecx_console_base_url', (string) $console_base_option );
+    }
+
+    /**
+     * Mint a fresh OAuth state + admin JWT and build the Google Cloud Console
+     * connection URL only when the merchant clicks "Connect with Google Cloud".
+     *
+     * Keeping this out of `render_settings_page()` prevents every GET load of
+     * the settings screen from writing transients/options and prevents the
+     * short-lived `admin_jwt` from sitting in the rendered DOM `<a href>`.
+     */
+    public function build_connect_agent_url(): string {
+        $console_base = untrailingslashit( $this->get_console_base_url() );
+
+        $oauth_state = wp_generate_password( 32, false );
+        set_transient( 'gecx_oauth_state_' . $oauth_state, 1, 15 * MINUTE_IN_SECONDS );
+
+        $states = (array) get_option( 'gecx_pending_oauth_states', [] );
+        $now    = time();
+        $states = array_filter(
+            $states,
+            static function( $exp ) use ( $now ): bool {
+                return is_numeric( $exp ) && (int) $exp > $now;
+            }
+        );
+        $states[ $oauth_state ] = $now + ( 15 * MINUTE_IN_SECONDS );
+        update_option( 'gecx_pending_oauth_states', $states, 'no' );
+
+        $return_url = add_query_arg(
+            [
+                'gecx_action' => 'linked',
+                'state'       => $oauth_state,
+            ],
+            admin_url( 'admin.php?page=gemini-enterprise-for-cx' )
+        );
+
+        $has_store_credentials = ! empty( get_option( 'gecx_webhook_id' ) );
+        $is_authorized         = $has_store_credentials && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
+        $admin_jwt             = $is_authorized ? GECX_Auth::generate_admin_jwt() : '';
+
+        // rawurlencode() is required here: WordPress core's add_query_arg()
+        // delegates to _http_build_query(..., false), which does NOT URL-encode
+        // parameter values (unlike PHP's http_build_query()). Without
+        // rawurlencode(), the '&' separators inside $return_url are interpreted
+        // as outer query parameters by the console URL parser, truncating
+        // return_url and losing gecx_action and state.
+        $connect_params = [
+            'return_url' => rawurlencode( $return_url ),
+        ];
+        if ( ! empty( $admin_jwt ) ) {
+            $connect_params['admin_jwt'] = rawurlencode( $admin_jwt );
+        }
+
+        return add_query_arg(
+            $connect_params,
+            $console_base . self::CONSOLE_APP_PATH
+        );
+    }
+
+    /**
+     * Handles the POST submission from the "Connect with Google Cloud" button
+     * (`admin-post.php?action=gecx_connect_agent`).
+     */
+    public function handle_connect_agent_redirect(): void {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            if ( function_exists( 'wp_die' ) ) {
+                wp_die( esc_html__( 'Unauthorized.', 'gemini-enterprise-for-cx' ), 403 );
+            }
+            return;
+        }
+
+        $nonce = isset( $_POST['gecx_connect_nonce'] )
+            ? sanitize_text_field( wp_unslash( $_POST['gecx_connect_nonce'] ) )
+            : '';
+        if ( empty( $nonce ) || ! wp_verify_nonce( $nonce, 'gecx_connect_agent_action' ) ) {
+            set_transient(
+                'gecx_admin_notice_error',
+                __( 'Security validation failed. Please try connecting again.', 'gemini-enterprise-for-cx' ),
+                60
+            );
+            wp_safe_redirect( admin_url( 'admin.php?page=gemini-enterprise-for-cx' ) );
+            if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
+                exit;
+            }
+            return;
+        }
+
+        if ( function_exists( 'nocache_headers' ) ) {
+            nocache_headers();
+        }
+        if ( ! function_exists( 'headers_sent' ) || ! headers_sent() ) {
+            header( 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0' );
+            header( 'Referrer-Policy: no-referrer' );
+        }
+
+        $connect_url = $this->build_connect_agent_url();
+        // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect -- Redirecting to the external Google Cloud Console URL built from get_console_base_url().
+        wp_redirect( $connect_url, 302 );
+        if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
+            exit;
+        }
     }
 
     /**
@@ -614,34 +807,11 @@ class GECX_Admin {
         $console_base = $this->get_console_base_url();
         $console_base = untrailingslashit( $console_base );
 
-        $oauth_state = wp_generate_password( 32, false );
-        set_transient( 'gecx_oauth_state_' . $oauth_state, 1, 15 * MINUTE_IN_SECONDS );
-
-        $states = (array) get_option( 'gecx_pending_oauth_states', [] );
-        $now    = time();
-        $states = array_filter(
-            $states,
-            function( $exp ) use ( $now ) {
-                return is_numeric( $exp ) && (int) $exp > $now;
-            }
-        );
-        $states[ $oauth_state ] = $now + ( 15 * MINUTE_IN_SECONDS );
-        update_option( 'gecx_pending_oauth_states', $states, 'no' );
-
-        $return_url = add_query_arg(
-            [
-                'gecx_action' => 'linked',
-                'state'       => $oauth_state,
-            ],
-            admin_url( 'admin.php?page=gemini-enterprise-for-cx' )
-        );
-
         $has_store_credentials = ! empty( get_option( 'gecx_webhook_id' ) );
         // SyncState can report that Google can no longer use this store's
         // credentials. Treat that as unauthorized so the merchant is offered
         // the authorize step again instead of a dead end.
         $is_authorized = $has_store_credentials && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
-        $admin_jwt     = $is_authorized ? GECX_Auth::generate_admin_jwt() : '';
 
         $oauth_return_url = add_query_arg(
             [
@@ -659,24 +829,6 @@ class GECX_Admin {
                 'callback_url' => rawurlencode( $oauth_callback_url ),
             ],
             home_url( '/wc-auth/v1/authorize' )
-        );
-
-        // rawurlencode() is required here: WordPress core's add_query_arg()
-        // delegates to _http_build_query(..., false), which does NOT URL-encode
-        // parameter values (unlike PHP's http_build_query()). Without
-        // rawurlencode(), the '&' separators inside $return_url are interpreted
-        // as outer query parameters by the console URL parser, truncating
-        // return_url and losing gecx_action and state.
-        $connect_params = [
-            'return_url' => rawurlencode( $return_url ),
-        ];
-        if ( ! empty( $admin_jwt ) ) {
-            $connect_params['admin_jwt'] = rawurlencode( $admin_jwt );
-        }
-
-        $connect_url = add_query_arg(
-            $connect_params,
-            $console_base . self::CONSOLE_APP_PATH
         );
         ?>
         <div class="wrap gecx-admin-wrap">
@@ -744,12 +896,16 @@ class GECX_Admin {
                         </p>
 
                         <div style="margin: 24px 0; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-                            <a href="<?php echo esc_url( $connect_url ); ?>"
-                                id="gecx-connect-btn"
-                                class="button button-primary button-hero"
-                                style="display: inline-flex; align-items: center; gap: 8px;">
-                                <?php esc_html_e( 'Connect with Google Cloud', 'gemini-enterprise-for-cx' ); ?>
-                            </a>
+                            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin: 0; display: inline-flex;">
+                                <input type="hidden" name="action" value="gecx_connect_agent" />
+                                <?php wp_nonce_field( 'gecx_connect_agent_action', 'gecx_connect_nonce' ); ?>
+                                <button type="submit"
+                                    id="gecx-connect-btn"
+                                    class="button button-primary button-hero"
+                                    style="display: inline-flex; align-items: center; gap: 8px;">
+                                    <?php esc_html_e( 'Connect with Google Cloud', 'gemini-enterprise-for-cx' ); ?>
+                                </button>
+                            </form>
                             <a href="<?php echo esc_url( $oauth_url ); ?>"
                                 id="gecx-reauthorize-btn"
                                 class="button button-secondary">
@@ -1095,14 +1251,17 @@ class GECX_Admin {
      * Throttled. The window is claimed immediately before the HTTP call so a
      * local configuration problem does not consume it.
      *
-     * @param string $current_agent Currently configured agent resource name.
-     * @param bool   $force         Sync even inside an unexpired throttle
-     *                              window. Used after an upgrade, which must
-     *                              reconcile promptly.
+     * @param string   $current_agent Currently configured agent resource name.
+     * @param bool     $force         Sync even inside an unexpired throttle
+     *                                window. Used after an upgrade, which must
+     *                                reconcile promptly.
+     * @param int|null $user_id       Optional administrator user ID for signing
+     *                                when running outside a logged-in session
+     *                                (e.g. WP-Cron).
      * @return string The status reported by the backend, or '' when no usable
      *                response was obtained.
      */
-    private function sync_agent_state( string $current_agent, bool $force = false ): string {
+    private function sync_agent_state( string $current_agent, bool $force = false, ?int $user_id = null ): string {
         $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
         if ( ! $auth_complete && $this->has_existing_state( $current_agent ) ) {
             update_option( self::AUTH_COMPLETE_OPTION, 1, 'no' );
@@ -1114,7 +1273,8 @@ class GECX_Admin {
             return '';
         }
 
-        $admin_jwt = GECX_Auth::generate_admin_jwt();
+        $admin_jwt = GECX_Auth::generate_admin_jwt( $user_id )
+            ?? GECX_Auth::generate_existing_rs256_admin_jwt( $user_id );
         if ( empty( $admin_jwt ) ) {
             $this->log_sync( 'skipped, admin JWT unavailable' );
             return '';
@@ -1191,6 +1351,10 @@ class GECX_Admin {
         }
 
         $this->apply_sync_status( $status, $data, $current_agent );
+        if ( defined( 'GECX_VERSION' ) && '' !== (string) GECX_VERSION ) {
+            update_option( self::PLUGIN_VERSION_OPTION, (string) GECX_VERSION, false );
+        }
+        delete_option( self::VERSION_SYNC_USER_OPTION );
         return $status;
     }
 
@@ -1508,18 +1672,57 @@ class GECX_Admin {
     }
 
     /**
-     * Save the product suggested prompts override custom field.
+     * Save the product suggested prompts override custom field via WooCommerce
+     * product CRUD (`WC_Product::update_meta_data` / `delete_meta_data`) with a
+     * post-meta fallback.
      *
-     * @param int $post_id The product post ID.
+     * @param mixed $product_or_id `WC_Product` object (from `woocommerce_admin_process_product_object`)
+     *                             or integer product post ID (from `woocommerce_process_product_meta`).
      */
-    public function save_product_prompts_override_field( int $post_id ): void {
+    public function save_product_prompts_override_field( $product_or_id ): void {
         if ( ! isset( $_POST['gecx_prompts_override_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['gecx_prompts_override_nonce'] ) ), 'gecx_save_prompts_override' ) ) {
             return;
         }
-        if ( ! current_user_can( 'edit_post', $post_id ) ) {
+
+        $product = null;
+        $post_id = 0;
+        if ( is_object( $product_or_id ) && method_exists( $product_or_id, 'get_id' ) ) {
+            $product = $product_or_id;
+            $post_id = (int) $product_or_id->get_id();
+        } elseif ( is_numeric( $product_or_id ) ) {
+            $post_id = (int) $product_or_id;
+            if ( function_exists( 'wc_get_product' ) ) {
+                $candidate = wc_get_product( $post_id );
+                if ( is_object( $candidate ) ) {
+                    $product = $candidate;
+                }
+            }
+        }
+
+        if ( $post_id <= 0 || ! current_user_can( 'edit_post', $post_id ) ) {
             return;
         }
+
+        if ( ! is_object( $product_or_id ) && ! empty( $this->saved_product_prompt_ids[ $post_id ] ) ) {
+            return;
+        }
+        if ( is_object( $product_or_id ) ) {
+            $this->saved_product_prompt_ids[ $post_id ] = true;
+        }
+
         $override = isset( $_POST['_gecx_suggested_prompts_override'] ) ? sanitize_textarea_field( wp_unslash( $_POST['_gecx_suggested_prompts_override'] ) ) : '';
+        if ( null !== $product && method_exists( $product, 'update_meta_data' ) && method_exists( $product, 'delete_meta_data' ) ) {
+            if ( ! empty( $override ) ) {
+                $product->update_meta_data( '_gecx_suggested_prompts_override', $override );
+            } else {
+                $product->delete_meta_data( '_gecx_suggested_prompts_override' );
+            }
+            if ( ! is_object( $product_or_id ) && method_exists( $product, 'save' ) ) {
+                $product->save();
+            }
+            return;
+        }
+
         if ( ! empty( $override ) ) {
             update_post_meta( $post_id, '_gecx_suggested_prompts_override', $override );
         } else {

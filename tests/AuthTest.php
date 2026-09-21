@@ -1460,6 +1460,30 @@ class AuthTest extends GECX_TestCase {
         $this->assertNotNull( $result );
         $this->assertSame( $published['public_key'], $result['public_key'] );
     }
+
+    public function test_generate_existing_rs256_admin_jwt_falls_back_to_lowest_id_administrator_in_cli_context(): void {
+        GECX_Auth::get_or_generate_keypair();
+        $GLOBALS['gecx_test_current_user'] = null;
+        $GLOBALS['gecx_test_users'][5]     = new WP_User( 5, 'admin5@example.com', [ 'administrator' ] );
+        $GLOBALS['gecx_test_users'][2]     = new WP_User( 2, 'admin2@example.com', [ 'administrator' ] );
+
+        if ( ! defined( 'WP_CLI' ) && ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+            $this->assertNull( GECX_Auth::generate_existing_rs256_admin_jwt() );
+        }
+
+        if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+            define( 'WP_UNINSTALL_PLUGIN', true );
+        }
+
+        $jwt = GECX_Auth::generate_existing_rs256_admin_jwt();
+        $this->assertNotNull( $jwt );
+
+        $parts   = explode( '.', $jwt );
+        $payload = json_decode( $this->base64_url_decode( $parts[1] ), true );
+        $this->assertSame( 2, $payload['user_id'] );
+        $this->assertSame( 'admin2@example.com', $payload['user_email'] );
+        $this->assertTrue( $payload['is_admin'] );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {

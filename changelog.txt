@@ -1,5 +1,13 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-09-21 - version 0.3.16
+* Add `gecx_should_load_widget` filter, `gecx_defer_widget_until_interaction` option, and `window.gecxLoadWidget` / `gecx:consent-granted` API so consent plugins or deferred-loading configurations can postpone loading the Google-hosted widget script until consent or keyboard/click interaction.
+* Mint the OAuth state and short-lived `admin_jwt` on demand via a POST form to `admin-post.php?action=gecx_connect_agent` instead of embedding them into `render_settings_page()` on every settings screen GET load.
+* Enforce subsite path isolation on `/wp-json/gecx/v1/auth-context` for subdirectory multisite installs using `get_site_by_path()` and `is_user_member_of_blog()`, downgrade requests whose `Referer` names no subsite path (the root blog homepage under the default `Referrer-Policy`) to a guest identity instead of rejecting them, and withhold widened WooCommerce API key capabilities before `rest_pre_dispatch`.
+* Persist guest `gecx_session_id` bindings in a first-party HttpOnly cookie before a WooCommerce session cookie exists, and only sync Store API cart state on mutating cart/batch requests.
+* Refresh classic and block cart/checkout surfaces via WooCommerce Blocks store dispatch and `wc_update_cart` / `update_checkout` events without a full page reload when jQuery or `wp.data` is present.
+* Schedule version-upgrade SyncState reconciliation asynchronously via Action Scheduler or WP-Cron (falling back to synchronous execution when `DISABLE_WP_CRON` is active without Action Scheduler), and clear the scheduled hook on deactivation and uninstall.
+
 2026-09-21 - version 0.3.15
 * Avoid forcing guest WooCommerce session cookies on non-mutating REST requests and empty guest carts, preventing guest nonce invalidation on account and registration pages.
 * Bridge Store API `Cart-Token` to browser cookie when non-empty guest carts are fetched, and forward `Cart-Token` from storefront fetch calls to `/gecx/v1/session` for order attribution.
