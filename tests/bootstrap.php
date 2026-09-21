@@ -15,6 +15,9 @@ if ( ! defined( 'WP_DEBUG' ) ) {
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
     define( 'HOUR_IN_SECONDS', 3600 );
 }
+if ( ! defined( 'DAY_IN_SECONDS' ) ) {
+    define( 'DAY_IN_SECONDS', 86400 );
+}
 if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) ) {
     define( 'GECX_PHPUNIT_RUNNING', true );
 }
@@ -65,6 +68,7 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_inline_styles']        = [];
     $GLOBALS['gecx_test_localized_scripts']    = [];
     $GLOBALS['gecx_test_wc_session']           = null;
+    $GLOBALS['gecx_test_deleted_cache_keys']   = [];
 
     // Request context. Every one of these is false for a storefront page
     // render, which is what the majority of tests assume.
@@ -230,6 +234,11 @@ if ( ! class_exists( 'WC_Webhook' ) ) {
 if ( ! class_exists( 'WC_Session_Handler' ) ) {
     class WC_Session_Handler {
         private array $data = [];
+        public bool $cookie_set = false;
+        public int $cookie_set_calls = 0;
+        public int $save_data_calls = 0;
+        public string $customer_id = 'guest_session_123';
+        public bool $has_active_session = false;
         public function init(): void {}
         public function get( string $key, $default = null ) {
             return $this->data[ $key ] ?? $default;
@@ -237,14 +246,42 @@ if ( ! class_exists( 'WC_Session_Handler' ) ) {
         public function set( string $key, $value ): void {
             $this->data[ $key ] = $value;
         }
-        public function save_data(): void {}
-        public function set_customer_session_cookie( bool $val ): void {}
+        public function save_data(): void {
+            $this->save_data_calls++;
+        }
+        public function set_customer_session_cookie( bool $val ): void {
+            $this->cookie_set = $val;
+            $this->cookie_set_calls++;
+        }
+        public function get_customer_id(): string {
+            return $this->customer_id;
+        }
+        public function has_session(): bool {
+            return $this->has_active_session;
+        }
+    }
+}
+
+if ( ! class_exists( 'WC_Cart_Mock' ) ) {
+    class WC_Cart_Mock {
+        public array $cart_for_session = [];
+        public int $persistent_cart_updates = 0;
+        public function get_cart_for_session(): array {
+            return $this->cart_for_session;
+        }
+        public function is_empty(): bool {
+            return empty( $this->cart_for_session );
+        }
+        public function persistent_cart_update(): void {
+            $this->persistent_cart_updates++;
+        }
     }
 }
 
 if ( ! class_exists( 'WooCommerce_Mock' ) ) {
     class WooCommerce_Mock {
         public $session = null;
+        public $cart = null;
         public function __construct() {
             $this->session = new WC_Session_Handler();
         }
@@ -376,6 +413,8 @@ if ( ! function_exists( 'wc_get_order' ) ) {
 if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
     class GECX_Mock_WPDB {
         public string $prefix = 'wp_';
+        public array $queries = [];
+        public array $wc_sessions = [];
 
         public function esc_like( string $text ): string {
             return addcslashes( $text, '_%\\' );
@@ -404,6 +443,10 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
             if ( 0 === strpos( $query, 'SHOW TABLES LIKE' ) ) {
                 return $this->prefix . 'wc_webhooks';
             }
+            if ( preg_match( "/FROM {$this->prefix}woocommerce_sessions WHERE session_key = '([^']+)'/", $query, $m ) ) {
+                $key = stripslashes( $m[1] );
+                return $this->wc_sessions[ $key ] ?? null;
+            }
             if ( preg_match( '/WHERE webhook_id = (\d+)/', $query, $m ) ) {
                 $id = (int) $m[1];
                 return $GLOBALS['gecx_test_webhooks'][ $id ]['secret'] ?? null;
@@ -418,6 +461,17 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
                 }
             }
             return null;
+        }
+
+        public function query( string $query ) {
+            $this->queries[] = $query;
+            if ( preg_match( "/INSERT INTO {$this->prefix}woocommerce_sessions .* VALUES \\('([^']*)', '((?:\\\\'|[^'])*)', (\\d+)\\)/s", $query, $m ) ) {
+                $key                       = stripslashes( $m[1] );
+                $val                       = stripslashes( $m[2] );
+                $this->wc_sessions[ $key ] = $val;
+                return 1;
+            }
+            return 1;
         }
 
         public function delete( string $table, array $where, array $where_format = [] ): int {
@@ -471,6 +525,17 @@ if ( ! class_exists( 'WP_REST_Request' ) ) {
         private array $headers = [];
         private array $params  = [];
         private string $route  = '/gecx/v1/public-key';
+        private string $method = 'GET';
+        public function __construct( string $method = 'GET', string $route = '/gecx/v1/public-key' ) {
+            $this->method = strtoupper( $method );
+            $this->route  = $route;
+        }
+        public function set_method( string $method ): void {
+            $this->method = strtoupper( $method );
+        }
+        public function get_method(): string {
+            return $this->method;
+        }
         public function set_header( string $name, string $value ): void {
             $this->headers[ strtolower( $name ) ] = $value;
         }
@@ -489,6 +554,37 @@ if ( ! class_exists( 'WP_REST_Request' ) ) {
         public function get_route(): string {
             return $this->route;
         }
+    }
+}
+
+if ( ! function_exists( 'maybe_serialize' ) ) {
+    function maybe_serialize( $data ) {
+        if ( is_array( $data ) || is_object( $data ) ) {
+            return serialize( $data );
+        }
+        return $data;
+    }
+}
+
+if ( ! function_exists( 'maybe_unserialize' ) ) {
+    function maybe_unserialize( $data ) {
+        if ( is_string( $data ) ) {
+            $unserialized = @unserialize( $data );
+            if ( false !== $unserialized || 'b:0;' === $data ) {
+                return $unserialized;
+            }
+        }
+        return $data;
+    }
+}
+
+if ( ! function_exists( 'wp_cache_delete' ) ) {
+    function wp_cache_delete( $key, string $group = '' ): bool {
+        $GLOBALS['gecx_test_deleted_cache_keys'][] = [
+            'key'   => (string) $key,
+            'group' => $group,
+        ];
+        return true;
     }
 }
 
@@ -1590,6 +1686,12 @@ if ( ! class_exists( 'PHPUnit\Framework\TestCase' ) ) {
                 throw new \AssertionError( ( $message ?: 'Failed asserting that array does not have key.' ) . "\nKey: " . var_export( $key, true ) );
             }
         }
+
+        public function assertLessThan( $expected, $actual, string $message = '' ): void {
+            if ( ! ( $actual < $expected ) ) {
+                throw new \AssertionError( ( $message ?: 'Failed asserting that actual is less than expected.' ) . " Expected < $expected, Actual: $actual" );
+            }
+        }
     }
     class_alias( 'GECX_BaseTestCase', 'PHPUnit\Framework\TestCase' );
 
@@ -1699,15 +1801,25 @@ function gecx_run_test_class( string $className ): array {
     foreach ( $methods as $method ) {
         if ( strpos( $method, 'test_' ) === 0 ) {
             try {
-                $ref = new ReflectionMethod( $test, 'setUp' );
-                $ref->setAccessible( true );
-                $ref->invoke( $test );
+                $method_ref = new ReflectionMethod( $test, $method );
+                $doc        = (string) $method_ref->getDocComment();
+                $datasets   = [ [] ];
+                if ( preg_match( '/@dataProvider\s+([a-zA-Z0-9_]+)/', $doc, $m ) && method_exists( $test, $m[1] ) ) {
+                    $provider = $m[1];
+                    $datasets = (array) $test->$provider();
+                }
 
-                $test->$method();
+                foreach ( $datasets as $args ) {
+                    $ref = new ReflectionMethod( $test, 'setUp' );
+                    $ref->setAccessible( true );
+                    $ref->invoke( $test );
 
-                $ref = new ReflectionMethod( $test, 'tearDown' );
-                $ref->setAccessible( true );
-                $ref->invoke( $test );
+                    $test->$method( ...array_values( (array) $args ) );
+
+                    $ref = new ReflectionMethod( $test, 'tearDown' );
+                    $ref->setAccessible( true );
+                    $ref->invoke( $test );
+                }
 
                 echo "PASS: $className::$method\n";
                 $passed++;

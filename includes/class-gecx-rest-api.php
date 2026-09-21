@@ -213,6 +213,68 @@ class GECX_Rest_API {
     }
 
     /**
+     * Checks whether the current request already carries a WooCommerce session cookie.
+     *
+     * @return bool True if a non-empty wp_woocommerce_session_* cookie is present.
+     */
+    private static function has_woocommerce_session_cookie(): bool {
+        foreach ( $_COOKIE as $cookie_key => $cookie_val ) {
+            if ( strpos( (string) $cookie_key, 'wp_woocommerce_session_' ) === 0 && '' !== (string) $cookie_val ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether a REST request represents a cart mutation on the
+     * WooCommerce Store API.
+     *
+     * @param \WP_REST_Request $request Dispatched REST request.
+     * @return bool True when the request targets a mutating Store API cart route or batch cart sub-request.
+     */
+    private function is_mutating_store_api_cart_request( \WP_REST_Request $request ): bool {
+        $route = (string) $request->get_route();
+        if ( 1 !== preg_match( '#^/wc/store/v\d+/(cart(/.*)?|batch)$#', $route ) ) {
+            return false;
+        }
+
+        $method = method_exists( $request, 'get_method' )
+            ? strtoupper( (string) $request->get_method() )
+            : ( isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ) : 'GET' );
+
+        if ( ! in_array( $method, [ 'POST', 'PUT', 'PATCH', 'DELETE' ], true ) ) {
+            return false;
+        }
+
+        if ( 1 === preg_match( '#^/wc/store/v\d+/batch$#', $route ) ) {
+            $sub_requests = $request->get_param( 'requests' );
+            if ( is_array( $sub_requests ) ) {
+                $has_mutating_cart_sub_request = false;
+                foreach ( $sub_requests as $sub_request ) {
+                    if ( ! is_array( $sub_request ) ) {
+                        continue;
+                    }
+                    $sub_path   = isset( $sub_request['path'] ) ? (string) wp_parse_url( (string) $sub_request['path'], PHP_URL_PATH ) : '';
+                    $sub_method = isset( $sub_request['method'] ) ? strtoupper( (string) $sub_request['method'] ) : 'POST';
+                    if (
+                        in_array( $sub_method, [ 'POST', 'PUT', 'PATCH', 'DELETE' ], true ) &&
+                        1 === preg_match( '#(^|/+)wc/store/v\d+/cart(/.*)?$#', $sub_path )
+                    ) {
+                        $has_mutating_cart_sub_request = true;
+                        break;
+                    }
+                }
+                if ( ! $has_mutating_cart_sub_request ) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * Syncs the cart the Store API just mutated to the browser's session row
      * and evicts the cached copy of it.
      *
@@ -237,30 +299,72 @@ class GECX_Rest_API {
      * @return \WP_REST_Response|\WP_HTTP_Response|\WP_Error The response, unmodified.
      */
     public function sync_cart_session_after_dispatch( $response, $server, $request ) {
+        if ( ! $request instanceof \WP_REST_Request || is_wp_error( $response ) ) {
+            return $response;
+        }
+
+        if ( $response instanceof \WP_REST_Response || $response instanceof \WP_HTTP_Response ) {
+            $status = (int) $response->get_status();
+            if ( $status < 200 || $status >= 300 ) {
+                return $response;
+            }
+        }
+
+        if ( ! $this->is_mutating_store_api_cart_request( $request ) ) {
+            return $response;
+        }
+
         if ( isset( WC()->cart ) ) {
+            $cart_for_session = method_exists( WC()->cart, 'get_cart_for_session' )
+                ? (array) WC()->cart->get_cart_for_session()
+                : [];
+            $has_cart_items = ! empty( $cart_for_session );
+            if ( ! $has_cart_items && method_exists( WC()->cart, 'is_empty' ) ) {
+                $has_cart_items = ! WC()->cart->is_empty();
+            }
+
+            $has_cookie = self::has_woocommerce_session_cookie();
+
+            $has_cart_token = ( class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'is_cart_token_request' ) && GECX_Auth::is_cart_token_request() )
+                || ! empty( $_SERVER['HTTP_CART_TOKEN'] )
+                || '' !== (string) $request->get_header( 'Cart-Token' );
+
+            // Never create or persist an empty guest session when the shopper has no
+            // existing WooCommerce session cookie and no Cart-Token was used. Forcing a
+            // new wp_woocommerce_session_* cookie on a guest with an empty cart changes
+            // WC_Session_Handler::has_session() from false to true and invalidates any
+            // woocommerce-login-nonce or woocommerce-register-nonce already rendered on
+            // the My Account page.
+            if ( ! $has_cart_items && ! $has_cookie && ! $has_cart_token && 0 === get_current_user_id() ) {
+                return $response;
+            }
+
             // Sync to user persistent cart user meta
             if ( method_exists( WC()->cart, 'persistent_cart_update' ) ) {
                 WC()->cart->persistent_cart_update();
             }
 
-            // Force set the WooCommerce session cookie in the browser if it was not sent
-            // so that subsequent page refreshes align the browser with this session.
-            $has_cookie = false;
-            foreach ( $_COOKIE as $cookie_key => $cookie_val ) {
-                if ( strpos( $cookie_key, 'wp_woocommerce_session_' ) === 0 ) {
-                    $has_cookie = true;
-                    break;
-                }
-            }
-            if ( ! $has_cookie && isset( WC()->session ) && method_exists( WC()->session, 'set_customer_session_cookie' ) ) {
+            // Only set the WooCommerce session cookie when a non-empty cart was mutated
+            // directly by the browser without an existing session cookie.
+            if ( ! $has_cookie && $has_cart_items && ! $has_cart_token && isset( WC()->session ) && method_exists( WC()->session, 'set_customer_session_cookie' ) ) {
                 WC()->session->set_customer_session_cookie( true );
+            }
+
+            // Persist through WC()->session API so custom session handlers (Redis/Memcached) stay in sync.
+            if ( isset( WC()->session ) ) {
+                if ( method_exists( WC()->session, 'set' ) ) {
+                    WC()->session->set( 'cart', $cart_for_session );
+                }
+                if ( method_exists( WC()->session, 'save_data' ) ) {
+                    WC()->session->save_data();
+                }
             }
 
             // Directly sync to the browser's active session row in the database
             global $wpdb;
             $session_key = '';
-            if ( isset( WC()->session ) ) {
-                $session_key = WC()->session->get_customer_id();
+            if ( isset( WC()->session ) && method_exists( WC()->session, 'get_customer_id' ) ) {
+                $session_key = (string) WC()->session->get_customer_id();
             }
 
             if ( empty( $session_key ) ) {
@@ -270,7 +374,11 @@ class GECX_Rest_API {
                 }
             }
 
-            if ( ! empty( $session_key ) && isset( $wpdb ) ) {
+            $uses_sql_session_handler = ! isset( WC()->session )
+                || ! class_exists( 'WC_Session_Handler' )
+                || WC()->session instanceof \WC_Session_Handler;
+
+            if ( $uses_sql_session_handler && ! empty( $session_key ) && isset( $wpdb ) ) {
                 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Direct query required to sync WooCommerce session data across requests.
                 $existing_session = $wpdb->get_var( $wpdb->prepare(
                     "SELECT session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s",
@@ -285,7 +393,7 @@ class GECX_Rest_API {
                     $session_data = [];
                 }
 
-                $session_data['cart'] = WC()->cart->get_cart_for_session();
+                $session_data['cart'] = $cart_for_session;
 
                 $serialized_data = maybe_serialize( $session_data );
                 // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
@@ -373,11 +481,17 @@ class GECX_Rest_API {
 
         if ( function_exists( 'WC' ) && WC()->session ) {
             WC()->session->set( 'gecx_session_id', $session_id );
-            if ( method_exists( WC()->session, 'save_data' ) ) {
-                WC()->session->save_data();
-            }
-            if ( method_exists( WC()->session, 'set_customer_session_cookie' ) ) {
-                WC()->session->set_customer_session_cookie( true );
+            $has_active_session = self::has_woocommerce_session_cookie()
+                || ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() )
+                || ( method_exists( WC()->session, 'has_session' ) && WC()->session->has_session() )
+                || ( isset( WC()->cart ) && method_exists( WC()->cart, 'is_empty' ) && ! WC()->cart->is_empty() );
+            if ( $has_active_session ) {
+                if ( method_exists( WC()->session, 'save_data' ) ) {
+                    WC()->session->save_data();
+                }
+                if ( method_exists( WC()->session, 'set_customer_session_cookie' ) ) {
+                    WC()->session->set_customer_session_cookie( true );
+                }
             }
             return new \WP_REST_Response( [ 'success' => true ], 200 );
         }

@@ -1502,6 +1502,131 @@ class RestApiTest extends GECX_TestCase {
         $this->assertNotEmpty( $route );
         $this->assertSame( [ 'GET', 'POST' ], $route['methods'] );
     }
+
+    public function test_sync_cart_session_ignores_unrelated_rest_routes(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item_1' => [ 'product_id' => 10, 'quantity' => 1 ] ];
+
+        $rest_api = new GECX_Rest_API();
+        foreach ( [ '/wp/v2/posts', '/gecx/v1/auth-context', '/wc/v3/orders' ] as $route ) {
+            $request = new WP_REST_Request( 'POST', $route );
+            $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'ok' => true ], 200 ), null, $request );
+        }
+
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( 0, WC()->cart->persistent_cart_updates );
+        $this->assertSame( [], $wpdb->wc_sessions );
+    }
+
+    public function test_sync_cart_session_ignores_read_only_store_api_cart_and_batch_requests(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item_1' => [ 'product_id' => 10, 'quantity' => 1 ] ];
+
+        $rest_api = new GECX_Rest_API();
+
+        // 1. GET /wc/store/v1/cart (e.g. Mini-Cart block on /my-account/)
+        $get_cart = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $get_cart );
+
+        // 2. POST /wc/store/v1/batch containing only GET sub-requests
+        $read_only_batch = new WP_REST_Request( 'POST', '/wc/store/v1/batch' );
+        $read_only_batch->set_param(
+            'requests',
+            [
+                [
+                    'path'   => '/wc/store/v1/cart',
+                    'method' => 'GET',
+                ],
+            ]
+        );
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'responses' => [] ], 200 ), null, $read_only_batch );
+
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( 0, WC()->cart->persistent_cart_updates );
+        $this->assertSame( [], $wpdb->wc_sessions );
+    }
+
+    public function test_sync_cart_session_does_not_force_cookie_for_empty_cart_on_uncookied_guest(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [];
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/wc/store/v1/cart/update-customer' );
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( 0, WC()->cart->persistent_cart_updates );
+        $this->assertSame( [], $wpdb->wc_sessions );
+    }
+
+    public function test_sync_cart_session_sets_cookie_and_persists_session_when_browser_adds_item_to_cart(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'abc123' => [ 'product_id' => 42, 'quantity' => 2 ] ];
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items_count' => 2 ], 200 ), null, $request );
+
+        $this->assertSame( 1, WC()->session->cookie_set_calls );
+        $this->assertTrue( WC()->session->cookie_set );
+        $this->assertSame( 1, WC()->cart->persistent_cart_updates );
+        $this->assertArrayHasKey( 'guest_session_123', $wpdb->wc_sessions );
+
+        $stored = maybe_unserialize( $wpdb->wc_sessions['guest_session_123'] );
+        $this->assertSame( WC()->cart->cart_for_session, $stored['cart'] );
+        $this->assertNotEmpty( $GLOBALS['gecx_test_deleted_cache_keys'] );
+    }
+
+    public function test_sync_cart_session_syncs_cart_token_mutation_without_forcing_browser_cookie(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'abc123' => [ 'product_id' => 99, 'quantity' => 1 ] ];
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/wc/store/v1/batch' );
+        $request->set_header( 'Cart-Token', 'agent.cart.token' );
+        $request->set_param(
+            'requests',
+            [
+                [
+                    'path'   => '/wc/store/v1/cart/add-item',
+                    'method' => 'POST',
+                ],
+            ]
+        );
+
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'responses' => [] ], 200 ), null, $request );
+
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( 1, WC()->cart->persistent_cart_updates );
+        $this->assertArrayHasKey( 'guest_session_123', $wpdb->wc_sessions );
+    }
+
+    public function test_save_session_handler_does_not_force_cookie_for_uncookied_guest_without_cart(): void {
+        WC()->cart = new WC_Cart_Mock();
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', 'projects/123/locations/global/commerceSessions/sess-1' );
+
+        $res = $rest_api->save_session_handler( $request );
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-1', WC()->session->get( 'gecx_session_id' ) );
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( 0, WC()->session->save_data_calls );
+
+        // Once the browser already has a WooCommerce session cookie, save_session_handler persists and refreshes it.
+        $_COOKIE['wp_woocommerce_session_test'] = 'guest_session_123||12345||12345||hash';
+        $res_with_cookie                        = $rest_api->save_session_handler( $request );
+        $this->assertInstanceOf( WP_REST_Response::class, $res_with_cookie );
+        $this->assertSame( 1, WC()->session->cookie_set_calls );
+        $this->assertSame( 1, WC()->session->save_data_calls );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {
