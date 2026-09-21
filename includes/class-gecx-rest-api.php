@@ -258,9 +258,12 @@ class GECX_Rest_API {
         $default_expiring_seconds   = DAY_IN_SECONDS;
         $default_expiration_seconds = 2 * DAY_IN_SECONDS;
         // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
-        $expiring_seconds   = (int) apply_filters( 'wc_session_expiring', $default_expiring_seconds ) ?: $default_expiring_seconds;
+        $filtered_expiring = (int) apply_filters( 'wc_session_expiring', $default_expiring_seconds );
+        $expiring_seconds  = $filtered_expiring > 0 ? $filtered_expiring : $default_expiring_seconds;
+
         // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
-        $expiration_seconds = (int) apply_filters( 'wc_session_expiration', $default_expiration_seconds ) ?: $default_expiration_seconds;
+        $filtered_expiration = (int) apply_filters( 'wc_session_expiration', $default_expiration_seconds );
+        $expiration_seconds  = $filtered_expiration > 0 ? $filtered_expiration : $default_expiration_seconds;
 
         $session_expiring   = time() + $expiring_seconds;
         $session_expiration = time() + $expiration_seconds;
