@@ -22,6 +22,23 @@ class GECX_Rest_API {
     ];
 
     /**
+     * Capabilities that survive the pre-dispatch withholding window applied by
+     * restrict_widened_wc_auth_before_dispatch().
+     *
+     * These gate nothing on their own: `read` and `level_0` are the baseline
+     * every registered role holds, and `exist` is what WordPress grants any
+     * existing user. Keeping them truthful means third-party code running on
+     * `init` or `wp_loaded` can still tell that somebody is logged in, while
+     * every capability an action is actually gated on reads as false until
+     * WooCommerce has verified the API key's read/write scope.
+     */
+    private const UNRESTRICTED_PRE_DISPATCH_CAPS = [
+        'read',
+        'level_0',
+        'exist',
+    ];
+
+    /**
      * Whether this class widened `woocommerce_rest_is_request_to_rest_api` for
      * the current request.
      */
@@ -1602,6 +1619,14 @@ class GECX_Rest_API {
      */
     public function enable_wc_auth_for_custom_endpoints( bool $is_rest_api ): bool {
         if ( $is_rest_api ) {
+            // WooCommerce already answers true for its own /wc/ routes, which
+            // are never in WC_AUTHENTICATED_ROUTES. Nothing was widened by this
+            // plugin, so the state has to be cleared here too: this filter can
+            // fire several times per request, and leaving a stale true behind
+            // would make unlock_widened_wc_auth_on_dispatch() reject the route
+            // WooCommerce is about to dispatch.
+            self::$wc_auth_widened_by_gecx       = false;
+            self::$wc_auth_verified_for_dispatch = false;
             return true;
         }
         if ( GECX_Auth::is_request_to_route( self::WC_AUTHENTICATED_ROUTES ) ) {
@@ -1626,6 +1651,15 @@ class GECX_Rest_API {
      * at priority 20 prevents a read-only API key or an early pre-REST hook
      * from exercising the key owner's full WordPress capabilities.
      *
+     * Scope of the window. It opens only when this plugin widened WooCommerce
+     * key authentication for one of self::WC_AUTHENTICATED_ROUTES, it applies
+     * only to the API key's own user (other users are untouched), and it closes
+     * at `rest_pre_dispatch` priority 20. Inside it, every capability the key
+     * owner holds reads as false except the baseline non-privileged ones in
+     * self::UNRESTRICTED_PRE_DISPATCH_CAPS, so third-party code that merely
+     * asks whether someone is logged in still gets a truthful answer while
+     * nothing gated by a capability can be exercised.
+     *
      * @param array $allcaps Array of key/value pairs where keys represent a capability name and boolean values represent whether the user has that capability.
      * @param array $caps    Required primitive capabilities for the requested capability.
      * @param array $args    Arguments that accompany the requested capability check.
@@ -1634,15 +1668,22 @@ class GECX_Rest_API {
      */
     // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- WordPress user_has_cap filter signature.
     public function restrict_widened_wc_auth_before_dispatch( $allcaps, $caps = [], $args = [], $user = null ): array {
+        if ( ! is_array( $allcaps ) ) {
+            $allcaps = [];
+        }
         if (
             self::$wc_auth_widened_by_gecx
             && ! self::$wc_auth_verified_for_dispatch
             && $user instanceof \WP_User
             && (int) get_current_user_id() === (int) $user->ID
         ) {
-            return [];
+            $restricted = [];
+            foreach ( $allcaps as $cap => $granted ) {
+                $restricted[ $cap ] = in_array( $cap, self::UNRESTRICTED_PRE_DISPATCH_CAPS, true ) ? $granted : false;
+            }
+            return $restricted;
         }
-        return is_array( $allcaps ) ? $allcaps : [];
+        return $allcaps;
     }
 
     /**

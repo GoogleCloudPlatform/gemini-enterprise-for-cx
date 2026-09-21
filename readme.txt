@@ -83,6 +83,7 @@ The complete release history is kept in changelog.txt at the plugin root.
 * Enforce subdirectory multisite `Referer` and blog-membership isolation on `/wp-json/gecx/v1/auth-context`, serve a guest identity (rather than a 403) when the `Referer` names no subsite path, and gate widened WooCommerce API key capabilities until `rest_pre_dispatch`.
 * Persist uncookied guest `gecx_session_id` bindings via a first-party HttpOnly cookie without invalidating `wp_rest` nonces, and refresh cart/checkout surfaces without full-page reloads when WooCommerce Blocks or jQuery is available.
 * Schedule version-upgrade SyncState reconciliation asynchronously via Action Scheduler or WP-Cron (with synchronous fallback under `DISABLE_WP_CRON`), and clear the scheduled hook on deactivation and uninstall.
+* Load the plugin text domain and register script translations, write the product prompt override through the WooCommerce product CRUD, declare argument schemas on the plugin's REST routes, and honour `prefers-reduced-motion`.
 
 = 0.3.15 =
 * Avoid forcing guest WooCommerce session cookies on non-mutating REST requests and empty guest carts, preventing guest nonce invalidation on account and registration pages.

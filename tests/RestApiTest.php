@@ -1849,6 +1849,60 @@ class RestApiTest extends GECX_TestCase {
         $rest_api->lock_widened_wc_auth_after_dispatch( new WP_REST_Response(), null, $request );
         $this->assertTrue( current_user_can( 'manage_woocommerce' ) );
     }
+    public function test_widened_wc_auth_rejects_a_route_mismatch_with_403_and_keeps_capabilities_withheld(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ], [ 'read' => true ] );
+        $_SERVER['REQUEST_URI']            = '/wp-json/gecx/v1/public-key';
+
+        $rest_api = new GECX_Rest_API();
+        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
+
+        // Baseline, non-gating capabilities stay truthful inside the window so
+        // third-party code can still tell that somebody is logged in.
+        $this->assertTrue( current_user_can( 'read' ) );
+        $this->assertFalse( current_user_can( 'manage_woocommerce' ) );
+
+        // WooCommerce key auth was widened for /gecx/v1/public-key, but the
+        // route WordPress actually dispatches is a core route. It must be
+        // rejected rather than served with the key owner's capabilities.
+        $mismatch = new WP_REST_Request( 'GET', '/wp/v2/users' );
+        $result   = $rest_api->unlock_widened_wc_auth_on_dispatch( null, null, $mismatch );
+        $this->assertInstanceOf( WP_Error::class, $result );
+        $this->assertSame( 403, $result->get_error_data()['status'] );
+
+        // The rejection must not unlock capabilities for anything running later
+        // in the same request.
+        $this->assertFalse( current_user_can( 'manage_woocommerce' ) );
+        $this->assertFalse( current_user_can( 'manage_options' ) );
+        $this->assertTrue( current_user_can( 'read' ) );
+
+        // An upstream WP_Error (e.g. WooCommerce's own scope check failing at
+        // priority 10) is passed through with capabilities still withheld.
+        $allowed  = new WP_REST_Request( 'GET', '/gecx/v1/public-key' );
+        $wp_error = new WP_Error( 'woocommerce_rest_authentication_error', 'denied', [ 'status' => 401 ] );
+        $this->assertSame( $wp_error, $rest_api->unlock_widened_wc_auth_on_dispatch( $wp_error, null, $allowed ) );
+        $this->assertFalse( current_user_can( 'manage_woocommerce' ) );
+    }
+
+    public function test_widened_wc_auth_state_is_cleared_when_woocommerce_claims_the_request_itself(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ], [ 'read' => true ] );
+        $_SERVER['REQUEST_URI']            = '/wp-json/gecx/v1/link-agent';
+
+        $rest_api = new GECX_Rest_API();
+        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
+        $this->assertFalse( current_user_can( 'manage_woocommerce' ) );
+
+        // woocommerce_rest_is_request_to_rest_api can fire more than once per
+        // request. When WooCommerce answers true for one of its own /wc/
+        // routes, nothing is widened by this plugin, so the flags must be
+        // cleared instead of leaving a stale true that would 403 the route
+        // WooCommerce is about to dispatch.
+        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( true ) );
+        $this->assertTrue( current_user_can( 'manage_woocommerce' ) );
+
+        $wc_request = new WP_REST_Request( 'GET', '/wc/v3/orders' );
+        $this->assertNull( $rest_api->unlock_widened_wc_auth_on_dispatch( null, null, $wc_request ) );
+    }
+
     public function test_auth_context_multisite_subdirectory_rejects_sibling_site_referer_and_non_member_user(): void {
         $GLOBALS['gecx_test_is_multisite']  = true;
         $GLOBALS['gecx_test_sites_by_path'] = [
