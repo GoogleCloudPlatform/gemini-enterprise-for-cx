@@ -1502,6 +1502,272 @@ class RestApiTest extends GECX_TestCase {
         $this->assertNotEmpty( $route );
         $this->assertSame( [ 'GET', 'POST' ], $route['methods'] );
     }
+
+    public function test_sync_cart_session_ignores_unrelated_rest_routes(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item_1' => [ 'product_id' => 10, 'quantity' => 1 ] ];
+
+        $rest_api = new GECX_Rest_API();
+        foreach ( [ '/wp/v2/posts', '/gecx/v1/auth-context', '/wc/v3/orders' ] as $route ) {
+            $request = new WP_REST_Request( 'POST', $route );
+            $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'ok' => true ], 200 ), null, $request );
+        }
+
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( 0, WC()->cart->persistent_cart_updates );
+        $this->assertSame( [], $wpdb->wc_sessions );
+    }
+
+    public function test_sync_cart_session_ignores_read_only_store_api_cart_and_batch_requests(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item_1' => [ 'product_id' => 10, 'quantity' => 1 ] ];
+
+        $rest_api = new GECX_Rest_API();
+
+        // 1. GET /wc/store/v1/cart (e.g. Mini-Cart block on /my-account/)
+        $get_cart = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $get_cart );
+
+        // 2. POST /wc/store/v1/batch containing only GET sub-requests
+        $read_only_batch = new WP_REST_Request( 'POST', '/wc/store/v1/batch' );
+        $read_only_batch->set_param(
+            'requests',
+            [
+                [
+                    'path'   => '/wc/store/v1/cart',
+                    'method' => 'GET',
+                ],
+            ]
+        );
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'responses' => [] ], 200 ), null, $read_only_batch );
+
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( 0, WC()->cart->persistent_cart_updates );
+        $this->assertSame( [], $wpdb->wc_sessions );
+    }
+
+    public function test_sync_cart_session_does_not_force_cookie_for_empty_cart_on_uncookied_guest(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [];
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/wc/store/v1/cart/update-customer' );
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( 0, WC()->cart->persistent_cart_updates );
+        $this->assertSame( [], $wpdb->wc_sessions );
+    }
+
+    public function test_sync_cart_session_sets_cookie_and_persists_session_when_browser_adds_item_to_cart(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'abc123' => [ 'product_id' => 42, 'quantity' => 2 ] ];
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items_count' => 2 ], 200 ), null, $request );
+
+        $this->assertSame( 1, WC()->session->cookie_set_calls );
+        $this->assertTrue( WC()->session->cookie_set );
+        $this->assertSame( 1, WC()->cart->persistent_cart_updates );
+        $this->assertArrayHasKey( 't_guest_session_123', $wpdb->wc_sessions );
+
+        $stored = maybe_unserialize( $wpdb->wc_sessions['t_guest_session_123'] );
+        $this->assertSame( WC()->cart->cart_for_session, $stored['cart'] );
+        $this->assertNotEmpty( $GLOBALS['gecx_test_deleted_cache_keys'] );
+    }
+
+    public function test_sync_cart_session_syncs_cart_token_mutation_without_forcing_browser_cookie(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'abc123' => [ 'product_id' => 99, 'quantity' => 1 ] ];
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/wc/store/v1/batch' );
+        $request->set_header( 'Cart-Token', 'agent.cart.token' );
+        $request->set_param(
+            'requests',
+            [
+                [
+                    'path'   => '/wc/store/v1/cart/add-item',
+                    'method' => 'POST',
+                ],
+            ]
+        );
+
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'responses' => [] ], 200 ), null, $request );
+
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( 1, WC()->cart->persistent_cart_updates );
+        $this->assertArrayHasKey( 't_guest_session_123', $wpdb->wc_sessions );
+    }
+
+    public function test_save_session_handler_does_not_force_cookie_for_uncookied_guest_without_cart(): void {
+        WC()->cart = new WC_Cart_Mock();
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', 'projects/123/locations/global/commerceSessions/sess-1' );
+
+        $res = $rest_api->save_session_handler( $request );
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-1', WC()->session->get( 'gecx_session_id' ) );
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( 0, WC()->session->save_data_calls );
+
+        // Once the browser already has a WooCommerce session cookie, save_session_handler persists and refreshes it.
+        $_COOKIE['wp_woocommerce_session_test'] = 't_guest_session_123||12345||12345||hash';
+        $res_with_cookie                        = $rest_api->save_session_handler( $request );
+        $this->assertInstanceOf( WP_REST_Response::class, $res_with_cookie );
+        $this->assertSame( 1, WC()->session->cookie_set_calls );
+        $this->assertSame( 1, WC()->session->save_data_calls );
+    }
+
+    public function test_save_session_handler_persists_cart_token_session_id_to_database(): void {
+        global $wpdb;
+        WC()->cart = new WC_Cart_Mock();
+
+        $token = $this->generate_jwt( 't_agent_shopper_888' );
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_header( 'Cart-Token', $token );
+        $request->set_param( 'session_id', 'projects/123/locations/global/commerceSessions/sess-token-1' );
+
+        $res = $rest_api->save_session_handler( $request );
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+
+        $this->assertArrayHasKey( 't_agent_shopper_888', $wpdb->wc_sessions );
+        $stored = maybe_unserialize( $wpdb->wc_sessions['t_agent_shopper_888'] );
+        $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-token-1', $stored['gecx_session_id'] );
+    }
+
+    public function test_sync_cart_session_bridges_cart_token_to_cookie_on_get_cart_with_items(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 2 ] ];
+
+        $token = $this->generate_jwt( 't_guest_shopper_999' );
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+        $request->set_header( 'Cart-Token', $token );
+
+        unset( $_COOKIE['wp_woocommerce_session_testcookiehash'] );
+        $GLOBALS['gecx_test_cookies'] = [];
+
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+        $this->assertArrayHasKey( 'wp_woocommerce_session_testcookiehash', $_COOKIE );
+        $cookie_val = $_COOKIE['wp_woocommerce_session_testcookiehash'];
+        $this->assertStringStartsWith( 't_guest_shopper_999||', $cookie_val );
+        $this->assertArrayHasKey( 't_guest_shopper_999', $wpdb->wc_sessions );
+    }
+
+    public function test_sync_cart_session_does_not_set_cookie_on_empty_cart_read(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [];
+
+        $token = $this->generate_jwt( 't_guest_empty' );
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+        $request->set_header( 'Cart-Token', $token );
+
+        unset( $_COOKIE['wp_woocommerce_session_testcookiehash'] );
+        $GLOBALS['gecx_test_cookies'] = [];
+
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+        $this->assertArrayNotHasKey( 'wp_woocommerce_session_testcookiehash', $_COOKIE );
+    }
+
+    public function test_sync_cart_session_does_not_bridge_a_numeric_cart_token_user_id_to_a_cookie(): void {
+        // A Cart-Token minted while the shopper was logged in carries a numeric
+        // user_id and stays valid after logout. Writing it as a session cookie for a
+        // logged-out browser makes WC_Session_Handler::is_session_cookie_valid() fail,
+        // which destroys that user's session row and empties their saved cart.
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 2 ] ];
+
+        $token = $this->generate_jwt( '5' );
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+        $request->set_header( 'Cart-Token', $token );
+
+        unset( $_COOKIE['wp_woocommerce_session_testcookiehash'] );
+        $GLOBALS['gecx_test_cookies'] = [];
+
+        $rest_api->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+        $this->assertArrayNotHasKey( 'wp_woocommerce_session_testcookiehash', $_COOKIE );
+    }
+
+    public function test_is_mutating_store_api_cart_request_returns_false_when_batch_requests_missing(): void {
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/wc/store/v1/batch' );
+
+        $ref = new ReflectionMethod( $rest_api, 'is_mutating_store_api_cart_request' );
+        $ref->setAccessible( true );
+
+        $this->assertFalse( $ref->invoke( $rest_api, $request ) );
+
+        $request->set_param( 'requests', 'invalid' );
+        $this->assertFalse( $ref->invoke( $rest_api, $request ) );
+
+        $request->set_param( 'requests', [ [ 'path' => '/wc/store/v1/products', 'method' => 'GET' ] ] );
+        $this->assertFalse( $ref->invoke( $rest_api, $request ) );
+
+        $request->set_param( 'requests', [ [ 'path' => '/wc/store/v1/cart/add-item', 'method' => 'POST' ] ] );
+        $this->assertTrue( $ref->invoke( $rest_api, $request ) );
+    }
+
+    public function test_attach_session_to_order_metadata_falls_back_to_database(): void {
+        global $wpdb;
+        $order = new WC_Order();
+
+        WC()->session              = new WC_Session_Handler();
+        WC()->session->customer_id = 't_order_shopper_111';
+
+        $wpdb->wc_sessions['t_order_shopper_111'] = serialize( [
+            'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sess-order-1',
+        ] );
+
+        $rest_api = new GECX_Rest_API();
+        $rest_api->attach_session_to_order_metadata( $order, [] );
+
+        $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-order-1', $order->get_meta( '_gecx_session_id' ) );
+    }
+
+    public function test_attach_session_to_order_metadata_store_api_falls_back_to_cart_token(): void {
+        global $wpdb;
+        $order = new WC_Order();
+
+        WC()->session              = new WC_Session_Handler();
+        WC()->session->customer_id = '';
+
+        $token = $this->generate_jwt( 't_blocks_checkout_222' );
+        $wpdb->wc_sessions['t_blocks_checkout_222'] = serialize( [
+            'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sess-blocks-2',
+        ] );
+
+        $request = new WP_REST_Request( 'POST', '/wc/store/v1/checkout' );
+        $request->set_header( 'Cart-Token', $token );
+
+        $rest_api = new GECX_Rest_API();
+        $rest_api->attach_session_to_order_metadata_store_api( $order, $request );
+
+        $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-blocks-2', $order->get_meta( '_gecx_session_id' ) );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {

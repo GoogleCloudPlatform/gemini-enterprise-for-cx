@@ -293,12 +293,30 @@ class GECX_Auth {
     }
 
     /**
+     * Extracts and validates the customer ID (user_id) from a Store API Cart-Token.
+     *
+     * @param string $cart_token Raw Cart-Token value.
+     * @return string Validated customer ID or empty string if invalid.
+     */
+    public static function get_cart_token_customer_id( string $cart_token ): string {
+        $payload = self::verify_cart_token( $cart_token );
+        if ( null === $payload || ! isset( $payload->user_id ) ) {
+            return '';
+        }
+        $user_id = $payload->user_id;
+        if ( ! is_string( $user_id ) && ! is_int( $user_id ) ) {
+            return '';
+        }
+        return (string) $user_id;
+    }
+
+    /**
      * Verifies a WooCommerce Store API cart token.
      *
      * @param string $cart_token Raw Cart-Token header value.
      * @return object|null Decoded payload, or null when the token is unusable.
      */
-    private static function verify_cart_token( string $cart_token ): ?object {
+    public static function verify_cart_token( string $cart_token ): ?object {
         $parts = explode( '.', $cart_token );
         if ( count( $parts ) !== 3 ) {
             return null;
