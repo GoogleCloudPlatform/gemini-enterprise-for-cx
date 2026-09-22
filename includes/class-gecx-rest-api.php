@@ -295,6 +295,28 @@ class GECX_Rest_API {
     }
 
     /**
+     * Reads the raw `Cart-Token` request header from `$_SERVER`.
+     *
+     * WP_REST_Request only carries the headers WordPress parsed for the route
+     * it dispatched, so the Store API checkout hooks and the post-dispatch cart
+     * sync still have to fall back to `$_SERVER`. The value is a compact JWS:
+     * three base64url segments separated by dots. `sanitize_text_field()` is
+     * lossless over that alphabet, and the charset filter drops anything a JWT
+     * cannot contain, so a malformed header can never reach
+     * `GECX_Auth::get_cart_token_customer_id()` intact. Verification of the
+     * token itself is still done there by HMAC.
+     *
+     * @return string The token, or '' when the request carries none.
+     */
+    private static function read_cart_token_from_server(): string {
+        if ( empty( $_SERVER['HTTP_CART_TOKEN'] ) ) {
+            return '';
+        }
+        $cart_token = sanitize_text_field( wp_unslash( $_SERVER['HTTP_CART_TOKEN'] ) );
+        return (string) preg_replace( '/[^A-Za-z0-9._\-]/', '', $cart_token );
+    }
+
+    /**
      * Checks whether the current request already carries a WooCommerce session cookie.
      *
      * @return bool True if a non-empty wp_woocommerce_session_* cookie is present.
@@ -521,11 +543,8 @@ class GECX_Rest_API {
                 if ( '' === $raw_cart_token && method_exists( $request, 'get_headers' ) ) {
                     $raw_cart_token = $this->find_cart_token( $request->get_headers() );
                 }
-                if ( '' === $raw_cart_token && ! empty( $_SERVER['HTTP_CART_TOKEN'] ) ) {
-                    // wp_unslash() only. sanitize_text_field() strips percent-octets,
-                    // which would corrupt a JWT and fail its HMAC verification.
-                    // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Value is HMAC-verified by GECX_Auth::get_cart_token_customer_id().
-                    $raw_cart_token = (string) wp_unslash( $_SERVER['HTTP_CART_TOKEN'] );
+                if ( '' === $raw_cart_token ) {
+                    $raw_cart_token = self::read_cart_token_from_server();
                 }
                 if ( '' !== $raw_cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
                     $session_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
@@ -705,11 +724,8 @@ class GECX_Rest_API {
         if ( '' === $raw_cart_token ) {
             $raw_cart_token = (string) ( $request->get_param( 'cart_token' ) ?? $request->get_param( 'cartId' ) ?? $request->get_param( 'cart_id' ) ?? '' );
         }
-        if ( '' === $raw_cart_token && ! empty( $_SERVER['HTTP_CART_TOKEN'] ) ) {
-            // wp_unslash() only. sanitize_text_field() strips percent-octets,
-            // which would corrupt a JWT and fail its HMAC verification.
-            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Value is HMAC-verified by GECX_Auth::get_cart_token_customer_id().
-            $raw_cart_token = (string) wp_unslash( $_SERVER['HTTP_CART_TOKEN'] );
+        if ( '' === $raw_cart_token ) {
+            $raw_cart_token = self::read_cart_token_from_server();
         }
         if ( '' !== $raw_cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
             $session_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
@@ -1818,11 +1834,8 @@ class GECX_Rest_API {
             if ( '' === $cart_token && method_exists( $request, 'get_headers' ) ) {
                 $cart_token = $this->find_cart_token( $request->get_headers() );
             }
-            if ( '' === $cart_token && ! empty( $_SERVER['HTTP_CART_TOKEN'] ) ) {
-                // wp_unslash() only. sanitize_text_field() strips percent-octets,
-                // which would corrupt a JWT and fail its HMAC verification.
-                // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Value is HMAC-verified by GECX_Auth::get_cart_token_customer_id().
-                $cart_token = (string) wp_unslash( $_SERVER['HTTP_CART_TOKEN'] );
+            if ( '' === $cart_token ) {
+                $cart_token = self::read_cart_token_from_server();
             }
             if ( '' !== $cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
                 $customer_id = GECX_Auth::get_cart_token_customer_id( $cart_token );

@@ -1769,6 +1769,35 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-blocks-2', $order->get_meta( '_gecx_session_id' ) );
     }
 
+    public function test_attach_session_to_order_metadata_store_api_reads_cart_token_from_server_headers(): void {
+        global $wpdb;
+        $order = new WC_Order();
+
+        WC()->session              = new WC_Session_Handler();
+        WC()->session->customer_id = '';
+
+        // WooCommerce Blocks dispatches checkout internally, so the Cart-Token
+        // only survives on $_SERVER. Sanitizing it must leave the base64url
+        // segments and the dots intact or the HMAC check fails.
+        $token                                     = $this->generate_jwt( 't_blocks_checkout_333' );
+        $_SERVER['HTTP_CART_TOKEN']                = $token;
+        $wpdb->wc_sessions['t_blocks_checkout_333'] = serialize( [
+            'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sess-blocks-3',
+        ] );
+
+        $rest_api = new GECX_Rest_API();
+        $rest_api->attach_session_to_order_metadata_store_api( $order, new WP_REST_Request( 'POST', '/wc/store/v1/checkout' ) );
+        $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-blocks-3', $order->get_meta( '_gecx_session_id' ) );
+
+        // A header carrying characters a JWT cannot contain resolves nothing.
+        $junk_order                 = new WC_Order();
+        $_SERVER['HTTP_CART_TOKEN'] = '<script>alert(1)</script>';
+        $rest_api->attach_session_to_order_metadata_store_api( $junk_order, new WP_REST_Request( 'POST', '/wc/store/v1/checkout' ) );
+        $this->assertSame( '', (string) $junk_order->get_meta( '_gecx_session_id' ) );
+
+        unset( $_SERVER['HTTP_CART_TOKEN'] );
+    }
+
     public function test_sync_cart_session_persists_to_wc_sessions_table_and_wc_session_handler(): void {
         $token    = $this->generate_jwt( 't_guest_session_abc' );
         $rest_api = new GECX_Rest_API();
