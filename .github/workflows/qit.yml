@@ -53,12 +53,14 @@ jobs:
           PARTNER_USER: ${{ secrets.QIT_USER || secrets.PARTNER_USER }}
           PARTNER_SECRET: ${{ secrets.QIT_ACCESS_TOKEN || secrets.PARTNER_SECRET }}
         run: |
-          if [ -z "${PARTNER_USER}" ] || [ -z "${PARTNER_SECRET}" ]; then
+          CLEAN_USER="$(echo "${PARTNER_USER}" | tr -d '[:space:]')"
+          CLEAN_SECRET="$(echo "${PARTNER_SECRET}" | tr -d '[:space:]')"
+          if [ -z "${CLEAN_USER}" ] || [ -z "${CLEAN_SECRET}" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "::notice::QIT partner credentials (QIT_USER/PARTNER_USER, QIT_ACCESS_TOKEN/PARTNER_SECRET) not set. Skipping remote managed tests."
           else
             echo "configured=true" >> "$GITHUB_OUTPUT"
-            vendor/bin/qit partner:add --user="${PARTNER_USER}" --qit_token="${PARTNER_SECRET}"
+            vendor/bin/qit partner:add --user="${CLEAN_USER}" --qit_token="${CLEAN_SECRET}"
           fi
 
       - name: Run QIT validation test
