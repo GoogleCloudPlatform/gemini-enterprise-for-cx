@@ -44,8 +44,10 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Validate ZIP with QIT
+        env:
+          PLUGIN_ZIP: ${{ steps.build.outputs.zip }}
         run: |
-          vendor/bin/qit woo:validate-zip "${{ steps.build.outputs.zip }}"
+          vendor/bin/qit woo:validate-zip "${PLUGIN_ZIP}"
 
       - name: Add QIT partner
         id: partner
@@ -65,18 +67,24 @@ jobs:
 
       - name: Run QIT validation test
         if: steps.partner.outputs.configured == 'true'
+        env:
+          PLUGIN_ZIP: ${{ steps.build.outputs.zip }}
         run: |
-          vendor/bin/qit run:validation gemini-enterprise-for-cx --zip="${{ steps.build.outputs.zip }}" --wait
+          vendor/bin/qit run:validation gemini-enterprise-for-cx --zip="${PLUGIN_ZIP}" --wait
 
       - name: Run QIT security test
         if: (success() || failure()) && steps.partner.outputs.configured == 'true'
+        env:
+          PLUGIN_ZIP: ${{ steps.build.outputs.zip }}
         run: |
-          vendor/bin/qit run:security gemini-enterprise-for-cx --zip="${{ steps.build.outputs.zip }}" --wait
+          vendor/bin/qit run:security gemini-enterprise-for-cx --zip="${PLUGIN_ZIP}" --wait
 
       - name: Run QIT activation test
         if: (success() || failure()) && steps.partner.outputs.configured == 'true'
+        env:
+          PLUGIN_ZIP: ${{ steps.build.outputs.zip }}
         run: |
-          vendor/bin/qit run:activation gemini-enterprise-for-cx --zip="${{ steps.build.outputs.zip }}" --wait
+          vendor/bin/qit run:activation gemini-enterprise-for-cx --zip="${PLUGIN_ZIP}" --wait
 
       - name: Upload plugin zip
         if: always()
