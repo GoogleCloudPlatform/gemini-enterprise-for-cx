@@ -1,5 +1,9 @@
 <?php
 /**
+ * Copyright 2026 Google LLC
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Admin Test Suite for Gemini Enterprise for Customer Experience (GECX)
  *
  * @package GECX
@@ -530,7 +534,7 @@ class AdminTest extends GECX_TestCase {
         $GLOBALS['gecx_test_current_user']  = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $GLOBALS['gecx_test_last_redirect'] = null;
         $_SERVER['REQUEST_METHOD']          = 'POST';
-        $_POST['gecx_connect_nonce']        = 'valid_nonce_gecx_connect_agent_action';
+        $_POST['gecx_connect_nonce']        = wp_create_nonce( 'gecx_connect_agent_action' );
         update_option( 'gecx_webhook_id', 4242 );
         update_option( 'gecx_auth_complete', 1 );
 
@@ -548,7 +552,7 @@ class AdminTest extends GECX_TestCase {
 
     public function test_save_product_prompts_override_field_uses_wc_product_crud_methods(): void {
         $GLOBALS['gecx_test_current_user']      = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        $_POST['gecx_prompts_override_nonce']   = 'valid_nonce_gecx_save_prompts_override';
+        $_POST['gecx_prompts_override_nonce']   = wp_create_nonce( 'gecx_save_prompts_override' );
         $_POST['_gecx_suggested_prompts_override'] = "Prompt A\nPrompt B";
 
         $product = new WC_Product( 505 );
@@ -695,6 +699,86 @@ class AdminTest extends GECX_TestCase {
         $this->assertStringContainsString( 'id="gecx-connect-btn"', $html );
         $this->assertStringContainsString( 'Store Authorization Complete', $html );
         $this->assertStringNotContainsString( 'id="gecx-authorize-btn"', $html );
+    }
+
+    public function test_ajax_handlers_reject_invalid_nonce_and_unauthorized_subscriber(): void {
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+
+        // 1. Forged nonces are rejected even for an administrator.
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        update_option( 'gecx_button_placement', 'nav_menu' );
+        update_option( 'gecx_agent_enabled', 0 );
+        update_option( 'gecx_pdp_prompts_enabled', 1 );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        delete_option( 'gecx_dismiss_activation_notice' );
+
+        $_POST = [
+            'nonce'     => 'forged_nonce',
+            'placement' => 'floating',
+            'enabled'   => '1',
+        ];
+
+        $admin->ajax_save_button_config();
+        $this->assertSame( false, $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertSame( 'nav_menu', get_option( 'gecx_button_placement' ) );
+
+        $admin->ajax_toggle_app_embed();
+        $this->assertSame( false, $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertSame( 0, get_option( 'gecx_agent_enabled' ) );
+
+        $_POST['enabled'] = '0';
+        $admin->ajax_toggle_pdp_prompts();
+        $this->assertSame( false, $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertSame( 1, get_option( 'gecx_pdp_prompts_enabled' ) );
+
+        $admin->ajax_unlink_agent();
+        $this->assertSame( false, $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertSame( 'projects/123/locations/global/agents/agent-1', get_option( 'gecx_agent_name' ) );
+
+        $admin->ajax_dismiss_notice();
+        $this->assertSame( false, $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertFalse( get_option( 'gecx_dismiss_activation_notice', false ) );
+
+        // 2. Subscriber with a valid nonce gets 403 Unauthorized and mutates nothing.
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 5, 'sub@example.com', [ 'subscriber' ] );
+        $_POST                             = [
+            'nonce'     => wp_create_nonce( 'gecx_save_agent_nonce' ),
+            'placement' => 'floating',
+            'enabled'   => '1',
+        ];
+
+        $admin->ajax_save_button_config();
+        $this->assertSame( false, $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertSame( 'Unauthorized', $GLOBALS['gecx_test_last_json_response']['data']['message'] );
+        $this->assertSame( 'nav_menu', get_option( 'gecx_button_placement' ) );
+
+        $admin->ajax_toggle_app_embed();
+        $this->assertSame( false, $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertSame( 0, get_option( 'gecx_agent_enabled' ) );
+
+        $_POST['enabled'] = '0';
+        $admin->ajax_toggle_pdp_prompts();
+        $this->assertSame( false, $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertSame( 1, get_option( 'gecx_pdp_prompts_enabled' ) );
+
+        $admin->ajax_unlink_agent();
+        $this->assertSame( false, $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertSame( 'projects/123/locations/global/agents/agent-1', get_option( 'gecx_agent_name' ) );
+
+        $_POST['nonce'] = wp_create_nonce( 'gecx_dismiss_notice_nonce' );
+        $admin->ajax_dismiss_notice();
+        $this->assertSame( false, $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertFalse( get_option( 'gecx_dismiss_activation_notice', false ) );
     }
 }
 

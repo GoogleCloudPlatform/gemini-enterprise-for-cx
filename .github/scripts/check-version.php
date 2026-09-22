@@ -1,5 +1,9 @@
 <?php
 /**
+ * Copyright 2026 Google LLC
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Asserts that every place the plugin version is written agrees.
  *
  * WordPress.org serves whichever version the "Stable tag" in readme.txt names,
@@ -59,6 +63,11 @@ $versions = [
         '/^\d{4}-\d{2}-\d{2} - version (\S+)\s*$/m',
         'the newest changelog entry'
     ),
+    'composer.json "version"'         => gecx_capture(
+        $root . '/composer.json',
+        '/"version"\s*:\s*"([^"]+)"/',
+        'the composer.json version field'
+    ),
 ];
 
 $unique = array_unique( array_values( $versions ) );
@@ -68,7 +77,7 @@ foreach ( $versions as $label => $version ) {
 }
 
 if ( count( $unique ) > 1 ) {
-    fwrite( STDERR, "\nVersion mismatch. All four must name the same release.\n" );
+    fwrite( STDERR, "\nVersion mismatch. All five must name the same release.\n" );
     exit( 1 );
 }
 

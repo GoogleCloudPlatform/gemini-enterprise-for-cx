@@ -1,5 +1,14 @@
 <?php
 /**
+ * Copyright 2026 Google LLC
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Gemini Enterprise for CX Authentication Handler
  */
 
@@ -10,6 +19,23 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 class GECX_Auth {
+
+    /**
+     * Allowlist pattern for GCP agent and token broker resource names.
+     */
+    public const RESOURCE_NAME_PATTERN = '/^[a-zA-Z0-9_\-\.\/]+$/';
+
+    /**
+     * Transient name used to cache guest customer JWTs (`user_id: 0`) for a
+     * fraction of their lifetime so unauthenticated auth-context / refresh-token
+     * bursts do not invoke 2048-bit RSA signing on every request.
+     */
+    public const GUEST_JWT_CACHE_TRANSIENT = 'gecx_guest_jwt_cache';
+
+    /**
+     * Cache duration (5 minutes) for interchangeable guest customer JWTs.
+     */
+    private const GUEST_JWT_CACHE_TTL_SECONDS = 300;
 
     /**
      * Number of polls while waiting for a concurrent keypair generation.
@@ -1039,9 +1065,28 @@ class GECX_Auth {
             return null;
         }
 
-        $issued_at    = time();
-        $expires_at   = $issued_at + $expiration;
-        $store_domain = self::get_sanitized_store_domain();
+        $issued_at          = time();
+        $expires_at         = $issued_at + $expiration;
+        $store_domain       = self::get_sanitized_store_domain();
+        $is_cacheable_guest = ! $is_admin && 0 === (int) $user_id && '' === $user_email && $expiration >= ( 2 * self::GUEST_JWT_CACHE_TTL_SECONDS );
+        $cache_fingerprint  = '';
+
+        if ( $is_cacheable_guest && function_exists( 'get_transient' ) ) {
+            $cache_fingerprint = hash( 'sha256', (string) $store_domain . '|' . (string) $expiration . '|' . $private_key );
+            $cached_guest_jwt  = get_transient( self::GUEST_JWT_CACHE_TRANSIENT );
+            if (
+                is_array( $cached_guest_jwt ) &&
+                isset( $cached_guest_jwt['fp'], $cached_guest_jwt['exp'], $cached_guest_jwt['jwt'] ) &&
+                is_string( $cached_guest_jwt['fp'] ) &&
+                hash_equals( $cache_fingerprint, $cached_guest_jwt['fp'] ) &&
+                is_int( $cached_guest_jwt['exp'] ) &&
+                ( $cached_guest_jwt['exp'] - $issued_at ) >= ( $expiration - self::GUEST_JWT_CACHE_TTL_SECONDS ) &&
+                is_string( $cached_guest_jwt['jwt'] ) &&
+                '' !== $cached_guest_jwt['jwt']
+            ) {
+                return $cached_guest_jwt['jwt'];
+            }
+        }
 
         // Deliberately not filterable. Every plugin on the store can register a
         // WordPress filter, and this array is about to be signed with the
@@ -1068,7 +1113,19 @@ class GECX_Auth {
         // the queued errors are drained into the log lines below instead.
         // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- OpenSSL warnings on a corrupt key are drained into the log lines below.
         if ( @openssl_sign( $signing_input, $raw_signature, $private_key, OPENSSL_ALGO_SHA256 ) && ! empty( $raw_signature ) ) {
-            return $signing_input . '.' . self::to_base_64_url( $raw_signature );
+            $signed_jwt = $signing_input . '.' . self::to_base_64_url( $raw_signature );
+            if ( $is_cacheable_guest && '' !== $cache_fingerprint && function_exists( 'set_transient' ) ) {
+                set_transient(
+                    self::GUEST_JWT_CACHE_TRANSIENT,
+                    [
+                        'fp'  => $cache_fingerprint,
+                        'exp' => $expires_at,
+                        'jwt' => $signed_jwt,
+                    ],
+                    self::GUEST_JWT_CACHE_TTL_SECONDS
+                );
+            }
+            return $signed_jwt;
         }
 
         if ( ! $allow_key_generation ) {

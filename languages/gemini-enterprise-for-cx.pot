@@ -1,0 +1,71 @@
+# Copyright 2026 Google LLC
+# SPDX-License-Identifier: GPL-3.0-or-later
+msgid ""
+msgstr ""
+"Project-Id-Version: Gemini Enterprise for Customer Experience 0.3.16\n"
+"Report-Msgid-Bugs-To: https://github.com/GoogleCloudPlatform/gemini-enterprise-for-cx/issues\n"
+"Last-Translator: Google Cloud <noreply@google.com>\n"
+"Language-Team: Google Cloud <noreply@google.com>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"POT-Creation-Date: 2026-04-16T00:00:00+00:00\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"X-Domain: gemini-enterprise-for-cx\n"
+
+#. Plugin Name of the plugin
+msgid "Gemini Enterprise for Customer Experience"
+msgstr ""
+
+#. Description of the plugin
+msgid "Embeds the Google Gemini Enterprise for Customer Experience (GECX) AI shopping assistant into your WooCommerce storefront."
+msgstr ""
+
+#: gecx-agent.php:61
+msgid "Settings"
+msgstr ""
+
+#: includes/class-gecx-admin.php:154
+#: includes/class-gecx-admin.php:797
+msgid "Gemini Enterprise for CX"
+msgstr ""
+
+#: includes/class-gecx-admin.php:155
+msgid "Gemini CX"
+msgstr ""
+
+#: includes/class-gecx-admin.php:831
+msgid "Step 1: Authorize WooCommerce API"
+msgstr ""
+
+#: includes/class-gecx-admin.php:841
+msgid "Authorize Store"
+msgstr ""
+
+#: includes/class-gecx-admin.php:855
+msgid "Step 2: Connect Your Store to Google Cloud"
+msgstr ""
+
+#: includes/class-gecx-admin.php:868
+msgid "Connect with Google Cloud"
+msgstr ""
+
+#: includes/class-gecx-admin.php:889
+msgid "Connection Status: Active"
+msgstr ""
+
+#: includes/class-gecx-admin.php:889
+msgid "Connection Status: Inactive"
+msgstr ""
+
+#: includes/class-gecx-admin.php:1037
+msgid "Disconnect Agent"
+msgstr ""
+
+#: includes/class-gecx-storefront.php:271
+msgid "Chat with Agent"
+msgstr ""
+
+#: includes/class-gecx-storefront.php:272
+msgid "Shop"
+msgstr ""

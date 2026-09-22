@@ -19,11 +19,113 @@
 /** @type {string} Latest Store API Cart-Token observed from cart responses or events. */
 let gecxLatestCartToken = '';
 
+/**
+ * Checks whether a candidate Cart-Token is a syntactically valid 3-part JWT.
+ * @param {*} token
+ * @return {boolean}
+ */
+function gecxIsValidCartTokenFormat(token) {
+  return typeof token === 'string' &&
+      token.length <= 4096 &&
+      /^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$/.test(token);
+}
+
+/**
+ * The Store API cart endpoint for this store.
+ *
+ * Read from the localized config, which is built with rest_url() and so is
+ * correct on subdirectory installs, plain permalinks, and stores that have
+ * changed the REST url prefix. The literal is only a last resort for a page
+ * that somehow loaded this script without its config.
+ * @return {string}
+ */
+function gecxCartRestUrl() {
+  const config = window.gecxStorefrontConfig;
+  if (config && config.cartRestUrl) {
+    return config.cartRestUrl;
+  }
+  return '/wp-json/wc/store/v1/cart';
+}
+
+/**
+ * The GECX session REST endpoint for this store.
+ * @return {string}
+ */
+function gecxSessionRestUrl() {
+  const config = window.gecxStorefrontConfig;
+  if (config && config.sessionUrl) {
+    return config.sessionUrl;
+  }
+  if (config && config.authContextUrl) {
+    return config.authContextUrl.replace(/\/auth-context(\b|\/|$)/, '/session$1');
+  }
+  return '/wp-json/gecx/v1/session';
+}
+
+/**
+ * Checks whether a URL resolves to the current window's origin.
+ * @param {string} candidateUrl
+ * @return {boolean}
+ */
+function gecxIsSameOriginUrl(candidateUrl) {
+  if (!candidateUrl || typeof candidateUrl !== 'string') {
+    return false;
+  }
+  if (!window.location || !window.location.origin) {
+    return candidateUrl.charAt(0) === '/' && candidateUrl.charAt(1) !== '/';
+  }
+  try {
+    const resolved = new URL(candidateUrl, window.location.origin);
+    return resolved.origin === window.location.origin;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * Checks whether a same-origin request URL targets a specific REST endpoint.
+ * @param {string} candidateUrl
+ * @param {string} configuredUrl
+ * @param {!RegExp} fallbackPathRegex
+ * @return {boolean}
+ */
+function gecxIsTargetEndpoint(candidateUrl, configuredUrl, fallbackPathRegex) {
+  if (!gecxIsSameOriginUrl(candidateUrl)) {
+    return false;
+  }
+  try {
+    const baseOrigin = (window.location && window.location.origin) ?
+        window.location.origin :
+        'https://localhost';
+    const candidate = new URL(candidateUrl, baseOrigin);
+    if (configuredUrl) {
+      const target = new URL(configuredUrl, baseOrigin);
+      if (candidate.origin !== target.origin) {
+        return false;
+      }
+      const targetRoute = target.searchParams.get('rest_route');
+      if (targetRoute) {
+        const candidateRoute = candidate.searchParams.get('rest_route') || '';
+        return candidateRoute.replace(/\/+$/, '') === targetRoute.replace(/\/+$/, '');
+      }
+      const normCandidate = candidate.pathname.replace(/\/+$/, '');
+      const normTarget = target.pathname.replace(/\/+$/, '');
+      if (normCandidate === normTarget || normCandidate.indexOf(normTarget + '/') === 0) {
+        return true;
+      }
+    }
+    return fallbackPathRegex.test(candidate.pathname);
+  } catch (err) {
+    return false;
+  }
+}
+
 if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
   const originalFetch = window.fetch;
   window.fetch = function(input, init) {
     const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
-    if (gecxLatestCartToken && /\/gecx\/v1\/session(\b|$)/.test(url)) {
+    if (gecxLatestCartToken &&
+        gecxIsTargetEndpoint(url, gecxSessionRestUrl(), /\/gecx\/v1\/session(\b|$)/)) {
       init = Object.assign({}, init);
       if (typeof Headers !== 'undefined') {
         const headers = new Headers(init.headers || {});
@@ -48,11 +150,12 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
     }
     return originalFetch.call(this, input, init).then(function(response) {
       try {
-        if (response && response.headers && /\/wc\/store\/v\d+\/cart(\b|\/|$)/.test(url)) {
+        if (response && response.headers &&
+            gecxIsTargetEndpoint(url, gecxCartRestUrl(), /\/wc\/store\/v\d+\/cart(\b|\/|$)/)) {
           const token = (typeof response.headers.get === 'function') ?
               (response.headers.get('Cart-Token') || response.headers.get('cart-token')) :
               '';
-          if (token) {
+          if (gecxIsValidCartTokenFormat(token)) {
             gecxLatestCartToken = token;
           }
         }
@@ -62,23 +165,6 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
       return response;
     });
   };
-}
-
-/**
- * The Store API cart endpoint for this store.
- *
- * Read from the localized config, which is built with rest_url() and so is
- * correct on subdirectory installs, plain permalinks, and stores that have
- * changed the REST url prefix. The literal is only a last resort for a page
- * that somehow loaded this script without its config.
- * @return {string}
- */
-function gecxCartRestUrl() {
-  const config = window.gecxStorefrontConfig;
-  if (config && config.cartRestUrl) {
-    return config.cartRestUrl;
-  }
-  return '/wp-json/wc/store/v1/cart';
 }
 
 /**
@@ -172,11 +258,7 @@ function gecxRebindSessionOnCartUpdate() {
   if (!sessionId) {
     return;
   }
-  const config = window.gecxStorefrontConfig;
-  const authContextUrl = (config && config.authContextUrl) ? config.authContextUrl : '';
-  const sessionUrl = authContextUrl ?
-      authContextUrl.replace(/\/auth-context\/?$/, '/session') :
-      '/wp-json/gecx/v1/session';
+  const sessionUrl = gecxSessionRestUrl();
 
   gecxResolveRestNonce()
       .then(function(nonce) {
@@ -268,9 +350,10 @@ function gecxResolveRestNonce() {
 }
 
 function handleCartUpdate(e) {
-  const cartId = (e.detail && (e.detail.cartId || e.detail.cart_id)) ?
+  const rawCartId = (e.detail && (e.detail.cartId || e.detail.cart_id)) ?
       (e.detail.cartId || e.detail.cart_id) :
       '';
+  const cartId = gecxIsValidCartTokenFormat(rawCartId) ? rawCartId : '';
   if (cartId) {
     gecxLatestCartToken = cartId;
   }
@@ -643,11 +726,16 @@ function gecxLoadWidget() {
   return gecxWidgetScriptPromise;
 }
 
+const gecxHandleLoadWidgetEvent = function() {
+  gecxLoadWidget().catch(function(err) {
+    gecxReportError('widget load', err);
+  });
+};
 window.gecxLoadWidget = gecxLoadWidget;
-window.addEventListener('gecx:consent-granted', gecxLoadWidget);
-document.addEventListener('gecx:consent-granted', gecxLoadWidget);
-window.addEventListener('gecx-load-widget', gecxLoadWidget);
-document.addEventListener('gecx-load-widget', gecxLoadWidget);
+window.addEventListener('gecx:consent-granted', gecxHandleLoadWidgetEvent);
+document.addEventListener('gecx:consent-granted', gecxHandleLoadWidgetEvent);
+window.addEventListener('gecx-load-widget', gecxHandleLoadWidgetEvent);
+document.addEventListener('gecx-load-widget', gecxHandleLoadWidgetEvent);
 
 function initDeferredWidgetListeners() {
   const config = window.gecxStorefrontConfig;

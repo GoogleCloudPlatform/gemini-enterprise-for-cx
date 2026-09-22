@@ -1,5 +1,9 @@
 <?php
 /**
+ * Copyright 2026 Google LLC
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Unit tests for GECX order webhook privacy minimization and lifecycle management.
  */
 
@@ -553,6 +557,41 @@ class WebhookLifecycleTest extends TestCase {
         $this->assertSame( 3, $minimized['line_items'][0]['quantity'] );
         // 99.99 / 3 = 33.33
         $this->assertSame( 33.33, $minimized['line_items'][0]['price'] );
+    }
+
+    public function test_uninstall_cleans_up_transients_and_woocommerce_session_rows(): void {
+        global $wpdb;
+
+        if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+            define( 'WP_UNINSTALL_PLUGIN', true );
+        }
+
+        update_option( 'gecx_pending_oauth_states', [ 'tok123' => time() ] );
+        set_transient( 'gecx_oauth_state_tok123', 1 );
+        set_transient( 'gecx_oauth_state_orphan', 1 );
+        set_transient( 'gecx_unknown_iss_hash1', 1 );
+        set_transient( 'gecx_admin_notice_error', 'Some error' );
+        set_transient( 'gecx_guest_jwt_cache', [ 'jwt' => 'x' ] );
+
+        $wpdb->wc_sessions['t_shopper_42'] = maybe_serialize(
+            [
+                'cart'            => 'serialized_cart',
+                'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sess-42',
+            ]
+        );
+
+        include dirname( __DIR__ ) . '/uninstall.php';
+
+        $this->assertFalse( get_transient( 'gecx_oauth_state_tok123' ) );
+        $this->assertFalse( get_transient( 'gecx_oauth_state_orphan' ) );
+        $this->assertFalse( get_transient( 'gecx_unknown_iss_hash1' ) );
+        $this->assertFalse( get_transient( 'gecx_admin_notice_error' ) );
+        $this->assertFalse( get_transient( 'gecx_guest_jwt_cache' ) );
+
+        $updated_session = maybe_unserialize( $wpdb->wc_sessions['t_shopper_42'] );
+        $this->assertIsArray( $updated_session );
+        $this->assertArrayNotHasKey( 'gecx_session_id', $updated_session );
+        $this->assertSame( 'serialized_cart', $updated_session['cart'] );
     }
 }
 

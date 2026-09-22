@@ -1,5 +1,9 @@
 <?php
 /**
+ * Copyright 2026 Google LLC
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Storefront Test Suite for Gemini Enterprise for Customer Experience (GECX)
  *
  * @package GECX

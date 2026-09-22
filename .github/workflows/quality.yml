@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -30,7 +34,7 @@ jobs:
 
       - name: Run PHPCS
         run: |
-          vendor/bin/phpcs --report-full --report-checkstyle=./phpcs-report.xml
+          vendor/bin/phpcs --runtime-set ignore_warnings_on_exit 0 --report-full --report-checkstyle=./phpcs-report.xml
         continue-on-error: false
 
       - name: Annotate PHPCS results
@@ -76,8 +80,8 @@ jobs:
         uses: WordPress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
         with:
           build-dir: './build/gemini-enterprise-for-cx'
-          # Warnings are surfaced in the job output; errors fail the build.
-          ignore-warnings: true
+          # Fail on both warnings and errors.
+          ignore-warnings: false
 
       - name: Upload the installable zip
         # Downloadable from the run's Artifacts section, or with

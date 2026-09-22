@@ -1,17 +1,24 @@
 /**
+ * Copyright 2026 Google LLC
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Gemini Enterprise for CX chat widget theme.
  *
  * Layout and default theme variables for the <chat-messenger> custom element
  * rendered on the storefront. Derived from the upstream Google Cloud
- * chat-messenger component stylesheets (chat-messenger-layout.css and
- * chat-messenger-default.css) and bundled directly with the plugin as
- * human-readable CSS so that no stylesheet or source map is fetched from a
- * remote origin at runtime.
- *
- * SPDX-License-Identifier: GPL-3.0-or-later
+ * Customer Engagement Suite chat-messenger bundle v0.10.0 stylesheets
+ * (chat-messenger-layout.css and chat-messenger-default.css from
+ * https://www.gstatic.com/ces-console/fast/chat-messenger/prod/v0.10.0/) and
+ * maintained directly as unminified, human-readable source in this repository
+ * so that no external stylesheet or source map is fetched at runtime.
  */
 
-body,
 body.gecx-chat-open,
 body:has(chat-messenger.slide-in:not(.messenger-hidden)) {
   -webkit-transition: padding-right .4s ease-in-out;

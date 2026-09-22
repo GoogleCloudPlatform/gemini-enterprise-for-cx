@@ -1,5 +1,9 @@
 <?php
 /**
+ * Copyright 2026 Google LLC
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Auth Test Suite for Gemini Enterprise for Customer Experience (GECX)
  *
  * @package GECX
@@ -1483,6 +1487,20 @@ class AuthTest extends GECX_TestCase {
         $this->assertSame( 2, $payload['user_id'] );
         $this->assertSame( 'admin2@example.com', $payload['user_email'] );
         $this->assertTrue( $payload['is_admin'] );
+    }
+
+    public function test_generate_jwt_caches_guest_token(): void {
+        $GLOBALS['gecx_test_current_user'] = null;
+        delete_transient( GECX_Auth::GUEST_JWT_CACHE_TRANSIENT );
+
+        $first  = GECX_Auth::generate_customer_jwt();
+        $second = GECX_Auth::generate_customer_jwt();
+
+        $this->assertNotNull( $first );
+        $this->assertSame( $first, $second );
+        $cached = get_transient( GECX_Auth::GUEST_JWT_CACHE_TRANSIENT );
+        $this->assertIsArray( $cached );
+        $this->assertSame( $first, $cached['jwt'] );
     }
 }
 
