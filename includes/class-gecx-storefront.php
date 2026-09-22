@@ -102,6 +102,7 @@ class GECX_Storefront {
             ' chat-messenger.slide-over { position: fixed !important; }' .
             ' .gecx-floating-button-container { transition: transform 0.5s cubic-bezier(0.32, 0.72, 0, 1); }' .
             ' body.gecx-chat-no-transition .gecx-floating-button-container { transition: none !important; }' .
+            ' @media (prefers-reduced-motion: reduce) { .gecx-floating-button-container { transition: none !important; } }' .
             ' body.gecx-chat-open .gecx-floating-button-container--center-right, body:has(chat-messenger:not(.messenger-hidden)) .gecx-floating-button-container--center-right { display: none !important; }' .
             ' @media (min-width: 600px) and (max-width: 839.98px) {' .
             '   body.gecx-chat-open .gecx-floating-button-container--bottom-center, body:has(chat-messenger:not(.messenger-hidden)) .gecx-floating-button-container--bottom-center,' .
@@ -123,7 +124,24 @@ class GECX_Storefront {
             ' }'
         );
 
-        wp_enqueue_script( 'gecx-widget-script', $urls['script'], [], $version, true );
+        $defer_until_interaction = (bool) get_option( 'gecx_defer_widget_until_interaction', false );
+        /**
+         * Filters whether the Google-hosted chat widget bundle should be
+         * enqueued immediately on page load.
+         *
+         * Consent management platforms (WP Consent API, Cookiebot, Complianz)
+         * or stores opting into interaction-triggered loading can return false
+         * here and trigger loading later via `window.gecxLoadWidget()`, the
+         * `gecx:consent-granted` DOM event, or shopper interaction with a
+         * launcher/prompt element.
+         *
+         * @param bool $should_load Whether to enqueue the widget bundle immediately.
+         */
+        $should_load_widget = (bool) apply_filters( 'gecx_should_load_widget', ! $defer_until_interaction );
+
+        if ( $should_load_widget ) {
+            wp_enqueue_script( 'gecx-widget-script', $urls['script'], [], $version, true );
+        }
 
         wp_enqueue_script(
             'gecx-storefront-js',
@@ -133,16 +151,28 @@ class GECX_Storefront {
             true
         );
 
-        $placement = (string) get_option( 'gecx_button_placement', 'nav_menu' );
-        $config    = [
-            'placement'       => $placement,
-            'buttonHtml'      => $this->get_agent_button_html(),
-            'isWidgetEnabled' => $enabled,
+        if ( function_exists( 'wp_set_script_translations' ) ) {
+            wp_set_script_translations(
+                'gecx-storefront-js',
+                'gemini-enterprise-for-cx',
+                plugin_dir_path( $this->plugin_file ) . 'languages'
+            );
+        }
+
+        $is_cart     = function_exists( 'is_cart' ) && is_cart();
+        $is_checkout = function_exists( 'is_checkout' ) && is_checkout();
+        $placement   = (string) get_option( 'gecx_button_placement', 'nav_menu' );
+        $config      = [
+            'placement'        => $placement,
+            'buttonHtml'       => $this->get_agent_button_html(),
+            'isWidgetEnabled'  => $enabled,
+            'widgetScriptUrl'  => esc_url_raw( (string) $urls['script'] ),
+            'shouldLoadWidget' => $should_load_widget,
             // Resolved here rather than assembled in the browser. rest_url()
             // accounts for subdirectory installs, a custom rest_url_prefix and
             // the plain-permalink ?rest_route= form, none of which the script
             // can infer from window.location.
-            'cartRestUrl'     => esc_url_raw( rest_url( 'wc/store/v1/cart' ) ),
+            'cartRestUrl'      => esc_url_raw( rest_url( 'wc/store/v1/cart' ) ),
             // The nonce itself is deliberately not localized here. This config
             // is rendered into the page body, and storefront HTML is cached by
             // WP Rocket, LiteSpeed and Cloudflare, so a nonce baked in at
@@ -151,13 +181,14 @@ class GECX_Storefront {
             // which is uncacheable by construction (nocache_headers() plus
             // Cache-Control: no-store). Same approach the chat widget bundle
             // takes.
-            'authContextUrl'  => esc_url_raw( rest_url( 'gecx/v1/auth-context' ) ),
+            'authContextUrl'   => esc_url_raw( rest_url( 'gecx/v1/auth-context' ) ),
             // WooCommerce resolves these from the store's configured page IDs,
             // so a store using localized slugs such as /panier still answers
             // correctly, and a product whose slug merely starts with "cart"
             // no longer does.
-            'isCartOrCheckout' => ( function_exists( 'is_cart' ) && is_cart() )
-                || ( function_exists( 'is_checkout' ) && is_checkout() ),
+            'isCart'           => $is_cart,
+            'isCheckout'       => $is_checkout,
+            'isCartOrCheckout' => $is_cart || $is_checkout,
         ];
 
         if ( is_product() && $this->is_pdp_prompts_auto_inject_enabled() ) {
@@ -364,6 +395,7 @@ class GECX_Storefront {
      * @param array  $block         Block data array.
      * @return string Modified block HTML.
      */
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- WordPress render_block filter callback signature.
     public function inject_block_suggested_prompts( string $block_content, array $block = [] ): string {
         if ( is_admin() || ! is_product() || ! $this->is_pdp_prompts_auto_inject_enabled() ) {
             return $block_content;
@@ -446,12 +478,6 @@ class GECX_Storefront {
     }
 
     /**
-     * Get suggested prompts HTML markup for a product.
-     *
-     * @param int $product_id Product ID.
-     * @return string HTML output.
-     */
-    /**
      * Resolves the product ID of the product currently being displayed.
      *
      * get_the_ID() returns false outside the loop, which is the case while
@@ -473,6 +499,12 @@ class GECX_Storefront {
         return 0;
     }
 
+    /**
+     * Get suggested prompts HTML markup for a product.
+     *
+     * @param int $product_id Product ID.
+     * @return string HTML output.
+     */
     public function get_suggested_prompts_html( int $product_id = 0 ): string {
         if ( $product_id <= 0 && is_product() ) {
             $product_id = self::resolve_current_product_id();

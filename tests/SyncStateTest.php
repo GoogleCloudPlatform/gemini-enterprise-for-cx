@@ -1031,6 +1031,38 @@ class SyncStateTest extends GECX_TestCase {
         $this->assert_notice_code( 'gecx_agent_unlinked' );
         $this->assertFalse( get_option( GECX_Admin::PENDING_NOTICES_OPTION ) );
     }
+
+    public function test_version_change_schedules_async_wp_cron_sync_without_blocking_admin_init(): void {
+        $this->seed_linked_store();
+        update_option( GECX_Admin::PLUGIN_VERSION_OPTION, '0.3.13' );
+        $GLOBALS['gecx_test_defer_cron'] = true;
+
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::SYNCED,
+                        'actualLinkedAgentId' => 'agents/agent_a',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->maybe_sync_on_version_change();
+
+        // No HTTP request is made synchronously during admin_init when cron is deferred.
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertCount( 1, $GLOBALS['gecx_test_scheduled_events'] );
+        $this->assertSame( GECX_Admin::VERSION_SYNC_CRON_HOOK, $GLOBALS['gecx_test_scheduled_events'][0]['hook'] );
+
+        // Executing the scheduled cron callback performs the SyncState call and updates the stored version.
+        $admin->run_scheduled_version_sync( 1 );
+        $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertSame( GECX_VERSION, get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+    }
 }
 
 if ( php_sapi_name() === 'cli' && isset( $argv[0] ) && basename( $argv[0] ) === basename( __FILE__ ) ) {

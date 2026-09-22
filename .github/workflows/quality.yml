@@ -29,11 +29,8 @@ jobs:
         uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
 
       - name: Run PHPCS
-        # Errors fail the build. Warnings are reported as annotations only,
-        # because the remaining ones are intentional (base64url for JWTs,
-        # WordPress hook signatures with unused parameters).
         run: |
-          vendor/bin/phpcs --warning-severity=0 --report-full --report-checkstyle=./phpcs-report.xml
+          vendor/bin/phpcs --report-full --report-checkstyle=./phpcs-report.xml
         continue-on-error: false
 
       - name: Annotate PHPCS results

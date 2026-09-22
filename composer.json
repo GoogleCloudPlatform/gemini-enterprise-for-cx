@@ -22,7 +22,7 @@
     },
     "scripts": {
         "test": "phpunit --configuration phpunit.xml.dist",
-        "lint": "phpcs --warning-severity=0",
+        "lint": "phpcs",
         "lint:all": "phpcs",
         "lint:fix": "phpcbf"
     }

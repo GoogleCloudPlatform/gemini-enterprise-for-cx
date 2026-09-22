@@ -103,6 +103,102 @@ function gecxIsCartOrCheckout() {
 }
 
 /**
+ * Whether the shopper is on the checkout page.
+ * @return {boolean}
+ */
+function gecxIsCheckout() {
+  const config = window.gecxStorefrontConfig;
+  if (config && typeof config.isCheckout !== 'undefined') {
+    return !!config.isCheckout;
+  }
+  return !!(
+      window.location && window.location.pathname &&
+      /(^|\/)checkout(\/|$)/.test(window.location.pathname));
+}
+
+/**
+ * Whether the shopper is on the cart page.
+ * @return {boolean}
+ */
+function gecxIsCart() {
+  const config = window.gecxStorefrontConfig;
+  if (config && typeof config.isCart !== 'undefined') {
+    return !!config.isCart;
+  }
+  return !!(
+      window.location && window.location.pathname &&
+      /(^|\/)cart(\/|$)/.test(window.location.pathname));
+}
+
+/**
+ * Refreshes classic or block cart/checkout surfaces without a full page reload
+ * when jQuery or WooCommerce Blocks is available, falling back to a page
+ * reload on classic cart/checkout pages that lack jQuery event handlers.
+ * @param {boolean=} hasBlockStore Whether WooCommerce Blocks wp.data store handled the refresh.
+ * @return {boolean} True when wc_fragment_refresh was already triggered.
+ */
+function gecxRefreshCartOrCheckoutSurface(hasBlockStore) {
+  if (!gecxIsCartOrCheckout()) {
+    return false;
+  }
+  if (window.jQuery && window.jQuery(document.body).trigger) {
+    const body = window.jQuery(document.body);
+    if (gecxIsCheckout()) {
+      body.trigger('update_checkout');
+    }
+    if (gecxIsCart()) {
+      body.trigger('wc_update_cart');
+    }
+    body.trigger('wc_fragment_refresh');
+    return true;
+  }
+  if (!hasBlockStore && window.location && typeof window.location.reload === 'function') {
+    window.location.reload();
+  }
+  return false;
+}
+
+/**
+ * Re-binds the active GECX session ID from localStorage to the WooCommerce
+ * session once a cart mutation establishes a persistent session.
+ */
+function gecxRebindSessionOnCartUpdate() {
+  let sessionId = '';
+  try {
+    sessionId = (window.localStorage && window.localStorage.getItem('gecx_session_id')) || '';
+  } catch (err) {
+    return;
+  }
+  if (!sessionId) {
+    return;
+  }
+  const config = window.gecxStorefrontConfig;
+  const authContextUrl = (config && config.authContextUrl) ? config.authContextUrl : '';
+  const sessionUrl = authContextUrl ?
+      authContextUrl.replace(/\/auth-context\/?$/, '/session') :
+      '/wp-json/gecx/v1/session';
+
+  gecxResolveRestNonce()
+      .then(function(nonce) {
+        if (!nonce) {
+          return;
+        }
+        return fetch(sessionUrl, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-WP-Nonce': nonce
+          },
+          body: JSON.stringify({session_id: sessionId})
+        });
+      })
+      .catch(function(err) {
+        gecxReportError('session rebind', err);
+      });
+}
+
+/**
  * Reports a failure that would otherwise be invisible.
  *
  * Every fetch below used to end in an empty catch, so a cart that failed to
@@ -150,6 +246,7 @@ function gecxResolveRestNonce() {
       fetch(url, {
         method: 'POST',
         credentials: 'include',
+        referrerPolicy: 'same-origin',
         headers: {'Content-Type': 'application/json'}
       })
           .then(function(res) {
@@ -181,6 +278,9 @@ function handleCartUpdate(e) {
       e.detail.totalQuantity :
       null;
   const directCart = (e.detail && e.detail.cart) ? e.detail.cart : null;
+  let refreshedFragmentsSync = false;
+
+  gecxRebindSessionOnCartUpdate();
 
   // 1. React/Gutenberg Block Cart Refresh (WooCommerce Blocks)
   if (window.wp && window.wp.data && window.wp.data.dispatch) {
@@ -246,9 +346,7 @@ function handleCartUpdate(e) {
             if (cartStore && cartStore.receiveCart) {
               cartStore.receiveCart(cart);
             }
-            if (gecxIsCartOrCheckout()) {
-              window.location.reload();
-            }
+            gecxRefreshCartOrCheckoutSurface(true);
           })
           .catch(function(err) {
             gecxReportError('cart refresh', err);
@@ -256,11 +354,15 @@ function handleCartUpdate(e) {
     } catch (err) {
       gecxReportError('cart store update', err);
     }
+  } else if (gecxIsCartOrCheckout()) {
+    refreshedFragmentsSync = gecxRefreshCartOrCheckoutSurface(false);
   }
 
   // 2. Fallback to trigger jQuery fragments in case traditional theme fallback exists.
   if (window.jQuery && window.jQuery(document.body).trigger) {
-    window.jQuery(document.body).trigger('wc_fragment_refresh');
+    if (!refreshedFragmentsSync) {
+      window.jQuery(document.body).trigger('wc_fragment_refresh');
+    }
     window.jQuery(document.body).trigger('added_to_cart');
   }
 
@@ -490,11 +592,114 @@ function updateFloatingWidgetCentering() {
   }
 }
 
+/** @type {?Promise<void>} In-flight or completed dynamic widget script load. */
+let gecxWidgetScriptPromise = null;
+
+/**
+ * Dynamically loads the Google-hosted chat widget bundle when deferred by
+ * consent gating (`gecx_should_load_widget` filter) or interaction-triggered
+ * loading (`gecx_defer_widget_until_interaction` option).
+ * @return {!Promise<void>}
+ */
+function gecxLoadWidget() {
+  if (gecxWidgetScriptPromise) {
+    return gecxWidgetScriptPromise;
+  }
+  if (window.customElements &&
+      window.customElements.get('gecx-woocommerce-chat-widget')) {
+    gecxWidgetScriptPromise = Promise.resolve();
+    return gecxWidgetScriptPromise;
+  }
+  const config = window.gecxStorefrontConfig;
+  const scriptUrl =
+      (config && config.widgetScriptUrl) ? config.widgetScriptUrl : '';
+  if (!scriptUrl) {
+    gecxWidgetScriptPromise = Promise.resolve();
+    return gecxWidgetScriptPromise;
+  }
+
+  gecxWidgetScriptPromise = new Promise(function(resolve, reject) {
+    const existing = document.getElementById('gecx-widget-script-js') ||
+        document.querySelector('script[src="' + scriptUrl + '"]');
+    if (existing) {
+      resolve();
+      return;
+    }
+    const script = document.createElement('script');
+    script.id = 'gecx-widget-script-js';
+    script.src = scriptUrl;
+    script.async = true;
+    script.onload = function() {
+      resolve();
+    };
+    script.onerror = function(err) {
+      gecxWidgetScriptPromise = null;
+      gecxReportError('widget script load', err);
+      reject(err);
+    };
+    document.head.appendChild(script);
+  });
+
+  return gecxWidgetScriptPromise;
+}
+
+window.gecxLoadWidget = gecxLoadWidget;
+window.addEventListener('gecx:consent-granted', gecxLoadWidget);
+document.addEventListener('gecx:consent-granted', gecxLoadWidget);
+window.addEventListener('gecx-load-widget', gecxLoadWidget);
+document.addEventListener('gecx-load-widget', gecxLoadWidget);
+
+function initDeferredWidgetListeners() {
+  const config = window.gecxStorefrontConfig;
+  if (!config || config.shouldLoadWidget !== false) {
+    return;
+  }
+  const onDeferredInteraction = function(e) {
+    const target = e.target && e.target.closest ?
+        e.target.closest(
+            'gecx-agent-button, gecx-suggested-prompts, .gecx-floating-button-container, .gecx-nav-menu-item, .gecx-mobile-header-button') :
+        null;
+    if (!target) {
+      return;
+    }
+    if (e.type === 'keydown') {
+      const isEnter = e.key === 'Enter';
+      const isSpace = e.key === ' ' || e.key === 'Spacebar';
+      if (!isEnter && !isSpace) {
+        return;
+      }
+      if (isSpace && typeof e.preventDefault === 'function') {
+        e.preventDefault();
+      }
+    }
+    document.removeEventListener('click', onDeferredInteraction, true);
+    document.removeEventListener('keydown', onDeferredInteraction, true);
+    gecxLoadWidget()
+        .then(function() {
+          const btn = target.matches('gecx-agent-button') ?
+              target :
+              target.querySelector('gecx-agent-button');
+          if (btn && typeof btn.click === 'function') {
+            setTimeout(function() {
+              btn.click();
+            }, 50);
+          }
+        })
+        .catch(function() {
+          document.addEventListener('click', onDeferredInteraction, true);
+          document.addEventListener('keydown', onDeferredInteraction, true);
+        });
+  };
+  document.addEventListener('click', onDeferredInteraction, true);
+  document.addEventListener('keydown', onDeferredInteraction, true);
+}
+
 function initStorefront() {
   initNavPlacement();
   initMobileHeaderPlacement();
   initPdpPlacement();
   updateFloatingWidgetCentering();
+  initDeferredWidgetListeners();
 }
 
 if (document.readyState === 'loading') {

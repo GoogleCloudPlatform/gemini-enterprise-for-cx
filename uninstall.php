@@ -274,7 +274,13 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             }
         }
 
-        // 3. Clear all plugin options from the local WordPress database.
+        // 3. Clear all plugin options and scheduled hooks from the local WordPress database.
+        if ( function_exists( 'wp_clear_scheduled_hook' ) ) {
+            wp_clear_scheduled_hook( 'gecx_scheduled_version_sync' );
+        }
+        if ( function_exists( 'as_unschedule_all_actions' ) ) {
+            as_unschedule_all_actions( 'gecx_scheduled_version_sync', [], 'gecx' );
+        }
         // Legacy shared secret, retired in favour of the store's RSA keypair.
         delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_keypair' );
@@ -292,6 +298,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         delete_option( 'gecx_button_label' );
         delete_option( 'gecx_button_short_label' );
         delete_option( 'gecx_button_enable_shimmer' );
+        delete_option( 'gecx_defer_widget_until_interaction' );
         delete_option( 'gecx_do_activation_redirect' );
         delete_option( 'gecx_dismiss_activation_notice' );
         delete_option( 'gecx_console_base_url' );
@@ -300,6 +307,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         delete_option( 'gecx_store_auth_invalid' );
         delete_option( 'gecx_auth_complete' );
         delete_option( 'gecx_plugin_version' );
+        delete_option( 'gecx_version_sync_user_id' );
         delete_option( 'gecx_pending_sync_notices' );
 
         // 4. Clear plugin post meta.

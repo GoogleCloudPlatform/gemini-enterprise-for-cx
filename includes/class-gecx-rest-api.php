@@ -22,6 +22,44 @@ class GECX_Rest_API {
     ];
 
     /**
+     * Capabilities that survive the pre-dispatch withholding window applied by
+     * restrict_widened_wc_auth_before_dispatch().
+     *
+     * These gate nothing on their own: `read` and `level_0` are the baseline
+     * every registered role holds, and `exist` is what WordPress grants any
+     * existing user. Keeping them truthful means third-party code running on
+     * `init` or `wp_loaded` can still tell that somebody is logged in, while
+     * every capability an action is actually gated on reads as false until
+     * WooCommerce has verified the API key's read/write scope.
+     */
+    private const UNRESTRICTED_PRE_DISPATCH_CAPS = [
+        'read',
+        'level_0',
+        'exist',
+    ];
+
+    /**
+     * Whether this class widened `woocommerce_rest_is_request_to_rest_api` for
+     * the current request.
+     */
+    private static bool $wc_auth_widened_by_gecx = false;
+
+    /**
+     * Whether the widened WooCommerce API key authentication has been verified
+     * on `rest_pre_dispatch` (priority 20, after WooCommerce's read/write scope
+     * check at priority 10) for one of `WC_AUTHENTICATED_ROUTES`.
+     */
+    private static bool $wc_auth_verified_for_dispatch = false;
+
+    /**
+     * Resets the WooCommerce API key auth tracking flags between requests/tests.
+     */
+    public static function reset_wc_auth_state(): void {
+        self::$wc_auth_widened_by_gecx       = false;
+        self::$wc_auth_verified_for_dispatch = false;
+    }
+
+    /**
      * Longest accepted value for a WooCommerce consumer secret.
      *
      * A WooCommerce consumer secret is 'cs_' followed by 40 hex characters, so
@@ -29,6 +67,47 @@ class GECX_Rest_API {
      * cannot park a megabyte in the options table.
      */
     private const MAX_SECRET_LENGTH = 512;
+
+    /**
+     * First-party cookie name used to persist the GECX session ID for uncookied
+     * guests before WooCommerce allocates a `wp_woocommerce_session_*` cookie.
+     */
+    private const SESSION_COOKIE_NAME = 'gecx_session_id';
+
+    /**
+     * Default lifetime (48 hours) for the fallback `gecx_session_id` cookie,
+     * matching WooCommerce's default guest session expiration.
+     */
+    private const SESSION_COOKIE_TTL = 172800;
+
+    /**
+     * Persists the GECX session ID in a first-party HttpOnly cookie without
+     * touching `wp_woocommerce_session_*` (preserving `wp_rest` and login
+     * nonces for uncookied guests).
+     *
+     * @param string $session_id Validated GECX session ID.
+     */
+    private static function set_session_cookie( string $session_id ): void {
+        $_COOKIE[ self::SESSION_COOKIE_NAME ] = $session_id;
+        if ( headers_sent() ) {
+            return;
+        }
+        $cookie_path   = defined( 'COOKIEPATH' ) && '' !== (string) COOKIEPATH ? (string) COOKIEPATH : '/';
+        $cookie_domain = defined( 'COOKIE_DOMAIN' ) ? (string) COOKIE_DOMAIN : '';
+        $is_secure     = function_exists( 'is_ssl' ) && is_ssl();
+        setcookie(
+            self::SESSION_COOKIE_NAME,
+            $session_id,
+            [
+                'expires'  => time() + self::SESSION_COOKIE_TTL,
+                'path'     => $cookie_path,
+                'domain'   => $cookie_domain,
+                'secure'   => $is_secure,
+                'httponly' => true,
+                'samesite' => 'Lax',
+            ]
+        );
+    }
 
     /**
      * Checks that a secret is a plausible WooCommerce consumer secret.
@@ -54,6 +133,9 @@ class GECX_Rest_API {
         add_action( 'rest_api_init', [ $this, 'register_auth_context_rest_route' ] );
         add_filter( 'rest_pre_serve_request', [ $this, 'suppress_cors_on_auth_context' ], 20, 4 );
         add_filter( 'woocommerce_rest_is_request_to_rest_api', [ $this, 'enable_wc_auth_for_custom_endpoints' ], 10, 1 );
+        add_filter( 'user_has_cap', [ $this, 'restrict_widened_wc_auth_before_dispatch' ], 999, 4 );
+        add_filter( 'rest_pre_dispatch', [ $this, 'unlock_widened_wc_auth_on_dispatch' ], 20, 3 );
+        add_filter( 'rest_post_dispatch', [ $this, 'lock_widened_wc_auth_after_dispatch' ], 999, 3 );
         add_action( 'woocommerce_checkout_create_order', [ $this, 'attach_session_to_order_metadata' ], 10, 2 );
         add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'attach_session_to_order_metadata_store_api' ], 10, 2 );
         add_action( 'rest_api_init', [ $this, 'register_session_rest_field' ] );
@@ -210,6 +292,28 @@ class GECX_Rest_API {
             }
         }
         return '';
+    }
+
+    /**
+     * Reads the raw `Cart-Token` request header from `$_SERVER`.
+     *
+     * WP_REST_Request only carries the headers WordPress parsed for the route
+     * it dispatched, so the Store API checkout hooks and the post-dispatch cart
+     * sync still have to fall back to `$_SERVER`. The value is a compact JWS:
+     * three base64url segments separated by dots. `sanitize_text_field()` is
+     * lossless over that alphabet, and the charset filter drops anything a JWT
+     * cannot contain, so a malformed header can never reach
+     * `GECX_Auth::get_cart_token_customer_id()` intact. Verification of the
+     * token itself is still done there by HMAC.
+     *
+     * @return string The token, or '' when the request carries none.
+     */
+    private static function read_cart_token_from_server(): string {
+        if ( empty( $_SERVER['HTTP_CART_TOKEN'] ) ) {
+            return '';
+        }
+        $cart_token = sanitize_text_field( wp_unslash( $_SERVER['HTTP_CART_TOKEN'] ) );
+        return (string) preg_replace( '/[^A-Za-z0-9._\-]/', '', $cart_token );
     }
 
     /**
@@ -418,16 +522,20 @@ class GECX_Rest_API {
             }
 
             // Persist through WC()->session API so custom session handlers (Redis/Memcached) stay in sync.
+            $bound_session_id = $this->get_gecx_session_id_safely();
             if ( isset( WC()->session ) ) {
                 if ( method_exists( WC()->session, 'set' ) ) {
                     WC()->session->set( 'cart', $cart_for_session );
+                    if ( ! empty( $bound_session_id ) ) {
+                        WC()->session->set( 'gecx_session_id', $bound_session_id );
+                    }
                 }
                 if ( method_exists( WC()->session, 'save_data' ) ) {
                     WC()->session->save_data();
                 }
             }
 
-            // Directly sync to the browser's active session row in the database
+            // Directly sync to the browser's active session row in the database when using WooCommerce's SQL session handler.
             global $wpdb;
             $session_key = '';
             if ( $has_cart_token ) {
@@ -435,11 +543,8 @@ class GECX_Rest_API {
                 if ( '' === $raw_cart_token && method_exists( $request, 'get_headers' ) ) {
                     $raw_cart_token = $this->find_cart_token( $request->get_headers() );
                 }
-                if ( '' === $raw_cart_token && ! empty( $_SERVER['HTTP_CART_TOKEN'] ) ) {
-                    // wp_unslash() only. sanitize_text_field() strips percent-octets,
-                    // which would corrupt a JWT and fail its HMAC verification.
-                    // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Value is HMAC-verified by GECX_Auth::get_cart_token_customer_id().
-                    $raw_cart_token = (string) wp_unslash( $_SERVER['HTTP_CART_TOKEN'] );
+                if ( '' === $raw_cart_token ) {
+                    $raw_cart_token = self::read_cart_token_from_server();
                 }
                 if ( '' !== $raw_cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
                     $session_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
@@ -494,20 +599,15 @@ class GECX_Rest_API {
                 }
 
                 $session_data['cart'] = $cart_for_session;
-
-                // Ensure in-memory gecx_session_id is preserved if present.
-                if ( empty( $session_data['gecx_session_id'] ) && isset( WC()->session ) && method_exists( WC()->session, 'get' ) ) {
-                    $mem_gecx_session_id = WC()->session->get( 'gecx_session_id' );
-                    if ( ! empty( $mem_gecx_session_id ) ) {
-                        $session_data['gecx_session_id'] = (string) $mem_gecx_session_id;
-                    }
+                if ( empty( $session_data['gecx_session_id'] ) && ! empty( $bound_session_id ) ) {
+                    $session_data['gecx_session_id'] = (string) $bound_session_id;
                 }
 
                 $serialized_data = maybe_serialize( $session_data );
                 // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
                 $expiry = time() + (int) apply_filters( 'wc_session_expiration', 2 * DAY_IN_SECONDS );
 
-                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Direct query required to sync WooCommerce session data across requests.
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Direct query required to sync WooCommerce session data across requests.
                 $sync_result = $wpdb->query( $wpdb->prepare(
                     "INSERT INTO {$wpdb->prefix}woocommerce_sessions (session_key, session_value, session_expiry)
                      VALUES (%s, %s, %d)
@@ -542,15 +642,15 @@ class GECX_Rest_API {
             'permission_callback' => [ $this, 'check_session_permissions' ],
             'args'                => [
                 'session_id' => [
-                    'description'       => 'The GECX chat session ID.',
+                    'description'       => __( 'GECX commerce session resource name or session identifier.', 'gemini-enterprise-for-cx' ),
                     'type'              => 'string',
                     'required'          => true,
-                    'validate_callback' => function( $param ) {
-                        return self::is_valid_session_id( (string) $param );
+                    'validate_callback' => static function( $value ): bool {
+                        return is_string( $value ) && self::is_valid_session_id( trim( $value ) );
                     },
                 ],
                 'cart_token' => [
-                    'description'       => 'Optional WooCommerce Store API Cart-Token to associate the session ID with.',
+                    'description'       => __( 'Optional WooCommerce Store API Cart-Token to associate the session ID with.', 'gemini-enterprise-for-cx' ),
                     'type'              => 'string',
                     'required'          => false,
                 ],
@@ -608,6 +708,13 @@ class GECX_Rest_API {
 
         WC()->session->set( 'gecx_session_id', $session_id );
 
+        // Persist the session ID in a first-party HttpOnly cookie so an
+        // uncookied guest who chats before adding anything to their cart still
+        // has their GECX session bound when they later check out, without
+        // creating a `wp_woocommerce_session_*` cookie that would invalidate
+        // `wp_rest` or `woocommerce-login-nonce`.
+        self::set_session_cookie( $session_id );
+
         // Determine session key (Cart-Token, logged in user ID, or WC session customer ID)
         $session_key    = '';
         $raw_cart_token = (string) $request->get_header( 'Cart-Token' );
@@ -617,11 +724,8 @@ class GECX_Rest_API {
         if ( '' === $raw_cart_token ) {
             $raw_cart_token = (string) ( $request->get_param( 'cart_token' ) ?? $request->get_param( 'cartId' ) ?? $request->get_param( 'cart_id' ) ?? '' );
         }
-        if ( '' === $raw_cart_token && ! empty( $_SERVER['HTTP_CART_TOKEN'] ) ) {
-            // wp_unslash() only. sanitize_text_field() strips percent-octets,
-            // which would corrupt a JWT and fail its HMAC verification.
-            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Value is HMAC-verified by GECX_Auth::get_cart_token_customer_id().
-            $raw_cart_token = (string) wp_unslash( $_SERVER['HTTP_CART_TOKEN'] );
+        if ( '' === $raw_cart_token ) {
+            $raw_cart_token = self::read_cart_token_from_server();
         }
         if ( '' !== $raw_cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
             $session_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
@@ -734,6 +838,7 @@ class GECX_Rest_API {
      * returns the nonce, which stays useful to the widget whether or not a JWT
      * could be signed.
      */
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- WP_REST_Server route callback signature.
     public function refresh_token_handler( \WP_REST_Request $request ) {
         $customer_jwt = GECX_Auth::generate_customer_jwt();
         if ( empty( $customer_jwt ) ) {
@@ -807,11 +912,64 @@ class GECX_Rest_API {
             return new \WP_Error( 'rest_forbidden', __( 'Cross-origin requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
 
-        if ( '' === $origin && '' !== $referer && ! self::is_same_origin( $referer ) ) {
+        // On multisite or subdirectory installs, Origin and Sec-Fetch-Site only
+        // prove same-host/port, not same-subsite path (e.g. /site-b/ vs /site-a/).
+        // Whenever Referer is present it must match the site path prefix, and on
+        // multisite subdirectory stores Referer is required so a sibling subsite
+        // cannot read this site's nonce or JWT.
+        if ( '' !== $referer && ! self::is_same_origin( $referer, true ) ) {
             return new \WP_Error( 'rest_forbidden', __( 'Cross-origin requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
 
+        if ( '' === $referer && self::is_multisite_subdirectory_install() ) {
+            return new \WP_Error( 'rest_forbidden', __( 'Subdirectory multisite requests must include a same-site Referer.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
+        }
+
         return true;
+    }
+
+    /**
+     * Whether the current site is a multisite install with a non-root home_url()
+     * path (or running on multisite where sibling sites may share the same host).
+     */
+    private static function is_multisite_subdirectory_install(): bool {
+        if ( ! function_exists( 'is_multisite' ) || ! is_multisite() ) {
+            return false;
+        }
+        if ( defined( 'SUBDOMAIN_INSTALL' ) && SUBDOMAIN_INSTALL ) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Whether the request's Referer pins it to one specific blog.
+     *
+     * On a subdirectory multisite every blog shares a host, so only the Referer
+     * path separates them. `Referrer-Policy: strict-origin-when-cross-origin`
+     * (the browser default) sends a bare `https://example.com/` for a
+     * same-origin fetch from the root blog's own homepage, and a sibling subsite
+     * asking for `referrerPolicy: 'origin'` produces the byte-identical header.
+     * The two cannot be told apart, so the caller must not read a logged-in
+     * identity out of such a request; `auth_context_handler()` downgrades it to
+     * guest instead of refusing it, which keeps the root homepage working while
+     * capping what a sibling subsite can obtain at a guest nonce.
+     *
+     * @param \WP_REST_Request $request REST request instance.
+     * @return bool True when the blog is unambiguous.
+     */
+    private static function referer_identifies_current_site( \WP_REST_Request $request ): bool {
+        if ( ! self::is_multisite_subdirectory_install() ) {
+            return true;
+        }
+
+        $referer = self::read_request_header( $request, 'Referer', 'HTTP_REFERER' );
+        if ( '' === $referer ) {
+            return false;
+        }
+
+        $candidate = self::parse_origin( $referer );
+        return null !== $candidate && '' !== $candidate['path'];
     }
 
     /**
@@ -841,7 +999,12 @@ class GECX_Rest_API {
      *
      * Host and port are compared against both home_url() and site_url(),
      * which differ on the common install where WordPress itself lives in a
-     * subdirectory of the storefront.
+     * subdirectory of the storefront. When $check_path is true (used for
+     * Referer headers), the candidate path must also fall under the allowed
+     * origin's path prefix at a `/` boundary and, on multisite installs,
+     * resolve via `get_site_by_path()` to `get_current_blog_id()` so a sibling
+     * subsite at `https://example.com/site-b/` is rejected by both
+     * `https://example.com/` (root) and `https://example.com/site-a/`.
      *
      * Scheme is deliberately not compared. Behind a TLS-terminating proxy or
      * a CDN doing flexible SSL, home_url() is routinely stored as http while
@@ -852,30 +1015,60 @@ class GECX_Rest_API {
      * and https are still refused outright.
      *
      * @param string $candidate_url Candidate Origin or Referer URL.
+     * @param bool   $check_path    Whether to require path prefix matching against the allowed URLs.
      * @return bool
      */
-    private static function is_same_origin( string $candidate_url ): bool {
+    private static function is_same_origin( string $candidate_url, bool $check_path = false ): bool {
         $candidate = self::parse_origin( $candidate_url );
         if ( null === $candidate ) {
             return false;
         }
 
         foreach ( self::get_allowed_origins() as $allowed ) {
-            if ( $allowed['host'] === $candidate['host'] && $allowed['port'] === $candidate['port'] ) {
-                return true;
+            if ( $allowed['host'] !== $candidate['host'] || $allowed['port'] !== $candidate['port'] ) {
+                continue;
             }
+
+            if ( $check_path ) {
+                $allowed_path   = $allowed['path'];
+                $candidate_path = $candidate['path'];
+
+                if ( function_exists( 'is_multisite' ) && is_multisite() && function_exists( 'get_site_by_path' ) && function_exists( 'get_current_blog_id' ) ) {
+                    $lookup_path   = '' !== $candidate_path ? $candidate_path . '/' : '/';
+                    $resolved_site = get_site_by_path( $candidate['host'], $lookup_path );
+                    if ( ! is_object( $resolved_site ) || ! isset( $resolved_site->blog_id ) || (int) get_current_blog_id() !== (int) $resolved_site->blog_id ) {
+                        continue;
+                    }
+                }
+
+                if ( '' !== $allowed_path ) {
+                    // An origin-only Referer (e.g. https://example.com/) has
+                    // candidate_path === '' because Referrer-Policy: origin or
+                    // strict-origin stripped the path. On single-site installs
+                    // that still identifies the same origin; on multisite
+                    // subdirectory installs the path must match the subsite.
+                    if ( '' === $candidate_path && ! self::is_multisite_subdirectory_install() ) {
+                        return true;
+                    }
+                    if ( $candidate_path !== $allowed_path && 0 !== strpos( $candidate_path, $allowed_path . '/' ) ) {
+                        continue;
+                    }
+                }
+            }
+
+            return true;
         }
 
         return false;
     }
 
     /**
-     * Reduces a URL to its host and port, collapsing the scheme's default port
-     * to null so that https://example.com and https://example.com:443 compare
-     * equal.
+     * Reduces a URL to its host, port, and normalized path prefix, collapsing
+     * the scheme's default port to null so that https://example.com and
+     * https://example.com:443 compare equal.
      *
      * @param string $url Candidate URL.
-     * @return array|null Array with 'host' and 'port' keys, or null when the URL is unusable.
+     * @return array|null Array with 'host', 'port', and 'path' keys, or null when the URL is unusable.
      */
     private static function parse_origin( string $url ): ?array {
         $parts = wp_parse_url( $url );
@@ -893,9 +1086,14 @@ class GECX_Rest_API {
             $port = null;
         }
 
+        $raw_path = isset( $parts['path'] ) ? (string) $parts['path'] : '';
+        $trimmed  = trim( $raw_path, '/' );
+        $path     = '' !== $trimmed ? '/' . $trimmed : '';
+
         return [
             'host' => strtolower( (string) $parts['host'] ),
             'port' => $port,
+            'path' => $path,
         ];
     }
 
@@ -947,6 +1145,7 @@ class GECX_Rest_API {
      * @param \WP_REST_Server   $server  Server instance.
      * @return bool
      */
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- rest_pre_serve_request filter signature.
     public function suppress_cors_on_auth_context( $served, $result, $request, $server ) {
         if ( $request instanceof \WP_REST_Request && '/gecx/v1/auth-context' === $request->get_route() ) {
             if ( function_exists( 'header_remove' ) && ( ! function_exists( 'headers_sent' ) || ! headers_sent() ) ) {
@@ -988,13 +1187,43 @@ class GECX_Rest_API {
             $cookie_user_id = (int) wp_validate_auth_cookie( '', 'logged_in' );
             if ( $cookie_user_id > 0 ) {
                 $effective_user_id = $cookie_user_id;
-                if ( function_exists( 'add_filter' ) ) {
-                    $nonce_user_filter = static function ( $uid, $action = -1 ) use ( $cookie_user_id ) {
-                        return 'wp_rest' === (string) $action ? $cookie_user_id : $uid;
-                    };
-                    add_filter( 'nonce_user_logged_out', $nonce_user_filter, 999, 2 );
-                }
             }
+        }
+
+        // On multisite installs, the WordPress logged_in cookie is scoped to
+        // the network root (`COOKIEPATH`), so a user authenticated on sibling
+        // subsite B sends a valid cookie to subsite A. Require explicit blog
+        // membership on the current blog before minting a user-bound nonce or
+        // customer JWT; non-member network users are downgraded to guest (0).
+        if ( $effective_user_id > 0 && function_exists( 'is_multisite' ) && is_multisite() && function_exists( 'is_user_member_of_blog' ) ) {
+            $blog_id     = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 1;
+            $is_super    = function_exists( 'is_super_admin' ) && is_super_admin( $effective_user_id );
+            $is_member   = (bool) is_user_member_of_blog( $effective_user_id, $blog_id );
+            if ( ! $is_member && ! $is_super ) {
+                $effective_user_id = 0;
+            }
+        }
+
+        // An origin-only Referer on a subdirectory multisite names the host but
+        // no blog, so the root blog's own homepage and a sibling subsite asking
+        // for `referrerPolicy: 'origin'` are indistinguishable. Serve a guest
+        // nonce rather than a 403: the homepage keeps working for shoppers, and
+        // the most a sibling subsite can extract is the guest identity it could
+        // already mint for itself.
+        if ( $effective_user_id > 0 && ! self::referer_identifies_current_site( $request ) ) {
+            $effective_user_id = 0;
+        }
+
+        $temporarily_cleared_user = false;
+        if ( 0 === $current_user_id && $effective_user_id > 0 && function_exists( 'add_filter' ) ) {
+            $bound_user_id     = $effective_user_id;
+            $nonce_user_filter = static function ( $uid, $action = -1 ) use ( $bound_user_id ) {
+                return 'wp_rest' === (string) $action ? $bound_user_id : $uid;
+            };
+            add_filter( 'nonce_user_logged_out', $nonce_user_filter, 999, 2 );
+        } elseif ( $current_user_id > 0 && 0 === $effective_user_id && function_exists( 'wp_set_current_user' ) ) {
+            wp_set_current_user( 0 );
+            $temporarily_cleared_user = true;
         }
 
         try {
@@ -1007,6 +1236,9 @@ class GECX_Rest_API {
         } finally {
             if ( null !== $nonce_user_filter && function_exists( 'remove_filter' ) ) {
                 remove_filter( 'nonce_user_logged_out', $nonce_user_filter, 999 );
+            }
+            if ( $temporarily_cleared_user && function_exists( 'wp_set_current_user' ) ) {
+                wp_set_current_user( $current_user_id );
             }
         }
 
@@ -1032,6 +1264,19 @@ class GECX_Rest_API {
             'methods'             => 'POST',
             'callback'            => [ $this, 'order_created_webhooks_handler' ],
             'permission_callback' => [ $this, 'check_admin_permissions' ],
+            'args'                => [
+                'consumer_secret' => [
+                    'description'       => __( 'Optional WooCommerce consumer secret used to sign order.created webhook deliveries.', 'gemini-enterprise-for-cx' ),
+                    'type'              => 'string',
+                    'required'          => false,
+                    'validate_callback' => static function( $value ): bool {
+                        if ( null === $value || '' === trim( (string) $value ) ) {
+                            return true;
+                        }
+                        return is_string( $value ) && self::is_valid_secret( trim( $value ) );
+                    },
+                ],
+            ],
         ] );
     }
 
@@ -1049,6 +1294,28 @@ class GECX_Rest_API {
             'methods'             => 'POST',
             'callback'            => [ $this, 'link_agent_handler' ],
             'permission_callback' => [ $this, 'check_admin_permissions' ],
+            'args'                => [
+                'agent_name'        => [
+                    'description'       => __( 'Google Cloud resource name of the linked GECX agent.', 'gemini-enterprise-for-cx' ),
+                    'type'              => 'string',
+                    'required'          => true,
+                    'validate_callback' => static function( $value ): bool {
+                        $trimmed = is_string( $value ) ? trim( $value ) : '';
+                        return '' !== $trimmed && 1 === preg_match( self::RESOURCE_NAME_PATTERN, $trimmed );
+                    },
+                ],
+                'token_broker_name' => [
+                    'description'       => __( 'Optional Google Cloud resource name of the token broker.', 'gemini-enterprise-for-cx' ),
+                    'type'              => 'string',
+                    'required'          => false,
+                    'validate_callback' => static function( $value ): bool {
+                        if ( null === $value || '' === trim( (string) $value ) ) {
+                            return true;
+                        }
+                        return is_string( $value ) && 1 === preg_match( self::RESOURCE_NAME_PATTERN, trim( $value ) );
+                    },
+                ],
+            ],
         ] );
     }
 
@@ -1335,6 +1602,7 @@ class GECX_Rest_API {
     /**
      * Handle the GET request to retrieve the store's RSA public key PEM.
      */
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- WP_REST_Server route callback signature.
     public function get_public_key_handler( \WP_REST_Request $request ) {
         $public_key = GECX_Auth::get_public_key();
         if ( empty( $public_key ) ) {
@@ -1366,13 +1634,129 @@ class GECX_Rest_API {
      * WooCommerce's own answer rather than being granted one.
      */
     public function enable_wc_auth_for_custom_endpoints( bool $is_rest_api ): bool {
-        return GECX_Auth::is_request_to_route( self::WC_AUTHENTICATED_ROUTES ) ? true : $is_rest_api;
+        if ( $is_rest_api ) {
+            // WooCommerce already answers true for its own /wc/ routes, which
+            // are never in WC_AUTHENTICATED_ROUTES. Nothing was widened by this
+            // plugin, so the state has to be cleared here too: this filter can
+            // fire several times per request, and leaving a stale true behind
+            // would make unlock_widened_wc_auth_on_dispatch() reject the route
+            // WooCommerce is about to dispatch.
+            self::$wc_auth_widened_by_gecx       = false;
+            self::$wc_auth_verified_for_dispatch = false;
+            return true;
+        }
+        if ( GECX_Auth::is_request_to_route( self::WC_AUTHENTICATED_ROUTES ) ) {
+            self::$wc_auth_widened_by_gecx       = true;
+            self::$wc_auth_verified_for_dispatch = false;
+            return true;
+        }
+        self::$wc_auth_widened_by_gecx       = false;
+        self::$wc_auth_verified_for_dispatch = false;
+        return false;
     }
 
     /**
-     * Helper to safely retrieve session ID from WooCommerce
+     * Withholds user capabilities granted by a widened WooCommerce API key
+     * during early lifecycle hooks (`init`, `wp_loaded`) before REST dispatch.
+     *
+     * WooCommerce's `WC_REST_Authentication::authenticate()` runs on
+     * `determine_current_user` (which third-party plugins often trigger on
+     * `init` before `parse_request()`), whereas WooCommerce's read/write scope
+     * check (`check_user_permissions`) only runs on `rest_pre_dispatch`
+     * priority 10. Withholding capabilities until `unlock_widened_wc_auth_on_dispatch()`
+     * at priority 20 prevents a read-only API key or an early pre-REST hook
+     * from exercising the key owner's full WordPress capabilities.
+     *
+     * Scope of the window. It opens only when this plugin widened WooCommerce
+     * key authentication for one of self::WC_AUTHENTICATED_ROUTES, it applies
+     * only to the API key's own user (other users are untouched), and it closes
+     * at `rest_pre_dispatch` priority 20. Inside it, every capability the key
+     * owner holds reads as false except the baseline non-privileged ones in
+     * self::UNRESTRICTED_PRE_DISPATCH_CAPS, so third-party code that merely
+     * asks whether someone is logged in still gets a truthful answer while
+     * nothing gated by a capability can be exercised.
+     *
+     * @param array $allcaps Array of key/value pairs where keys represent a capability name and boolean values represent whether the user has that capability.
+     * @param array $caps    Required primitive capabilities for the requested capability.
+     * @param array $args    Arguments that accompany the requested capability check.
+     * @param mixed $user    WP_User object.
+     * @return array Filtered capabilities map.
+     */
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- WordPress user_has_cap filter signature.
+    public function restrict_widened_wc_auth_before_dispatch( $allcaps, $caps = [], $args = [], $user = null ): array {
+        if ( ! is_array( $allcaps ) ) {
+            $allcaps = [];
+        }
+        if (
+            self::$wc_auth_widened_by_gecx
+            && ! self::$wc_auth_verified_for_dispatch
+            && $user instanceof \WP_User
+            && (int) get_current_user_id() === (int) $user->ID
+        ) {
+            $restricted = [];
+            foreach ( $allcaps as $cap => $granted ) {
+                $restricted[ $cap ] = in_array( $cap, self::UNRESTRICTED_PRE_DISPATCH_CAPS, true ) ? $granted : false;
+            }
+            return $restricted;
+        }
+        return $allcaps;
+    }
+
+    /**
+     * Unlocks capabilities for a widened WooCommerce API key request on
+     * `rest_pre_dispatch` at priority 20, after WooCommerce's own
+     * `check_user_permissions` (priority 10) has verified the key's read/write
+     * scope and after WordPress has resolved the exact route being dispatched.
+     *
+     * @param mixed            $result  Response to replace the requested version with.
+     * @param \WP_REST_Server  $server  Server instance.
+     * @param \WP_REST_Request $request Request used to generate the response.
+     * @return mixed
+     */
+    public function unlock_widened_wc_auth_on_dispatch( $result, $server, $request ) {
+        if ( ! self::$wc_auth_widened_by_gecx ) {
+            return $result;
+        }
+        if ( is_wp_error( $result ) ) {
+            self::$wc_auth_verified_for_dispatch = false;
+            return $result;
+        }
+        $route = $request instanceof \WP_REST_Request
+            ? ltrim( untrailingslashit( (string) $request->get_route() ), '/' )
+            : '';
+        if ( ! in_array( $route, self::WC_AUTHENTICATED_ROUTES, true ) ) {
+            self::$wc_auth_verified_for_dispatch = false;
+            return new \WP_Error(
+                'rest_forbidden',
+                __( 'Unauthorized.', 'gemini-enterprise-for-cx' ),
+                [ 'status' => 403 ]
+            );
+        }
+        self::$wc_auth_verified_for_dispatch = true;
+        return $result;
+    }
+
+    /**
+     * Resets the widened WooCommerce API key state once REST dispatch finishes.
+     *
+     * @param mixed            $response Result to send.
+     * @param \WP_REST_Server  $server   Server instance.
+     * @param \WP_REST_Request $request  Request used to generate $response.
+     * @return mixed
+     */
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- WordPress rest_post_dispatch filter signature.
+    public function lock_widened_wc_auth_after_dispatch( $response, $server, $request ) {
+        self::reset_wc_auth_state();
+        return $response;
+    }
+
+    /**
+     * Helper to safely retrieve session ID from WooCommerce, falling back to
+     * the first-party `gecx_session_id` cookie set when an uncookied guest
+     * started a chat before adding items to the cart.
      */
     private function get_gecx_session_id_safely() {
+        $session_id = '';
         if ( function_exists( 'WC' ) ) {
             if ( is_null( WC()->session ) ) {
                 include_once WC_ABSPATH . 'includes/wc-cart-functions.php';
@@ -1414,12 +1798,24 @@ class GECX_Rest_API {
                 }
             }
         }
-        return '';
+
+        if ( empty( $session_id ) && isset( $_COOKIE[ self::SESSION_COOKIE_NAME ] ) ) {
+            $cookie_session_id = sanitize_text_field( wp_unslash( $_COOKIE[ self::SESSION_COOKIE_NAME ] ) );
+            if ( self::is_valid_session_id( $cookie_session_id ) ) {
+                $session_id = $cookie_session_id;
+                if ( function_exists( 'WC' ) && WC()->session && method_exists( WC()->session, 'set' ) ) {
+                    WC()->session->set( 'gecx_session_id', $session_id );
+                }
+            }
+        }
+
+        return $session_id;
     }
 
     /**
      * Bind Session ID to Created Order
      */
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- WooCommerce action callback signature.
     public function attach_session_to_order_metadata( $order, $data ): void {
         $session_id = $this->get_gecx_session_id_safely();
         if ( ! empty( $session_id ) ) {
@@ -1430,6 +1826,7 @@ class GECX_Rest_API {
     /**
      * Bind Session ID to Created Order (WooCommerce Blocks Checkout)
      */
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- WooCommerce Store API action callback signature.
     public function attach_session_to_order_metadata_store_api( \WC_Order $order, \WP_REST_Request $request ): void {
         $session_id = $this->get_gecx_session_id_safely();
         if ( empty( $session_id ) ) {
@@ -1437,11 +1834,8 @@ class GECX_Rest_API {
             if ( '' === $cart_token && method_exists( $request, 'get_headers' ) ) {
                 $cart_token = $this->find_cart_token( $request->get_headers() );
             }
-            if ( '' === $cart_token && ! empty( $_SERVER['HTTP_CART_TOKEN'] ) ) {
-                // wp_unslash() only. sanitize_text_field() strips percent-octets,
-                // which would corrupt a JWT and fail its HMAC verification.
-                // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Value is HMAC-verified by GECX_Auth::get_cart_token_customer_id().
-                $cart_token = (string) wp_unslash( $_SERVER['HTTP_CART_TOKEN'] );
+            if ( '' === $cart_token ) {
+                $cart_token = self::read_cart_token_from_server();
             }
             if ( '' !== $cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
                 $customer_id = GECX_Auth::get_cart_token_customer_id( $cart_token );
@@ -1735,13 +2129,14 @@ class GECX_Rest_API {
      * required by the Gemini Enterprise backend. Strips all customer PII
      * (billing/shipping addresses, email, phone, IP, payment details, notes).
      *
-     * @param mixed  $payload     Original webhook payload array.
-     * @param string $resource    Resource type (e.g. 'order').
-     * @param mixed  $resource_id Resource ID (order ID).
-     * @param mixed  $webhook_id  Webhook ID.
+     * @param mixed  $payload       Original webhook payload array.
+     * @param string $resource_type Resource type (e.g. 'order').
+     * @param mixed  $resource_id   Resource ID (order ID).
+     * @param mixed  $webhook_id    Webhook ID.
      * @return mixed Minimized payload array for GECX webhooks, or original payload.
      */
-    public function minimize_order_webhook_payload( $payload, $resource, $resource_id, $webhook_id ) {
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundInExtendedClassAfterLastUsed, Generic.CodeAnalysis.UnusedFunctionParameter.FoundBeforeLastUsed -- WooCommerce webhook payload filter signature.
+    public function minimize_order_webhook_payload( $payload, $resource_type, $resource_id, $webhook_id ) {
         if ( ! is_array( $payload ) || ! $this->is_gecx_order_webhook( $webhook_id ) ) {
             return $payload;
         }

@@ -901,11 +901,44 @@ class GECX_Auth {
     /**
      * Mint an admin RS256 JWT using only an already-stored, decryptable keypair.
      *
-     * Used during uninstall so plugin deletion never generates a new keypair
-     * and never writes options. A store whose keypair is missing or corrupt
-     * mints nothing here rather than pinning a key the backend has never seen.
+     * Used during uninstall and background tasks so plugin deletion never
+     * generates a new keypair and never writes options. When invoked from
+     * `uninstall.php` or WP-CLI (`wp plugin uninstall ...`) with no logged-in
+     * user, falls back to the store's lowest-ID administrator so the backend
+     * accepts the signed unlink request.
+     *
+     * @param int|null    $user_id    Optional user ID.
+     * @param int         $expiration Expiration duration in seconds (default 300).
+     * @param string|null $email      Optional email.
+     * @return string|null Signed JWT string, or null if unavailable.
      */
     public static function generate_existing_rs256_admin_jwt( ?int $user_id = null, int $expiration = 300, ?string $email = null ): ?string {
+        if ( null === $user_id ) {
+            $logged_in_id = ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() && function_exists( 'get_current_user_id' ) )
+                ? (int) get_current_user_id()
+                : 0;
+            $allow_unauthenticated_fallback = ( defined( 'WP_CLI' ) && WP_CLI )
+                || ( defined( 'WP_UNINSTALL_PLUGIN' ) && WP_UNINSTALL_PLUGIN );
+            if ( $logged_in_id > 0 ) {
+                $user_id = $logged_in_id;
+            } elseif ( $allow_unauthenticated_fallback && function_exists( 'get_users' ) ) {
+                $admin_ids = get_users(
+                    [
+                        'role'    => 'administrator',
+                        'number'  => 1,
+                        'fields'  => 'ID',
+                        'orderby' => 'ID',
+                        'order'   => 'ASC',
+                    ]
+                );
+                if ( is_array( $admin_ids ) && ! empty( $admin_ids ) ) {
+                    $first_admin = reset( $admin_ids );
+                    $user_id     = is_object( $first_admin ) && isset( $first_admin->ID )
+                        ? (int) $first_admin->ID
+                        : (int) $first_admin;
+                }
+            }
+        }
         return self::build_admin_jwt( $user_id, $expiration, $email, false );
     }
 
@@ -1066,11 +1099,14 @@ class GECX_Auth {
 
     /**
      * Decodes a string encoded using URL-safe base64.
+     *
+     * @param string $input URL-safe base64 string.
+     * @return string Decoded binary/text string.
      */
-    public static function from_base_64_url( string $string ): string {
-        $remainder = strlen( $string ) % 4;
+    public static function from_base_64_url( string $input ): string {
+        $remainder = strlen( $input ) % 4;
         if ( 0 !== $remainder ) {
-            $string .= str_repeat( '=', 4 - $remainder );
+            $input .= str_repeat( '=', 4 - $remainder );
         }
 
         // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- base64url decoding of a JWT segment, not obfuscation.
@@ -1078,20 +1114,23 @@ class GECX_Auth {
             str_replace(
                 [ '-', '_' ],
                 [ '+', '/' ],
-                $string
+                $input
             )
         );
     }
 
     /**
      * Encodes a string to URL-safe base64.
+     *
+     * @param string $input Raw string to encode.
+     * @return string URL-safe base64 string.
      */
-    public static function to_base_64_url( string $string ): string {
+    public static function to_base_64_url( string $input ): string {
         return str_replace(
             [ '+', '/', '=' ],
             [ '-', '_', '' ],
             // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- base64url encoding of a JWT segment, not obfuscation.
-            base64_encode( $string )
+            base64_encode( $input )
         );
     }
 
@@ -1114,8 +1153,10 @@ class GECX_Auth {
             return 'OpenSSL extension not available';
         }
         $errors = [];
-        while ( ( $err = openssl_error_string() ) !== false ) {
+        $err    = openssl_error_string();
+        while ( false !== $err ) {
             $errors[] = $err;
+            $err      = openssl_error_string();
         }
         return ! empty( $errors ) ? implode( '; ', $errors ) : 'Unknown OpenSSL error';
     }

@@ -370,8 +370,10 @@ class AdminTest extends GECX_TestCase {
 
     public function test_connect_url_return_url_is_encoded_once(): void {
         // The connect button is only rendered once the store is authorized and
-        // before an agent is chosen, which is the only state that builds the
-        // URL under test.
+        // before an agent is chosen. Rendering the settings page must not mint
+        // an oauth_state transient or admin_jwt on GET; those are minted only
+        // when the administrator submits the POST form to admin_post_gecx_connect_agent.
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         delete_option( 'gecx_agent_name' );
         update_option( 'gecx_webhook_id', 4242 );
 
@@ -385,13 +387,17 @@ class AdminTest extends GECX_TestCase {
         }
 
         $this->assertStringContainsString( 'id="gecx-connect-btn"', $html );
+        $this->assertStringContainsString( 'name="action" value="gecx_connect_agent"', $html );
+        $this->assertFalse( get_transient( 'gecx_oauth_state_1' ) );
+
+        $connect_url = $admin->build_connect_agent_url();
 
         // rawurlencode() before add_query_arg() turned the ':' of 'https:'
         // into %253A, and the console received a return_url it could not use.
-        $this->assertStringNotContainsString( '%253A', $html );
+        $this->assertStringNotContainsString( '%253A', $connect_url );
         $this->assertStringContainsString(
             'return_url=https%3A%2F%2Fexample.com%2Fwp-admin%2Fadmin.php%3Fpage%3Dgemini-enterprise-for-cx%26gecx_action%3Dlinked',
-            $html
+            $connect_url
         );
     }
 
@@ -470,6 +476,62 @@ class AdminTest extends GECX_TestCase {
         $admin->redirect_on_activation();
 
         $this->assertNull( $GLOBALS['gecx_test_last_redirect'] );
+    }
+
+    public function test_uninstall_via_wp_cli_without_current_user_sends_rs256_admin_jwt_and_queries_wpdb(): void {
+        GECX_Auth::get_or_generate_keypair();
+        $GLOBALS['gecx_test_current_user'] = null;
+        $GLOBALS['gecx_test_users'][3]     = new WP_User( 3, 'cli-admin@example.com', [ 'administrator' ] );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-cli' );
+
+        if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+            define( 'WP_UNINSTALL_PLUGIN', true );
+        }
+
+        include dirname( __DIR__ ) . '/uninstall.php';
+
+        $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
+        $headers = $GLOBALS['gecx_test_http_requests'][0]['args']['headers'];
+        $this->assertArrayHasKey( 'Authorization', $headers );
+        $this->assertStringContainsString( 'Bearer ', $headers['Authorization'] );
+        $this->assertFalse( get_option( 'gecx_agent_name' ) );
+    }
+
+    public function test_handle_connect_agent_redirect_mints_state_and_redirects_on_post_only(): void {
+        $GLOBALS['gecx_test_current_user']  = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $GLOBALS['gecx_test_last_redirect'] = null;
+        $_SERVER['REQUEST_METHOD']          = 'POST';
+        $_POST['gecx_connect_nonce']        = 'valid_nonce_gecx_connect_agent_action';
+        update_option( 'gecx_webhook_id', 4242 );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->handle_connect_agent_redirect();
+
+        $states = (array) get_option( 'gecx_pending_oauth_states', [] );
+        $this->assertNotEmpty( $states );
+        $state = (string) array_key_first( $states );
+        $this->assertSame( 1, get_transient( 'gecx_oauth_state_' . $state ) );
+        $this->assertNotNull( $GLOBALS['gecx_test_last_redirect'] );
+        $this->assertStringContainsString( $state, $GLOBALS['gecx_test_last_redirect'] );
+        $this->assertStringContainsString( 'admin_jwt=', $GLOBALS['gecx_test_last_redirect'] );
+    }
+
+    public function test_save_product_prompts_override_field_uses_wc_product_crud_methods(): void {
+        $GLOBALS['gecx_test_current_user']      = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $_POST['gecx_prompts_override_nonce']   = 'valid_nonce_gecx_save_prompts_override';
+        $_POST['_gecx_suggested_prompts_override'] = "Prompt A\nPrompt B";
+
+        $product = new WC_Product( 505 );
+        $admin   = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+
+        $admin->save_product_prompts_override_field( $product );
+        $this->assertSame( "Prompt A\nPrompt B", $product->get_meta( '_gecx_suggested_prompts_override' ) );
+        $this->assertSame( "Prompt A\nPrompt B", get_post_meta( 505, '_gecx_suggested_prompts_override', true ) );
+
+        $_POST['_gecx_suggested_prompts_override'] = '';
+        $admin->save_product_prompts_override_field( $product );
+        $this->assertSame( '', $product->get_meta( '_gecx_suggested_prompts_override' ) );
+        $this->assertSame( '', get_post_meta( 505, '_gecx_suggested_prompts_override', true ) );
     }
 }
 

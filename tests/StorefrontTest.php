@@ -583,6 +583,37 @@ class StorefrontTest extends GECX_TestCase {
             $storefront->widget_urls()['style']
         );
     }
+
+    public function test_widget_script_can_be_deferred_via_option_or_filter_until_consent_or_interaction(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+        update_option( 'gecx_defer_widget_until_interaction', true );
+
+        $storefront = new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront->enqueue_storefront_assets();
+
+        $this->assertFalse( in_array( 'gecx-widget-script', $GLOBALS['gecx_test_enqueued_scripts'], true ) );
+        $this->assertTrue( in_array( 'gecx-storefront-js', $GLOBALS['gecx_test_enqueued_scripts'], true ) );
+
+        $config = $GLOBALS['gecx_test_localized_scripts']['gecx-storefront-js']['gecxStorefrontConfig'] ?? [];
+        $this->assertFalse( $config['shouldLoadWidget'] );
+        $this->assertStringContainsString( 'woocommerce-chat-widget.js', $config['widgetScriptUrl'] );
+    }
+
+    public function test_inline_style_and_theme_css_respect_prefers_reduced_motion(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+
+        $storefront = new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront->enqueue_storefront_assets();
+
+        $inline_css = $GLOBALS['gecx_test_inline_styles']['gecx-widget-style'] ?? '';
+        $this->assertStringContainsString( 'prefers-reduced-motion: reduce', $inline_css );
+
+        $theme_css = (string) file_get_contents( dirname( __DIR__ ) . '/assets/css/theme.css' );
+        $this->assertStringContainsString( 'prefers-reduced-motion: reduce', $theme_css );
+        $this->assertStringNotContainsString( 'sourceMappingURL', $theme_css );
+    }
 }
 
 /**

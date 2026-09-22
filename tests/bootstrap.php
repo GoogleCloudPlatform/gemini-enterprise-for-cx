@@ -90,6 +90,14 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_localized_scripts']    = [];
     $GLOBALS['gecx_test_wc_session']           = null;
     $GLOBALS['gecx_test_deleted_cache_keys']   = [];
+    $GLOBALS['gecx_test_wc_sessions_table']    = [];
+    $GLOBALS['gecx_test_scheduled_events']     = [];
+    $GLOBALS['gecx_test_action_callbacks']     = [];
+    $GLOBALS['gecx_test_defer_cron']           = false;
+    $GLOBALS['gecx_test_blog_memberships']     = [];
+    $GLOBALS['gecx_test_super_admins']         = [];
+    $GLOBALS['gecx_test_products']             = [];
+    $GLOBALS['gecx_test_script_translations']  = [];
 
     // Request context. Every one of these is false for a storefront page
     // render, which is what the majority of tests assume.
@@ -101,6 +109,7 @@ function gecx_reset_test_globals(): void {
     // Network context. Single site unless a test says otherwise.
     $GLOBALS['gecx_test_is_multisite']     = false;
     $GLOBALS['gecx_test_sites']            = [];
+    $GLOBALS['gecx_test_sites_by_path']    = [];
     $GLOBALS['gecx_test_switched_blogs']   = [];
     $GLOBALS['gecx_test_blog_stack']       = [];
 
@@ -137,6 +146,9 @@ function gecx_reset_test_globals(): void {
 
     if ( class_exists( 'GECX_Auth' ) ) {
         GECX_Auth::reset_cart_token_state();
+    }
+    if ( class_exists( 'GECX_Rest_API' ) && method_exists( 'GECX_Rest_API', 'reset_wc_auth_state' ) ) {
+        GECX_Rest_API::reset_wc_auth_state();
     }
 }
 
@@ -252,6 +264,35 @@ if ( ! class_exists( 'WC_Webhook' ) ) {
     }
 }
 
+if ( ! defined( 'DAY_IN_SECONDS' ) ) {
+    define( 'DAY_IN_SECONDS', 86400 );
+}
+
+if ( ! function_exists( 'maybe_serialize' ) ) {
+    function maybe_serialize( $data ) {
+        if ( is_array( $data ) || is_object( $data ) ) {
+            return serialize( $data );
+        }
+        return $data;
+    }
+}
+
+if ( ! function_exists( 'maybe_unserialize' ) ) {
+    function maybe_unserialize( $data ) {
+        if ( is_string( $data ) ) {
+            $trimmed = trim( $data );
+            if ( 'N;' === $trimmed || preg_match( '/^([adObis]):/', $trimmed ) ) {
+                $unserialized = @unserialize( $trimmed );
+                if ( false !== $unserialized || 'b:0;' === $trimmed ) {
+                    return $unserialized;
+                }
+            }
+        }
+        return $data;
+    }
+}
+
+
 if ( ! class_exists( 'WC_Session_Handler' ) ) {
     class WC_Session_Handler {
         private array $data = [];
@@ -269,15 +310,18 @@ if ( ! class_exists( 'WC_Session_Handler' ) ) {
         public function set( string $key, $value ): void {
             $this->data[ $key ] = $value;
         }
+        public function set_customer_id( string $id ): void {
+            $this->customer_id = $id;
+        }
+        public function get_customer_id(): string {
+            return $this->customer_id;
+        }
         public function save_data(): void {
             $this->save_data_calls++;
         }
         public function set_customer_session_cookie( bool $val ): void {
             $this->cookie_set = $val;
             $this->cookie_set_calls++;
-        }
-        public function get_customer_id(): string {
-            return $this->customer_id;
         }
         public function has_session(): bool {
             return $this->has_active_session;
@@ -287,17 +331,65 @@ if ( ! class_exists( 'WC_Session_Handler' ) ) {
 
 if ( ! class_exists( 'WC_Cart_Mock' ) ) {
     class WC_Cart_Mock {
+        public array $session_cart = [];
         public array $cart_for_session = [];
         public int $persistent_cart_updates = 0;
-        public function get_cart_for_session(): array {
-            return $this->cart_for_session;
-        }
-        public function is_empty(): bool {
-            return empty( $this->cart_for_session );
-        }
         public function persistent_cart_update(): void {
             $this->persistent_cart_updates++;
         }
+        public function get_cart_for_session(): array {
+            return ! empty( $this->cart_for_session ) ? $this->cart_for_session : $this->session_cart;
+        }
+        public function is_empty(): bool {
+            return empty( $this->get_cart_for_session() );
+        }
+    }
+}
+
+if ( ! class_exists( 'WC_Product' ) ) {
+    class WC_Product {
+        private int $id = 0;
+        private array $meta = [];
+        public int $save_calls = 0;
+
+        public function __construct( int $id = 0 ) {
+            $this->id = $id;
+        }
+
+        public function get_id(): int {
+            return $this->id;
+        }
+
+        public function update_meta_data( string $key, $value ): void {
+            $this->meta[ $key ] = $value;
+            if ( $this->id > 0 && function_exists( 'update_post_meta' ) ) {
+                update_post_meta( $this->id, $key, $value );
+            }
+        }
+
+        public function delete_meta_data( string $key ): void {
+            unset( $this->meta[ $key ] );
+            if ( $this->id > 0 && function_exists( 'delete_post_meta' ) ) {
+                delete_post_meta( $this->id, $key );
+            }
+        }
+
+        public function get_meta( string $key, bool $single = true ) {
+            return $this->meta[ $key ] ?? '';
+        }
+
+        public function save(): int {
+            $this->save_calls++;
+            $GLOBALS['gecx_test_products'][ $this->id ] = $this;
+            return $this->id;
+        }
+    }
+}
+
+if ( ! function_exists( 'wc_get_product' ) ) {
+    function wc_get_product( $product_id ) {
+        $id = (int) $product_id;
+        return $GLOBALS['gecx_test_products'][ $id ] ?? false;
     }
 }
 
@@ -307,6 +399,7 @@ if ( ! class_exists( 'WooCommerce_Mock' ) ) {
         public $cart = null;
         public function __construct() {
             $this->session = new WC_Session_Handler();
+            $this->cart    = new WC_Cart_Mock();
         }
     }
 }
@@ -435,9 +528,12 @@ if ( ! function_exists( 'wc_get_order' ) ) {
 
 if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
     class GECX_Mock_WPDB {
-        public string $prefix = 'wp_';
-        public array $queries = [];
-        public array $wc_sessions = [];
+        public string $prefix        = 'wp_';
+        public string $options       = 'wp_options';
+        public string $usermeta      = 'wp_usermeta';
+        public int $rows_affected    = 0;
+        public array $queries        = [];
+        public array $wc_sessions    = [];
 
         public function esc_like( string $text ): string {
             return addcslashes( $text, '_%\\' );
@@ -464,11 +560,17 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
 
         public function get_var( string $query ) {
             if ( 0 === strpos( $query, 'SHOW TABLES LIKE' ) ) {
+                if ( false !== strpos( $query, 'woocommerce_sessions' ) ) {
+                    return $this->prefix . 'woocommerce_sessions';
+                }
                 return $this->prefix . 'wc_webhooks';
             }
-            if ( preg_match( "/FROM {$this->prefix}woocommerce_sessions WHERE session_key = '([^']+)'/", $query, $m ) ) {
-                $key = stripslashes( $m[1] );
-                return $this->wc_sessions[ $key ] ?? null;
+            if ( preg_match( "/SELECT session_value FROM `?([a-zA-Z0-9_]+)`? WHERE session_key = '([^']+)'/", $query, $m ) ) {
+                $session_key = stripslashes( $m[2] );
+                if ( isset( $this->wc_sessions[ $session_key ] ) ) {
+                    return $this->wc_sessions[ $session_key ];
+                }
+                return $GLOBALS['gecx_test_wc_sessions_table'][ $session_key ]['session_value'] ?? null;
             }
             if ( preg_match( '/WHERE webhook_id = (\d+)/', $query, $m ) ) {
                 $id = (int) $m[1];
@@ -487,14 +589,43 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
         }
 
         public function query( string $query ) {
-            $this->queries[] = $query;
-            if ( preg_match( "/INSERT INTO {$this->prefix}woocommerce_sessions .* VALUES \\('([^']*)', '((?:\\\\'|[^'])*)', (\\d+)\\)/s", $query, $m ) ) {
-                $key                       = stripslashes( $m[1] );
-                $val                       = stripslashes( $m[2] );
-                $this->wc_sessions[ $key ] = $val;
+            $this->queries[]     = $query;
+            $this->rows_affected = 0;
+
+            if ( preg_match(
+                "/INSERT INTO `?([a-zA-Z0-9_]*woocommerce_sessions)`?\s*\(`?session_key`?,\s*`?session_value`?,\s*`?session_expiry`?\)\s*VALUES\s*\('([^']*)',\s*'(.*)',\s*(\d+)\)\s*ON DUPLICATE KEY UPDATE/s",
+                $query,
+                $m
+            ) ) {
+                $session_key   = stripslashes( $m[2] );
+                $session_value = stripslashes( $m[3] );
+                $expiry        = (int) $m[4];
+                $this->wc_sessions[ $session_key ]                      = $session_value;
+                $GLOBALS['gecx_test_wc_sessions_table'][ $session_key ] = [
+                    'session_key'    => $session_key,
+                    'session_value'  => $session_value,
+                    'session_expiry' => $expiry,
+                ];
+                $this->rows_affected = 1;
                 return 1;
             }
-            return 1;
+
+            if ( false !== strpos( $query, 'DELETE FROM' ) && false !== strpos( $query, 'options' ) ) {
+                if ( preg_match_all( "/LIKE '([^']+)'/", $query, $likes ) ) {
+                    foreach ( $likes[1] as $like_pattern ) {
+                        $prefix = str_replace( [ '\\_', '\\%', '%' ], [ '_', '%', '' ], $like_pattern );
+                        foreach ( array_keys( $GLOBALS['gecx_test_options'] ?? [] ) as $opt_name ) {
+                            if ( 0 === strpos( (string) $opt_name, $prefix ) ) {
+                                unset( $GLOBALS['gecx_test_options'][ $opt_name ] );
+                                $this->rows_affected++;
+                            }
+                        }
+                    }
+                }
+                return $this->rows_affected;
+            }
+
+            return 0;
         }
 
         public function delete( string $table, array $where, array $where_format = [] ): int {
@@ -516,6 +647,7 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
                     }
                 }
             }
+            $this->rows_affected = $deleted;
             return $deleted;
         }
     }
@@ -583,26 +715,6 @@ if ( ! class_exists( 'WP_REST_Request' ) ) {
     }
 }
 
-if ( ! function_exists( 'maybe_serialize' ) ) {
-    function maybe_serialize( $data ) {
-        if ( is_array( $data ) || is_object( $data ) ) {
-            return serialize( $data );
-        }
-        return $data;
-    }
-}
-
-if ( ! function_exists( 'maybe_unserialize' ) ) {
-    function maybe_unserialize( $data ) {
-        if ( is_string( $data ) ) {
-            $unserialized = @unserialize( $data );
-            if ( false !== $unserialized || 'b:0;' === $data ) {
-                return $unserialized;
-            }
-        }
-        return $data;
-    }
-}
 
 if ( ! function_exists( 'wp_cache_delete' ) ) {
     function wp_cache_delete( $key, string $group = '' ): bool {
@@ -671,28 +783,108 @@ if ( ! function_exists( 'is_wp_error' ) ) {
 
 // Mock WordPress functions
 if ( ! function_exists( 'user_can' ) ) {
-    function user_can( $user, string $capability ): bool {
+    function user_can( $user, string $capability, ...$args ): bool {
         if ( is_numeric( $user ) ) {
             $user = get_userdata( (int) $user );
         }
-        if ( $user instanceof WP_User ) {
-            if ( in_array( 'administrator', $user->roles, true ) && ( $capability === 'manage_options' || $capability === 'manage_woocommerce' ) ) {
-                return true;
-            }
-            if ( in_array( 'shop_manager', $user->roles, true ) && $capability === 'manage_woocommerce' ) {
-                return true;
-            }
+        if ( ! ( $user instanceof WP_User ) ) {
+            return false;
+        }
+        $allcaps = $user->allcaps;
+        if ( in_array( 'administrator', $user->roles, true ) ) {
+            $allcaps['manage_options']     = true;
+            $allcaps['manage_woocommerce'] = true;
+            $allcaps['edit_post']          = true;
+            $allcaps['delete_users']       = true;
+        }
+        if ( in_array( 'shop_manager', $user->roles, true ) ) {
+            $allcaps['manage_woocommerce'] = true;
+            $allcaps['edit_post']          = true;
+        }
+        if ( function_exists( 'apply_filters' ) ) {
+            $allcaps = (array) apply_filters(
+                'user_has_cap',
+                $allcaps,
+                [ $capability ],
+                array_merge( [ $capability, $user->ID ], $args ),
+                $user
+            );
+        }
+        return ! empty( $allcaps[ $capability ] );
+    }
+}
+
+if ( ! function_exists( 'current_user_can' ) ) {
+    function current_user_can( string $capability, ...$args ): bool {
+        if ( ! empty( $GLOBALS['gecx_test_current_user'] ) ) {
+            return user_can( $GLOBALS['gecx_test_current_user'], $capability, ...$args );
         }
         return false;
     }
 }
 
-if ( ! function_exists( 'current_user_can' ) ) {
-    function current_user_can( string $capability ): bool {
-        if ( ! empty( $GLOBALS['gecx_test_current_user'] ) ) {
-            return user_can( $GLOBALS['gecx_test_current_user'], $capability );
+if ( ! function_exists( 'get_users' ) ) {
+    function get_users( array $args = [] ): array {
+        $candidates = $GLOBALS['gecx_test_users'] ?? [];
+        if ( ! empty( $GLOBALS['gecx_test_current_user'] ) && $GLOBALS['gecx_test_current_user'] instanceof WP_User && $GLOBALS['gecx_test_current_user']->ID > 0 ) {
+            $candidates[ $GLOBALS['gecx_test_current_user']->ID ] = $GLOBALS['gecx_test_current_user'];
         }
-        return false;
+        $role = $args['role'] ?? '';
+        $matched = [];
+        foreach ( $candidates as $u ) {
+            if ( ! ( $u instanceof WP_User ) ) {
+                continue;
+            }
+            if ( '' !== $role && ! in_array( $role, $u->roles, true ) ) {
+                continue;
+            }
+            $matched[ $u->ID ] = $u;
+        }
+        ksort( $matched );
+        $list = array_values( $matched );
+        if ( isset( $args['number'] ) && (int) $args['number'] > 0 ) {
+            $list = array_slice( $list, 0, (int) $args['number'] );
+        }
+        if ( isset( $args['fields'] ) && 'ID' === $args['fields'] ) {
+            return array_map(
+                static function ( WP_User $u ): int {
+                    return $u->ID;
+                },
+                $list
+            );
+        }
+        return $list;
+    }
+}
+
+if ( ! function_exists( 'get_current_blog_id' ) ) {
+    function get_current_blog_id(): int {
+        if ( ! empty( $GLOBALS['gecx_test_blog_stack'] ) ) {
+            return (int) end( $GLOBALS['gecx_test_blog_stack'] );
+        }
+        return 1;
+    }
+}
+
+if ( ! function_exists( 'is_user_member_of_blog' ) ) {
+    function is_user_member_of_blog( int $user_id = 0, int $blog_id = 0 ): bool {
+        if ( $user_id <= 0 ) {
+            $user_id = get_current_user_id();
+        }
+        if ( $blog_id <= 0 ) {
+            $blog_id = get_current_blog_id();
+        }
+        if ( isset( $GLOBALS['gecx_test_blog_memberships'][ $blog_id ] ) && is_array( $GLOBALS['gecx_test_blog_memberships'][ $blog_id ] ) ) {
+            return ! empty( $GLOBALS['gecx_test_blog_memberships'][ $blog_id ][ $user_id ] );
+        }
+        return true;
+    }
+}
+
+if ( ! function_exists( 'is_super_admin' ) ) {
+    function is_super_admin( $user_id = false ): bool {
+        $uid = false === $user_id ? get_current_user_id() : (int) $user_id;
+        return ! empty( $GLOBALS['gecx_test_super_admins'][ $uid ] );
     }
 }
 
@@ -1015,6 +1207,97 @@ if ( ! function_exists( 'rest_get_url_prefix' ) ) {
 
 if ( ! function_exists( 'add_action' ) ) {
     function add_action( string $hook_name, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
+        $GLOBALS['gecx_test_action_callbacks'][ $hook_name ] = $callback;
+        return true;
+    }
+}
+
+if ( ! function_exists( 'get_site_by_path' ) ) {
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundBeforeLastUsed -- WordPress get_site_by_path signature.
+    function get_site_by_path( string $domain, string $path, $segments = null ) {
+        $normalized = '/' . trim( $path, '/' );
+        if ( '/' !== $normalized ) {
+            $normalized .= '/';
+        }
+        $sites_by_path = $GLOBALS['gecx_test_sites_by_path'] ?? [];
+        if ( is_array( $sites_by_path ) ) {
+            foreach ( $sites_by_path as $prefix => $blog_id ) {
+                $prefix_norm = '/' . trim( (string) $prefix, '/' ) . '/';
+                if ( '//' !== $prefix_norm && 0 === strpos( $normalized, $prefix_norm ) ) {
+                    if ( false === $blog_id ) {
+                        return false;
+                    }
+                    return (object) [ 'blog_id' => (int) $blog_id ];
+                }
+            }
+        }
+        return (object) [ 'blog_id' => 1 ];
+    }
+}
+
+if ( ! function_exists( 'wp_next_scheduled' ) ) {
+    function wp_next_scheduled( string $hook, array $args = [] ) {
+        foreach ( $GLOBALS['gecx_test_scheduled_events'] ?? [] as $event ) {
+            if ( ( $event['hook'] ?? '' ) === $hook && ( $event['args'] ?? [] ) === $args ) {
+                return (int) $event['timestamp'];
+            }
+        }
+        return false;
+    }
+}
+
+if ( ! function_exists( 'wp_clear_scheduled_hook' ) ) {
+    function wp_clear_scheduled_hook( string $hook, array $args = [] ): int {
+        $cleared  = 0;
+        $remaining = [];
+        foreach ( $GLOBALS['gecx_test_scheduled_events'] ?? [] as $event ) {
+            if ( ( $event['hook'] ?? '' ) === $hook && ( empty( $args ) || ( $event['args'] ?? [] ) === $args ) ) {
+                $cleared++;
+                continue;
+            }
+            $remaining[] = $event;
+        }
+        $GLOBALS['gecx_test_scheduled_events'] = $remaining;
+        return $cleared;
+    }
+}
+
+if ( ! function_exists( 'wp_schedule_single_event' ) ) {
+    function wp_schedule_single_event( int $timestamp, string $hook, array $args = [] ): bool {
+        $GLOBALS['gecx_test_scheduled_events'][] = [
+            'timestamp' => $timestamp,
+            'hook'      => $hook,
+            'args'      => $args,
+        ];
+        if ( empty( $GLOBALS['gecx_test_defer_cron'] ) && isset( $GLOBALS['gecx_test_action_callbacks'][ $hook ] ) ) {
+            call_user_func_array( $GLOBALS['gecx_test_action_callbacks'][ $hook ], $args );
+        }
+        return true;
+    }
+}
+
+if ( ! function_exists( 'check_admin_referer' ) ) {
+    function check_admin_referer( $action = -1, string $query_arg = '_wpnonce' ): bool {
+        return true;
+    }
+}
+
+if ( ! function_exists( 'wp_die' ) ) {
+    function wp_die( $message = '', $title = '', $args = [] ): void {}
+}
+
+if ( ! function_exists( 'wp_set_script_translations' ) ) {
+    function wp_set_script_translations( string $handle, string $domain = 'default', string $path = '' ): bool {
+        $GLOBALS['gecx_test_script_translations'][ $handle ] = [
+            'domain' => $domain,
+            'path'   => $path,
+        ];
+        return true;
+    }
+}
+
+if ( ! function_exists( 'load_plugin_textdomain' ) ) {
+    function load_plugin_textdomain( string $domain, $deprecated = false, string $plugin_rel_path = '' ): bool {
         return true;
     }
 }
@@ -1149,6 +1432,13 @@ if ( ! function_exists( 'wp_safe_redirect' ) ) {
     }
 }
 
+if ( ! function_exists( 'wp_redirect' ) ) {
+    function wp_redirect( string $location, int $status = 302 ): bool {
+        $GLOBALS['gecx_test_last_redirect'] = $location;
+        return true;
+    }
+}
+
 if ( ! function_exists( 'register_setting' ) ) {
     function register_setting( string $option_group, string $option_name, array $args = [] ): void {}
 }
@@ -1191,11 +1481,6 @@ if ( ! function_exists( 'delete_transient' ) ) {
     }
 }
 
-if ( ! function_exists( 'is_wp_error' ) ) {
-    function is_wp_error( $thing ): bool {
-        return $thing instanceof WP_Error;
-    }
-}
 
 /**
  * Mock HTTP transport.
