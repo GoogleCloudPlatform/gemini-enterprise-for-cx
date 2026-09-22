@@ -59,6 +59,10 @@ that is not reversible:
 2. Download that zip. It is the exact artifact to publish; do not rebuild it.
 3. Copy its contents into the `trunk/` directory of the plugin's SVN checkout,
    `svn cp trunk tags/<version>`, and `svn ci`.
-4. Confirm `Stable tag` in `trunk/readme.txt` names the tag you just created.
+4. Copy WordPress.org directory assets (banners, icons, screenshots) from
+   `.wordpress-org/` into the top-level `assets/` directory of the SVN checkout
+   (alongside `trunk/` and `tags/`, not inside `trunk/`), and commit them with
+   `svn ci assets`.
+5. Confirm `Stable tag` in `trunk/readme.txt` names the tag you just created.
    WordPress.org serves whichever release the stable tag names, regardless of
    what else is in SVN.

@@ -82,32 +82,37 @@ function gecxIsSameOriginUrl(candidateUrl) {
   }
 }
 
-let gecxCachedSessionTarget = null;
+const gecxParsedTargetCache = {};
 
 /**
- * Returns the lazily-parsed session REST endpoint target.
+ * Returns the lazily-parsed REST endpoint target for a configured URL string.
+ * @param {string} configuredUrl
  * @return {?{origin: string, route: ?string, normPath: string}}
  */
-function gecxGetSessionTarget() {
-  if (gecxCachedSessionTarget !== null) {
-    return gecxCachedSessionTarget;
+function gecxGetParsedTarget(configuredUrl) {
+  if (!configuredUrl || typeof configuredUrl !== 'string') {
+    return null;
   }
-  const rawUrl = gecxSessionRestUrl();
+  if (Object.prototype.hasOwnProperty.call(gecxParsedTargetCache, configuredUrl)) {
+    return gecxParsedTargetCache[configuredUrl];
+  }
   try {
     const baseOrigin = (window.location && window.location.origin) ?
         window.location.origin :
         'https://localhost';
-    const target = new URL(rawUrl, baseOrigin);
+    const target = new URL(configuredUrl, baseOrigin);
     const targetRoute = target.searchParams.get('rest_route');
-    gecxCachedSessionTarget = {
+    const parsed = {
       origin: target.origin,
       route: targetRoute ? targetRoute.replace(/\/+$/, '') : null,
       normPath: target.pathname.replace(/\/+$/, ''),
     };
+    gecxParsedTargetCache[configuredUrl] = parsed;
+    return parsed;
   } catch (err) {
-    gecxCachedSessionTarget = null;
+    gecxParsedTargetCache[configuredUrl] = null;
+    return null;
   }
-  return gecxCachedSessionTarget;
 }
 
 /**
@@ -126,18 +131,20 @@ function gecxIsTargetEndpoint(candidateUrl, configuredUrl, fallbackPathRegex) {
         window.location.origin :
         'https://localhost';
     const candidate = new URL(candidateUrl, baseOrigin);
-    const target = gecxGetSessionTarget();
-    if (target) {
-      if (candidate.origin !== target.origin) {
-        return false;
-      }
-      if (target.route !== null) {
-        const candidateRoute = candidate.searchParams.get('rest_route') || '';
-        return candidateRoute.replace(/\/+$/, '') === target.route;
-      }
-      const normCandidate = candidate.pathname.replace(/\/+$/, '');
-      if (normCandidate === target.normPath || normCandidate.indexOf(target.normPath + '/') === 0) {
-        return true;
+    if (configuredUrl) {
+      const target = gecxGetParsedTarget(configuredUrl);
+      if (target) {
+        if (candidate.origin !== target.origin) {
+          return false;
+        }
+        if (target.route !== null) {
+          const candidateRoute = candidate.searchParams.get('rest_route') || '';
+          return candidateRoute.replace(/\/+$/, '') === target.route;
+        }
+        const normCandidate = candidate.pathname.replace(/\/+$/, '');
+        if (normCandidate === target.normPath || normCandidate.indexOf(target.normPath + '/') === 0) {
+          return true;
+        }
       }
     }
     return fallbackPathRegex.test(candidate.pathname);

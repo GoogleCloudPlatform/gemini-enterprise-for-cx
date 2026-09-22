@@ -292,7 +292,11 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             $gecx_sessions_table = $wpdb->prefix . 'woocommerce_sessions';
             $gecx_sessions_like  = '%' . ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( 'gecx_session_id' ) : 'gecx_session_id' ) . '%';
             $gecx_batch_limit    = 500;
+            $gecx_max_batches    = 100;
+            $gecx_batch_count    = 0;
             do {
+                $gecx_updated = 0;
+                ++$gecx_batch_count;
                 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
                 $gecx_session_rows = $wpdb->get_results(
                     $wpdb->prepare(
@@ -321,10 +325,11 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                             [ '%s' ],
                             [ '%s' ]
                         );
+                        ++$gecx_updated;
                     }
                 }
                 $gecx_fetched_count = count( $gecx_session_rows );
-            } while ( $gecx_fetched_count === $gecx_batch_limit );
+            } while ( $gecx_fetched_count === $gecx_batch_limit && $gecx_updated > 0 && $gecx_batch_count < $gecx_max_batches );
         }
 
         // 4. Clear plugin post meta.

@@ -687,6 +687,81 @@ class StorefrontTest extends GECX_TestCase {
         $this->assertStringContainsString( 'prefers-reduced-motion: reduce', $theme_css );
         $this->assertStringNotContainsString( 'sourceMappingURL', $theme_css );
     }
+
+    public function test_storefront_js_captures_cart_token_on_plain_permalink_stores(): void {
+        $node = exec( 'which node' );
+        if ( empty( $node ) ) {
+            $this->markTestSkipped( 'Node.js is not available to test storefront.js runtime.' );
+        }
+
+        $script_path = dirname( __DIR__ ) . '/assets/js/storefront.js';
+        $js_code     = file_get_contents( $script_path );
+        $this->assertNotEmpty( $js_code );
+
+        $test_runner = <<<'JS'
+const fs = require('fs');
+const vm = require('vm');
+const code = fs.readFileSync(process.argv[2], 'utf8');
+let capturedFetchInit = null;
+const validJwt = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoxMjN9.signature';
+const sandbox = {
+  window: {
+    location: { origin: 'https://example.com' },
+    addEventListener: () => {},
+    gecxStorefrontConfig: {
+      sessionUrl: 'https://example.com/?rest_route=/gecx/v1/session',
+      cartRestUrl: 'https://example.com/?rest_route=/wc/store/v1/cart'
+    },
+    fetch: function(input, init) {
+      capturedFetchInit = init;
+      return Promise.resolve({
+        headers: {
+          get: (h) => (h.toLowerCase() === 'cart-token' ? validJwt : null)
+        }
+      });
+    }
+  },
+  document: {
+    readyState: 'loading',
+    addEventListener: () => {},
+    querySelector: () => null,
+    querySelectorAll: () => []
+  },
+  URL: URL,
+  RegExp: RegExp,
+  console: console
+};
+vm.createContext(sandbox);
+vm.runInContext(code, sandbox);
+
+sandbox.window.fetch('https://example.com/?rest_route=/wc/store/v1/cart', {}).then(() => {
+  return sandbox.window.fetch('https://example.com/?rest_route=/gecx/v1/session', {});
+}).then(() => {
+  const token = capturedFetchInit && capturedFetchInit.headers && capturedFetchInit.headers['Cart-Token'];
+  if (token !== validJwt) {
+    console.error('Mismatch: expected ' + validJwt + ' got ' + token);
+    process.exit(1);
+  }
+  process.exit(0);
+}).catch(err => {
+  console.error(err);
+  process.exit(1);
+});
+JS;
+
+        $temp_runner = (string) tempnam( sys_get_temp_dir(), 'gecx_js_' );
+        file_put_contents( $temp_runner, $test_runner );
+
+        $cmd    = sprintf( '%s %s %s', escapeshellcmd( $node ), escapeshellarg( $temp_runner ), escapeshellarg( $script_path ) );
+        $output = [];
+        $status = 0;
+        exec( $cmd, $output, $status );
+        if ( file_exists( $temp_runner ) ) {
+            unlink( $temp_runner );
+        }
+
+        $this->assertSame( 0, $status, 'Storefront.js failed to capture and attach Cart-Token on plain permalink store: ' . implode( "\n", $output ) );
+    }
 }
 
 /**

@@ -64,7 +64,6 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_current_user']         = null;
     $GLOBALS['gecx_test_cookie_user_id']       = 0;
     $GLOBALS['gecx_test_users']                = [];
-    $GLOBALS['gecx_test_transients']           = [];
     $GLOBALS['gecx_test_last_redirect']        = null;
     $GLOBALS['gecx_test_last_json_response']   = null;
     $GLOBALS['gecx_test_post_meta']            = [];
