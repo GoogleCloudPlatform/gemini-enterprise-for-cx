@@ -712,9 +712,8 @@ class GECX_Admin {
             admin_url( 'admin.php?page=gemini-enterprise-for-cx' )
         );
 
-        $has_store_credentials = ! empty( get_option( 'gecx_webhook_id' ) );
-        $is_authorized         = $has_store_credentials && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
-        $admin_jwt             = $is_authorized ? GECX_Auth::generate_admin_jwt() : '';
+        $is_authorized = (bool) get_option( self::AUTH_COMPLETE_OPTION, false ) && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
+        $admin_jwt     = $is_authorized ? GECX_Auth::generate_admin_jwt() : '';
 
         // rawurlencode() is required here: WordPress core's add_query_arg()
         // delegates to _http_build_query(..., false), which does NOT URL-encode
@@ -807,11 +806,10 @@ class GECX_Admin {
         $console_base = $this->get_console_base_url();
         $console_base = untrailingslashit( $console_base );
 
-        $has_store_credentials = ! empty( get_option( 'gecx_webhook_id' ) );
         // SyncState can report that Google can no longer use this store's
         // credentials. Treat that as unauthorized so the merchant is offered
         // the authorize step again instead of a dead end.
-        $is_authorized = $has_store_credentials && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
+        $is_authorized = (bool) get_option( self::AUTH_COMPLETE_OPTION, false ) && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
 
         $oauth_return_url = add_query_arg(
             [
@@ -1494,14 +1492,18 @@ class GECX_Admin {
     }
 
     /**
-     * Delete the locally stored agent binding.
+     * Delete the locally stored agent binding while preserving store
+     * authorization credentials so the merchant returns to Step 2 rather than
+     * Step 1.
      *
-     * The merchant's appearance settings are deliberately left in place so a
-     * re-link does not lose their customization.
+     * The order webhook is paused rather than deleted so its stored
+     * consumer_secret remains available and re-linking an agent in Step 2 can
+     * immediately reactivate it. The merchant's appearance settings are also
+     * left in place so a re-link does not lose their customization.
      */
     private function unlink_agent_internal(): void {
         if ( class_exists( 'GECX_Rest_API' ) ) {
-            GECX_Rest_API::delete_order_webhook();
+            GECX_Rest_API::set_order_webhook_status( 'paused' );
         }
         // Legacy shared secret, retired in favour of the store's RSA keypair.
         // Still deleted so a store upgraded from an older version does not keep

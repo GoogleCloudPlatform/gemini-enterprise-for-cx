@@ -2037,13 +2037,18 @@ class GECX_Rest_API {
 
     /**
      * Reconciles the order webhook on plugin activation:
-     * - If no agent is linked, sweeps and deletes any orphaned GECX webhooks.
+     * - If no agent is linked and the store is authorized, pauses the GECX order webhook.
+     * - If no agent is linked and the store is not authorized, sweeps and deletes any orphaned GECX webhooks.
      * - If an agent is linked, adopts/deduplicates the webhook and sets its status
      *   to match gecx_agent_enabled ('active' when enabled, 'paused' when disabled).
      */
     public static function reconcile_webhook_on_activation(): void {
         $agent_name = (string) get_option( 'gecx_agent_name', '' );
         if ( '' === $agent_name ) {
+            if ( (bool) get_option( 'gecx_auth_complete', false ) ) {
+                self::set_order_webhook_status( 'paused' );
+                return;
+            }
             $has_stored_webhook = ! empty( get_option( 'gecx_webhook_id' ) );
             $wc_available       = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
             if ( $has_stored_webhook || $wc_available ) {

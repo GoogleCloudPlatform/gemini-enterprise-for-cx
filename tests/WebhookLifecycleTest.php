@@ -288,10 +288,11 @@ class WebhookLifecycleTest extends TestCase {
         $this->assertSame( 1, get_option( 'gecx_agent_enabled' ) );
     }
 
-    public function test_unlink_deletes_webhook_and_secret(): void {
+    public function test_unlink_pauses_webhook_and_preserves_secret(): void {
         $webhook_id = $this->create_gecx_webhook( 'active' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
-        update_option( 'gecx_api_secret', 'secret_to_be_deleted' );
+        update_option( 'gecx_api_secret', 'legacy_secret_to_be_deleted' );
+        update_option( 'gecx_auth_complete', 1 );
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
 
         $_POST = [
@@ -300,10 +301,26 @@ class WebhookLifecycleTest extends TestCase {
         $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 200, '' );
         $this->admin->ajax_unlink_agent();
 
-        $this->assertArrayNotHasKey( $webhook_id, $GLOBALS['gecx_test_webhooks'] );
-        $this->assertFalse( get_option( 'gecx_webhook_id' ) );
+        $this->assertArrayHasKey( $webhook_id, $GLOBALS['gecx_test_webhooks'] );
+        $webhook = new WC_Webhook( $webhook_id );
+        $this->assertSame( 'paused', $webhook->get_status() );
+        $this->assertSame( $webhook_id, get_option( 'gecx_webhook_id' ) );
         $this->assertFalse( get_option( 'gecx_api_secret' ) );
+        $this->assertSame( 1, get_option( 'gecx_auth_complete' ) );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
+    }
+
+    public function test_activation_pauses_webhook_when_unlinked_but_authorized(): void {
+        $webhook_id = $this->create_gecx_webhook( 'active' );
+        delete_option( 'gecx_agent_name' );
+        update_option( 'gecx_auth_complete', 1 );
+
+        GECX_Admin::activate_plugin();
+
+        $this->assertArrayHasKey( $webhook_id, $GLOBALS['gecx_test_webhooks'] );
+        $webhook = new WC_Webhook( $webhook_id );
+        $this->assertSame( 'paused', $webhook->get_status() );
+        $this->assertSame( $webhook_id, get_option( 'gecx_webhook_id' ) );
     }
 
     public function test_uninstall_deletes_row_and_extracts_secret_without_woocommerce(): void {
