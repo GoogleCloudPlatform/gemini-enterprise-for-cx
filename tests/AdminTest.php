@@ -533,6 +533,91 @@ class AdminTest extends GECX_TestCase {
         $this->assertSame( '', $product->get_meta( '_gecx_suggested_prompts_override' ) );
         $this->assertSame( '', get_post_meta( 505, '_gecx_suggested_prompts_override', true ) );
     }
+
+    public function test_show_activation_notice_renders_when_setup_incomplete(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        delete_option( 'gecx_dismiss_activation_notice' );
+        delete_option( 'gecx_agent_name' );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        ob_start();
+        $admin->show_activation_notice();
+        $output = ob_get_clean();
+
+        $this->assertStringContainsString( 'notice notice-info is-dismissible gecx-activation-notice', $output );
+        $this->assertStringContainsString( 'Thanks for installing Gemini Enterprise for CX! <a href="', $output );
+        $this->assertStringContainsString( 'Complete the setup</a> to start delivering better shopping experiences to your customers.', $output );
+        $this->assertStringContainsString( 'admin.php?page=gemini-enterprise-for-cx', $output );
+    }
+
+    public function test_show_activation_notice_hidden_on_settings_page_via_get_page(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        delete_option( 'gecx_dismiss_activation_notice' );
+        delete_option( 'gecx_agent_name' );
+        $_GET['page'] = 'gemini-enterprise-for-cx';
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        ob_start();
+        $admin->show_activation_notice();
+        $output = ob_get_clean();
+
+        $this->assertSame( '', $output );
+    }
+
+    public function test_show_activation_notice_hidden_on_settings_page_via_screen_hook(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        delete_option( 'gecx_dismiss_activation_notice' );
+        delete_option( 'gecx_agent_name' );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->add_settings_page();
+        set_current_screen( 'marketing_page_gemini-enterprise-for-cx' );
+
+        ob_start();
+        $admin->show_activation_notice();
+        $output = ob_get_clean();
+
+        $this->assertSame( '', $output );
+    }
+
+    public function test_show_activation_notice_hidden_when_dismissed(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        update_option( 'gecx_dismiss_activation_notice', true );
+        delete_option( 'gecx_agent_name' );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        ob_start();
+        $admin->show_activation_notice();
+        $output = ob_get_clean();
+
+        $this->assertSame( '', $output );
+    }
+
+    public function test_show_activation_notice_hidden_when_agent_configured(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        delete_option( 'gecx_dismiss_activation_notice' );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        ob_start();
+        $admin->show_activation_notice();
+        $output = ob_get_clean();
+
+        $this->assertSame( '', $output );
+    }
+
+    public function test_show_activation_notice_hidden_without_manage_options_capability(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 2, 'author@example.com', [ 'author' ] );
+        delete_option( 'gecx_dismiss_activation_notice' );
+        delete_option( 'gecx_agent_name' );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        ob_start();
+        $admin->show_activation_notice();
+        $output = ob_get_clean();
+
+        $this->assertSame( '', $output );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {

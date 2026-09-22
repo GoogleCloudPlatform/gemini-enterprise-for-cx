@@ -1626,6 +1626,22 @@ class GECX_Admin {
         if ( ! empty( get_option( 'gecx_agent_name' ) ) ) {
             return;
         }
+
+        // Do not display the notice on the GECX settings page.
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        if ( isset( $_GET['page'] ) && 'gemini-enterprise-for-cx' === sanitize_text_field( wp_unslash( $_GET['page'] ) ) ) {
+            return;
+        }
+        if ( function_exists( 'get_current_screen' ) ) {
+            $screen = get_current_screen();
+            if ( $screen && ! empty( $this->settings_page_hook ) && $screen->id === $this->settings_page_hook ) {
+                return;
+            }
+        }
+        if ( ! empty( $this->settings_page_hook ) && isset( $GLOBALS['hook_suffix'] ) && $GLOBALS['hook_suffix'] === $this->settings_page_hook ) {
+            return;
+        }
+
         $settings_url = admin_url( 'admin.php?page=gemini-enterprise-for-cx' );
         ?>
         <div class="notice notice-info is-dismissible gecx-activation-notice">
@@ -1633,7 +1649,7 @@ class GECX_Admin {
                 <?php
                 echo wp_kses_post( sprintf(
                     /* translators: %s: URL to the settings page */
-                    __( 'Thanks for installing Gemini Enterprise for CX! Please finalize your plugin by completing the <a href="%s">settings page</a>.', 'gemini-enterprise-for-cx' ),
+                    __( 'Thanks for installing Gemini Enterprise for CX! <a href="%s">Complete the setup</a> to start delivering better shopping experiences to your customers.', 'gemini-enterprise-for-cx' ),
                     esc_url( $settings_url )
                 ) );
                 ?>
