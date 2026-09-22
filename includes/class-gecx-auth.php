@@ -1071,8 +1071,14 @@ class GECX_Auth {
         $is_cacheable_guest = ! $is_admin && 0 === (int) $user_id && '' === $user_email && $expiration >= ( 2 * self::GUEST_JWT_CACHE_TTL_SECONDS );
         $cache_fingerprint  = '';
 
+        // Guest JWTs carry zero shopper-specific data (user_id: 0, is_admin: false)
+        // and are cached in a transient to avoid repeated RS256 signing operations
+        // on high-traffic storefront visits. The signed token carries no administrative
+        // or user privileges, so storing it at rest in wp_options has minimal blast radius.
+        // The fingerprint is derived from the public key rather than hashing private key bytes.
         if ( $is_cacheable_guest && function_exists( 'get_transient' ) ) {
-            $cache_fingerprint = hash( 'sha256', (string) $store_domain . '|' . (string) $expiration . '|' . $private_key );
+            $public_key        = self::get_public_key() ?? '';
+            $cache_fingerprint = hash( 'sha256', (string) $store_domain . '|' . (string) $expiration . '|' . $public_key );
             $cached_guest_jwt  = get_transient( self::GUEST_JWT_CACHE_TRANSIENT );
             if (
                 is_array( $cached_guest_jwt ) &&

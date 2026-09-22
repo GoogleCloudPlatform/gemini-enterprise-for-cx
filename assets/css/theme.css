@@ -19,6 +19,7 @@
  * so that no external stylesheet or source map is fetched at runtime.
  */
 
+body,
 body.gecx-chat-open,
 body:has(chat-messenger.slide-in:not(.messenger-hidden)) {
   -webkit-transition: padding-right .4s ease-in-out;

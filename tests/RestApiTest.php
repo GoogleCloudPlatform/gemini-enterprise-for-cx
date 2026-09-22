@@ -1685,6 +1685,42 @@ class RestApiTest extends GECX_TestCase {
         $this->assertArrayNotHasKey( 't_victim_999', $wpdb->wc_sessions );
     }
 
+    public function test_session_endpoint_blocked_under_cart_token_auth(): void {
+        $_SERVER['REQUEST_URI']     = '/wp-json/wc/store/v1/cart';
+        $GLOBALS['gecx_test_users'] = [
+            456 => new WP_User( 456, 'shopper456@example.com', [ 'customer' ] ),
+        ];
+
+        $auth = new GECX_Auth();
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $this->assertSame( 456, $auth->authenticate_via_cart_token( 0 ) );
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $result  = $auth->block_cart_token_off_store_api( null, null, $request );
+
+        $this->assertInstanceOf( WP_Error::class, $result );
+        $this->assertSame( 'rest_forbidden', $result->get_error_code() );
+        $this->assertSame( 403, $result->get_error_data()['status'] ?? 0 );
+    }
+
+    public function test_save_session_handler_soft_ignores_invalid_or_expired_cart_token(): void {
+        global $wpdb;
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 12, 'shopper@example.com', [ 'customer' ] );
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', 'projects/123/locations/global/commerceSessions/sess-expired' );
+        $request->set_param( 'cart_token', 'invalid-or-expired-token' );
+
+        $res = $rest_api->save_session_handler( $request );
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+
+        $this->assertArrayHasKey( '12', $wpdb->wc_sessions );
+        $stored = maybe_unserialize( $wpdb->wc_sessions['12'] );
+        $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-expired', $stored['gecx_session_id'] );
+    }
+
     public function test_sync_cart_session_bridges_cart_token_to_cookie_on_get_cart_with_items(): void {
         global $wpdb;
         WC()->cart                   = new WC_Cart_Mock();

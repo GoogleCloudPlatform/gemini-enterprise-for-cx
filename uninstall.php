@@ -259,19 +259,24 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
 
         if ( function_exists( 'delete_transient' ) ) {
             delete_transient( 'gecx_admin_notice_error' );
-            delete_transient( 'gecx_guest_jwt_cache' );
+            delete_transient( class_exists( 'GECX_Auth' ) && defined( 'GECX_Auth::GUEST_JWT_CACHE_TRANSIENT' ) ? GECX_Auth::GUEST_JWT_CACHE_TRANSIENT : 'gecx_guest_jwt_cache' );
         }
 
         if ( isset( $wpdb ) && is_object( $wpdb ) && method_exists( $wpdb, 'query' ) && method_exists( $wpdb, 'prepare' ) ) {
-            $gecx_esc_oauth   = ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( '_transient_gecx_oauth_state_' ) : '_transient_gecx_oauth_state_' ) . '%';
-            $gecx_esc_oauth_t = ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( '_transient_timeout_gecx_oauth_state_' ) : '_transient_timeout_gecx_oauth_state_' ) . '%';
-            $gecx_esc_iss     = ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( '_transient_gecx_unknown_iss_' ) : '_transient_gecx_unknown_iss_' ) . '%';
-            $gecx_esc_iss_t   = ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( '_transient_timeout_gecx_unknown_iss_' ) : '_transient_timeout_gecx_unknown_iss_' ) . '%';
+            $gecx_options_table = $wpdb->prefix . 'options';
+            $gecx_esc_oauth     = ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( '_transient_gecx_oauth_state_' ) : '_transient_gecx_oauth_state_' ) . '%';
+            $gecx_esc_oauth_t   = ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( '_transient_timeout_gecx_oauth_state_' ) : '_transient_timeout_gecx_oauth_state_' ) . '%';
+            $gecx_esc_iss       = ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( '_transient_gecx_unknown_iss_' ) : '_transient_gecx_unknown_iss_' ) . '%';
+            $gecx_esc_iss_t     = ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( '_transient_timeout_gecx_unknown_iss_' ) : '_transient_timeout_gecx_unknown_iss_' ) . '%';
 
+            // Clean up unindexed transient rows from wp_options on non-object-cache stores.
+            // On persistent object cache stores (Redis/Memcached), transients expire by TTL
+            // while tracked transients were already evicted via delete_transient() above.
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
             $wpdb->query(
                 $wpdb->prepare(
-                    "DELETE FROM {$wpdb->prefix}options WHERE option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s",
+                    'DELETE FROM %i WHERE option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s',
+                    $gecx_options_table,
                     $gecx_esc_oauth,
                     $gecx_esc_oauth_t,
                     $gecx_esc_iss,
@@ -281,17 +286,25 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         }
 
         // Strip gecx_session_id from active WooCommerce customer session rows.
+        // Note: session_value LIKE '%gecx_session_id%' performs an unindexed full scan of
+        // woocommerce_sessions, acceptable only as a one-shot batch cleanup during uninstall.
         if ( isset( $wpdb ) && is_object( $wpdb ) && method_exists( $wpdb, 'get_results' ) && method_exists( $wpdb, 'update' ) && method_exists( $wpdb, 'prepare' ) ) {
             $gecx_sessions_table = $wpdb->prefix . 'woocommerce_sessions';
             $gecx_sessions_like  = '%' . ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( 'gecx_session_id' ) : 'gecx_session_id' ) . '%';
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-            $gecx_session_rows = $wpdb->get_results(
-                $wpdb->prepare(
-                    "SELECT session_key, session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_value LIKE %s LIMIT 500",
-                    $gecx_sessions_like
-                )
-            );
-            if ( is_array( $gecx_session_rows ) ) {
+            $gecx_batch_limit    = 500;
+            do {
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+                $gecx_session_rows = $wpdb->get_results(
+                    $wpdb->prepare(
+                        'SELECT session_key, session_value FROM %i WHERE session_value LIKE %s LIMIT %d',
+                        $gecx_sessions_table,
+                        $gecx_sessions_like,
+                        $gecx_batch_limit
+                    )
+                );
+                if ( ! is_array( $gecx_session_rows ) || empty( $gecx_session_rows ) ) {
+                    break;
+                }
                 foreach ( $gecx_session_rows as $gecx_row ) {
                     if ( ! isset( $gecx_row->session_key, $gecx_row->session_value ) || ! function_exists( 'maybe_unserialize' ) || ! function_exists( 'maybe_serialize' ) ) {
                         continue;
@@ -310,7 +323,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                         );
                     }
                 }
-            }
+                $gecx_fetched_count = count( $gecx_session_rows );
+            } while ( $gecx_fetched_count === $gecx_batch_limit );
         }
 
         // 4. Clear plugin post meta.

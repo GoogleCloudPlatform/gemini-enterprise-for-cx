@@ -559,6 +559,10 @@ class WebhookLifecycleTest extends TestCase {
         $this->assertSame( 33.33, $minimized['line_items'][0]['price'] );
     }
 
+    /**
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
     public function test_uninstall_cleans_up_transients_and_woocommerce_session_rows(): void {
         global $wpdb;
 

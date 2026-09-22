@@ -782,7 +782,7 @@ class GECX_Admin {
      */
     public function render_settings_page(): void {
         if ( ! current_user_can( 'manage_options' ) ) {
-            return;
+            wp_die( esc_html__( 'You do not have sufficient permissions to access this page.', 'gemini-enterprise-for-cx' ), 403 );
         }
 
         $current_agent = (string) get_option( 'gecx_agent_name', '' );
@@ -924,7 +924,7 @@ class GECX_Admin {
                 <div class="card" style="margin-top: 20px; padding: 28px 32px;">
                     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
                         <h2 style="margin: 0; display: flex; align-items: center; gap: 8px;">
-                            <span id="gecx-status-indicator" style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: <?php echo esc_attr( $embed_enabled ? '#46b450' : '#787c82' ); ?>;"></span>
+                            <span id="gecx-status-indicator" style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: <?php echo $embed_enabled ? '#46b450' : '#787c82'; ?>;"></span>
                             <span id="gecx-status-text">
                                 <?php echo $embed_enabled ? esc_html__( 'Connection Status: Active', 'gemini-enterprise-for-cx' ) : esc_html__( 'Connection Status: Inactive', 'gemini-enterprise-for-cx' ); ?>
                             </span>

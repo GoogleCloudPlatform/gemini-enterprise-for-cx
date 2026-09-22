@@ -1,7 +1,6 @@
 {
     "name": "google/gemini-enterprise-for-cx",
     "description": "Drive sales with an AI agent that's already an expert on your brand and products. Go live instantly on your WooCommerce storefront.",
-    "version": "0.3.16",
     "type": "wordpress-plugin",
     "license": "GPL-3.0-or-later",
     "homepage": "https://github.com/GoogleCloudPlatform/gemini-enterprise-for-cx",

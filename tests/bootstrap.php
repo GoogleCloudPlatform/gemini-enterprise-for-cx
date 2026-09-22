@@ -534,6 +534,19 @@ if ( ! function_exists( 'wc_get_order' ) ) {
     }
 }
 
+if ( ! defined( 'OBJECT' ) ) {
+    define( 'OBJECT', 'OBJECT' );
+}
+if ( ! defined( 'OBJECT_K' ) ) {
+    define( 'OBJECT_K', 'OBJECT_K' );
+}
+if ( ! defined( 'ARRAY_A' ) ) {
+    define( 'ARRAY_A', 'ARRAY_A' );
+}
+if ( ! defined( 'ARRAY_N' ) ) {
+    define( 'ARRAY_N', 'ARRAY_N' );
+}
+
 if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
     class GECX_Mock_WPDB {
         public string $prefix        = 'wp_';
@@ -628,15 +641,6 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
                                 $this->rows_affected++;
                             }
                         }
-                        foreach ( array_keys( $GLOBALS['gecx_test_transients'] ?? [] ) as $t_name ) {
-                            if (
-                                0 === strpos( '_transient_' . (string) $t_name, $prefix ) ||
-                                0 === strpos( '_transient_timeout_' . (string) $t_name, $prefix )
-                            ) {
-                                unset( $GLOBALS['gecx_test_transients'][ $t_name ] );
-                                $this->rows_affected++;
-                            }
-                        }
                     }
                 }
                 return $this->rows_affected;
@@ -645,7 +649,7 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
             return 0;
         }
 
-        public function get_results( string $query ): array {
+        public function get_results( string $query, string $output = OBJECT ): array {
             if ( false !== strpos( $query, 'woocommerce_sessions' ) && false !== strpos( $query, 'session_value LIKE' ) ) {
                 $results = [];
                 $keys    = array_unique(
@@ -1617,20 +1621,27 @@ if ( ! function_exists( 'wp_send_json_error' ) ) {
 
 if ( ! function_exists( 'set_transient' ) ) {
     function set_transient( string $transient, $value, int $expiration = 0 ): bool {
-        $GLOBALS['gecx_test_transients'][ $transient ] = $value;
+        $GLOBALS['gecx_test_options'][ '_transient_' . $transient ] = $value;
+        if ( $expiration > 0 ) {
+            $GLOBALS['gecx_test_options'][ '_transient_timeout_' . $transient ] = time() + $expiration;
+        }
         return true;
     }
 }
 
 if ( ! function_exists( 'get_transient' ) ) {
     function get_transient( string $transient ) {
-        return $GLOBALS['gecx_test_transients'][ $transient ] ?? false;
+        if ( isset( $GLOBALS['gecx_test_options'] ) && array_key_exists( '_transient_' . $transient, $GLOBALS['gecx_test_options'] ) ) {
+            return $GLOBALS['gecx_test_options'][ '_transient_' . $transient ];
+        }
+        return false;
     }
 }
 
 if ( ! function_exists( 'delete_transient' ) ) {
     function delete_transient( string $transient ): bool {
-        unset( $GLOBALS['gecx_test_transients'][ $transient ] );
+        unset( $GLOBALS['gecx_test_options'][ '_transient_' . $transient ] );
+        unset( $GLOBALS['gecx_test_options'][ '_transient_timeout_' . $transient ] );
         return true;
     }
 }

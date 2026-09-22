@@ -82,6 +82,34 @@ function gecxIsSameOriginUrl(candidateUrl) {
   }
 }
 
+let gecxCachedSessionTarget = null;
+
+/**
+ * Returns the lazily-parsed session REST endpoint target.
+ * @return {?{origin: string, route: ?string, normPath: string}}
+ */
+function gecxGetSessionTarget() {
+  if (gecxCachedSessionTarget !== null) {
+    return gecxCachedSessionTarget;
+  }
+  const rawUrl = gecxSessionRestUrl();
+  try {
+    const baseOrigin = (window.location && window.location.origin) ?
+        window.location.origin :
+        'https://localhost';
+    const target = new URL(rawUrl, baseOrigin);
+    const targetRoute = target.searchParams.get('rest_route');
+    gecxCachedSessionTarget = {
+      origin: target.origin,
+      route: targetRoute ? targetRoute.replace(/\/+$/, '') : null,
+      normPath: target.pathname.replace(/\/+$/, ''),
+    };
+  } catch (err) {
+    gecxCachedSessionTarget = null;
+  }
+  return gecxCachedSessionTarget;
+}
+
 /**
  * Checks whether a same-origin request URL targets a specific REST endpoint.
  * @param {string} candidateUrl
@@ -98,19 +126,17 @@ function gecxIsTargetEndpoint(candidateUrl, configuredUrl, fallbackPathRegex) {
         window.location.origin :
         'https://localhost';
     const candidate = new URL(candidateUrl, baseOrigin);
-    if (configuredUrl) {
-      const target = new URL(configuredUrl, baseOrigin);
+    const target = gecxGetSessionTarget();
+    if (target) {
       if (candidate.origin !== target.origin) {
         return false;
       }
-      const targetRoute = target.searchParams.get('rest_route');
-      if (targetRoute) {
+      if (target.route !== null) {
         const candidateRoute = candidate.searchParams.get('rest_route') || '';
-        return candidateRoute.replace(/\/+$/, '') === targetRoute.replace(/\/+$/, '');
+        return candidateRoute.replace(/\/+$/, '') === target.route;
       }
       const normCandidate = candidate.pathname.replace(/\/+$/, '');
-      const normTarget = target.pathname.replace(/\/+$/, '');
-      if (normCandidate === normTarget || normCandidate.indexOf(normTarget + '/') === 0) {
+      if (normCandidate === target.normPath || normCandidate.indexOf(target.normPath + '/') === 0) {
         return true;
       }
     }
@@ -124,7 +150,10 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
   const originalFetch = window.fetch;
   window.fetch = function(input, init) {
     const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+    // Fast path: avoid URL parsing on requests that cannot be the session endpoint.
     if (gecxLatestCartToken &&
+        url &&
+        (url.indexOf('session') !== -1 || url.indexOf('gecx') !== -1) &&
         gecxIsTargetEndpoint(url, gecxSessionRestUrl(), /\/gecx\/v1\/session(\b|$)/)) {
       init = Object.assign({}, init);
       if (typeof Headers !== 'undefined') {

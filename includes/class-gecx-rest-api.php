@@ -663,16 +663,7 @@ class GECX_Rest_API {
                     'type'              => 'string',
                     'required'          => false,
                     'validate_callback' => static function( $value ): bool {
-                        if ( ! is_string( $value ) ) {
-                            return false;
-                        }
-                        $trimmed = trim( $value );
-                        if ( '' === $trimmed ) {
-                            return true;
-                        }
-                        return class_exists( 'GECX_Auth' )
-                            && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' )
-                            && '' !== GECX_Auth::get_cart_token_customer_id( $trimmed );
+                        return is_string( $value );
                     },
                 ],
             ],
@@ -765,14 +756,13 @@ class GECX_Rest_API {
                 }
             }
         }
-        if ( '' !== $raw_cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
+        if ( '' !== $raw_cart_token ) {
             $candidate_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
             if ( '' !== $candidate_key ) {
-                $is_cart_token_auth = method_exists( 'GECX_Auth', 'is_cart_token_request' ) && GECX_Auth::is_cart_token_request();
                 $is_numeric_user_id = ctype_digit( $candidate_key );
                 $matches_user       = $is_numeric_user_id && '' !== $current_user_key && $candidate_key === $current_user_key;
                 $valid_guest_token  = ! $is_numeric_user_id && '' === $current_user_key;
-                if ( $is_cart_token_auth || $matches_user || $valid_guest_token ) {
+                if ( $matches_user || $valid_guest_token ) {
                     $session_key = $candidate_key;
                 }
             }
