@@ -1,0 +1,86 @@
+name: QIT
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qit:
+    name: WooCommerce QIT
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      NO_COLOR: 1
+      QIT_DISABLE_ONBOARDING: yes
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '7.4'
+          coverage: none
+
+      - name: Install dependencies
+        uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
+
+      - name: Build plugin ZIP
+        id: build
+        run: |
+          version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
+          mkdir -p dist
+          zip_path="dist/gemini-enterprise-for-cx-${version}.zip"
+          git archive --format=zip --prefix=gemini-enterprise-for-cx/ --output="${zip_path}" HEAD
+          echo "zip=${zip_path}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate ZIP with QIT
+        run: |
+          vendor/bin/qit woo:validate-zip "${{ steps.build.outputs.zip }}"
+
+      - name: Add QIT partner
+        id: partner
+        env:
+          PARTNER_USER: ${{ secrets.QIT_USER || secrets.PARTNER_USER }}
+          PARTNER_SECRET: ${{ secrets.QIT_ACCESS_TOKEN || secrets.PARTNER_SECRET }}
+        run: |
+          if [ -z "${PARTNER_USER}" ] || [ -z "${PARTNER_SECRET}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::QIT partner credentials (QIT_USER/PARTNER_USER, QIT_ACCESS_TOKEN/PARTNER_SECRET) not set. Skipping remote managed tests."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            vendor/bin/qit partner:add --user="${PARTNER_USER}" --application_password="${PARTNER_SECRET}"
+          fi
+
+      - name: Run QIT validation test
+        if: steps.partner.outputs.configured == 'true'
+        run: |
+          vendor/bin/qit run:validation gemini-enterprise-for-cx --zip="${{ steps.build.outputs.zip }}" --wait
+
+      - name: Run QIT security test
+        if: (success() || failure()) && steps.partner.outputs.configured == 'true'
+        run: |
+          vendor/bin/qit run:security gemini-enterprise-for-cx --zip="${{ steps.build.outputs.zip }}" --wait
+
+      - name: Run QIT activation test
+        if: (success() || failure()) && steps.partner.outputs.configured == 'true'
+        run: |
+          vendor/bin/qit run:activation gemini-enterprise-for-cx --zip="${{ steps.build.outputs.zip }}" --wait
+
+      - name: Upload plugin zip
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: qit-plugin-zip
+          path: dist/*.zip
+          if-no-files-found: ignore
+          retention-days: 7
