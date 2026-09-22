@@ -618,6 +618,54 @@ class AdminTest extends GECX_TestCase {
 
         $this->assertSame( '', $output );
     }
+
+    public function test_unlink_agent_returns_user_to_step_2_connect_store(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $_POST = [
+            'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
+        ];
+
+        $webhook = new WC_Webhook();
+        $webhook->set_name( 'GECX Agent Order Created' );
+        $webhook->set_topic( 'order.created' );
+        $webhook->set_secret( 'wh_secret_123' );
+        $webhook->set_status( 'active' );
+        $webhook_id = $webhook->save();
+
+        update_option( 'gecx_webhook_id', $webhook_id );
+        update_option( 'gecx_auth_complete', 1 );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_token_broker_name', 'broker-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+
+        // 1. Response for ajax_unlink_agent (/woocommerce/unlink-agent)
+        $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 200, '' );
+        // 2. Response for maybe_sync_with_backend during render_settings_page (/woocommerce/sync)
+        $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response(
+            200,
+            wp_json_encode( [ 'status' => 'WOOCOMMERCE_SYNC_STATUS_LINK_REQUIRED' ] )
+        );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->ajax_unlink_agent();
+
+        $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertFalse( get_option( 'gecx_agent_name' ) );
+        $this->assertSame( $webhook_id, get_option( 'gecx_webhook_id' ) );
+        $this->assertSame( 1, get_option( 'gecx_auth_complete' ) );
+
+        ob_start();
+        try {
+            $admin->render_settings_page();
+        } finally {
+            $html = ob_get_clean();
+        }
+
+        // Must render Step 2 (Connect Your Store to Google Cloud), not Step 1 (Authorize Store).
+        $this->assertStringContainsString( 'id="gecx-connect-btn"', $html );
+        $this->assertStringContainsString( 'Store Authorization Complete', $html );
+        $this->assertStringNotContainsString( 'id="gecx-authorize-btn"', $html );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {
