@@ -376,6 +376,7 @@ class AdminTest extends GECX_TestCase {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         delete_option( 'gecx_agent_name' );
         update_option( 'gecx_webhook_id', 4242 );
+        update_option( 'gecx_auth_complete', 1 );
 
         $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
 
@@ -503,6 +504,7 @@ class AdminTest extends GECX_TestCase {
         $_SERVER['REQUEST_METHOD']          = 'POST';
         $_POST['gecx_connect_nonce']        = 'valid_nonce_gecx_connect_agent_action';
         update_option( 'gecx_webhook_id', 4242 );
+        update_option( 'gecx_auth_complete', 1 );
 
         $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->handle_connect_agent_redirect();

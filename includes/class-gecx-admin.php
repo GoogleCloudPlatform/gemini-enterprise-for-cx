@@ -712,9 +712,8 @@ class GECX_Admin {
             admin_url( 'admin.php?page=gemini-enterprise-for-cx' )
         );
 
-        $has_store_credentials = ! empty( get_option( 'gecx_webhook_id' ) );
-        $is_authorized         = $has_store_credentials && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
-        $admin_jwt             = $is_authorized ? GECX_Auth::generate_admin_jwt() : '';
+        $is_authorized = (bool) get_option( self::AUTH_COMPLETE_OPTION, false ) && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
+        $admin_jwt     = $is_authorized ? GECX_Auth::generate_admin_jwt() : '';
 
         // rawurlencode() is required here: WordPress core's add_query_arg()
         // delegates to _http_build_query(..., false), which does NOT URL-encode
@@ -807,12 +806,10 @@ class GECX_Admin {
         $console_base = $this->get_console_base_url();
         $console_base = untrailingslashit( $console_base );
 
-        $has_store_credentials = ! empty( get_option( 'gecx_webhook_id' ) )
-            || (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
         // SyncState can report that Google can no longer use this store's
         // credentials. Treat that as unauthorized so the merchant is offered
         // the authorize step again instead of a dead end.
-        $is_authorized = $has_store_credentials && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
+        $is_authorized = (bool) get_option( self::AUTH_COMPLETE_OPTION, false ) && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
 
         $oauth_return_url = add_query_arg(
             [
@@ -1433,11 +1430,6 @@ class GECX_Admin {
         if ( 'WOOCOMMERCE_SYNC_STATUS_LINK_REQUIRED' !== $status ) {
             return;
         }
-
-        // LINK_REQUIRED is only returned after the backend verifies both the
-        // store's admin JWT and WooCommerce API keys, so any prior store auth
-        // invalidation is resolved.
-        delete_option( self::STORE_AUTH_INVALID_OPTION );
 
         // LINK_REQUIRED only means the local binding disagrees with the
         // backend, not that the store is unlinked. Reaching this point means
