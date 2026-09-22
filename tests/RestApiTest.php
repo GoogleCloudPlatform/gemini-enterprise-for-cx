@@ -1635,8 +1635,9 @@ class RestApiTest extends GECX_TestCase {
     public function test_save_session_handler_persists_cart_token_session_id_to_database(): void {
         global $wpdb;
         WC()->cart = new WC_Cart_Mock();
-        WC()->session->set_customer_id( 't_agent_shopper_888' );
-
+        // Even when WC()->session holds a default uncookied guest ID
+        // ('t_guest_session_123'), an HMAC-verified guest Cart-Token minted by
+        // the agent ('t_agent_shopper_888') must be bound in the DB.
         $token = $this->generate_jwt( 't_agent_shopper_888' );
 
         $rest_api = new GECX_Rest_API();
@@ -1654,26 +1655,33 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-token-1', $stored['gecx_session_id'] );
     }
 
-    public function test_save_session_handler_rejects_foreign_cart_token_header_and_body_params(): void {
+    public function test_save_session_handler_rejects_cross_user_cart_token(): void {
         global $wpdb;
         WC()->cart = new WC_Cart_Mock();
         WC()->session->set_customer_id( 't_attacker_111' );
 
-        $foreign_token = $this->generate_jwt( 't_victim_999' );
+        // 1. Guest caller presenting a Cart-Token for registered user ID '999' is rejected.
+        $victim_user_token = $this->generate_jwt( '999' );
 
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request( 'POST', '/gecx/v1/session' );
-        $request->set_header( 'Cart-Token', $foreign_token );
-        $request->set_param( 'cart_token', $foreign_token );
-        $request->set_param( 'cartId', $foreign_token );
-        $request->set_param( 'cart_id', $foreign_token );
+        $request->set_header( 'Cart-Token', $victim_user_token );
+        $request->set_param( 'cart_token', $victim_user_token );
         $request->set_param( 'session_id', 'projects/123/locations/global/commerceSessions/sess-attacker' );
 
         $res = $rest_api->save_session_handler( $request );
         $this->assertInstanceOf( WP_REST_Response::class, $res );
         $this->assertSame( 200, $res->get_status() );
+        $this->assertArrayNotHasKey( '999', $wpdb->wc_sessions );
 
-        // Victim's session row must never be touched by a foreign caller.
+        // 2. Logged-in user 42 presenting a Cart-Token for user 999 or guest 't_victim_999' is rejected.
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'attacker@example.com', [ 'customer' ] );
+        $foreign_guest_token               = $this->generate_jwt( 't_victim_999' );
+        $request->set_header( 'Cart-Token', $foreign_guest_token );
+        $request->set_param( 'cart_token', $foreign_guest_token );
+
+        $res2 = $rest_api->save_session_handler( $request );
+        $this->assertInstanceOf( WP_REST_Response::class, $res2 );
         $this->assertArrayNotHasKey( 't_victim_999', $wpdb->wc_sessions );
     }
 

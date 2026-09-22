@@ -736,11 +736,11 @@ class GECX_Rest_API {
         // `wp_rest` or `woocommerce-login-nonce`.
         self::set_session_cookie( $session_id );
 
-        // Resolve the caller's own session identity first. A Cart-Token header is
-        // only accepted when it authenticated the current request or names the
-        // same session key as the caller's active user / WooCommerce session,
-        // preventing a holder of another shopper's Cart-Token from writing into
-        // that shopper's woocommerce_sessions row.
+        // Resolve the WooCommerce session key. A cryptographically verified
+        // Cart-Token is accepted when it authenticated the Store API request,
+        // when it names a numeric user ID matching the logged-in user, or when
+        // the caller is an unauthenticated guest and the token names a guest
+        // session key minted by the agent via the Store API.
         $current_user_key = ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() )
             ? (string) get_current_user_id()
             : '';
@@ -756,13 +756,23 @@ class GECX_Rest_API {
         if ( '' === $raw_cart_token ) {
             $raw_cart_token = self::read_cart_token_from_server();
         }
+        if ( '' === $raw_cart_token ) {
+            foreach ( [ 'cart_token', 'cartId', 'cart_id' ] as $param_name ) {
+                $param_val = $request->get_param( $param_name );
+                if ( is_string( $param_val ) && '' !== trim( $param_val ) ) {
+                    $raw_cart_token = sanitize_text_field( $param_val );
+                    break;
+                }
+            }
+        }
         if ( '' !== $raw_cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
             $candidate_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
             if ( '' !== $candidate_key ) {
                 $is_cart_token_auth = method_exists( 'GECX_Auth', 'is_cart_token_request' ) && GECX_Auth::is_cart_token_request();
-                $matches_user       = '' !== $current_user_key && $candidate_key === $current_user_key;
-                $matches_wc_session = '' === $current_user_key && '' !== $wc_customer_key && $candidate_key === $wc_customer_key;
-                if ( $is_cart_token_auth || $matches_user || $matches_wc_session ) {
+                $is_numeric_user_id = ctype_digit( $candidate_key );
+                $matches_user       = $is_numeric_user_id && '' !== $current_user_key && $candidate_key === $current_user_key;
+                $valid_guest_token  = ! $is_numeric_user_id && '' === $current_user_key;
+                if ( $is_cart_token_auth || $matches_user || $valid_guest_token ) {
                     $session_key = $candidate_key;
                 }
             }

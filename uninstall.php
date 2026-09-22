@@ -287,7 +287,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
             $gecx_session_rows = $wpdb->get_results(
                 $wpdb->prepare(
-                    "SELECT session_key, session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_value LIKE %s",
+                    "SELECT session_key, session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_value LIKE %s LIMIT 500",
                     $gecx_sessions_like
                 )
             );

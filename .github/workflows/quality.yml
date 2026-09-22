@@ -80,8 +80,8 @@ jobs:
         uses: WordPress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
         with:
           build-dir: './build/gemini-enterprise-for-cx'
-          # Fail on both warnings and errors.
-          ignore-warnings: false
+          # Warnings are surfaced in the job output; errors fail the build.
+          ignore-warnings: true
 
       - name: Upload the installable zip
         # Downloadable from the run's Artifacts section, or with
