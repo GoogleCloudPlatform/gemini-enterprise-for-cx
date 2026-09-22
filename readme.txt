@@ -73,6 +73,12 @@ During merchant setup, store URL and WooCommerce API credentials are authenticat
 = Do I need an account to use this plugin? =
 Yes. You need a Google account with access to Gemini Enterprise for CX to configure and activate the agent on your store.
 
+== Screenshots ==
+
+1. Step 1: Authorize WooCommerce API permissions for the agent.
+2. Step 2: Connect your store to Google Cloud and link your agent.
+3. Manage agent connection status, storefront launcher placement, button style, and suggested prompts.
+
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.

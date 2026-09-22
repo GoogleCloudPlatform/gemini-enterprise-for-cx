@@ -8,3 +8,6 @@ README.md export-ignore
 composer.json export-ignore
 composer.lock export-ignore
 phpcs.xml.dist export-ignore
+assets/screenshot-*.png export-ignore
+.wordpress-org/ export-ignore
+
