@@ -58,7 +58,7 @@ jobs:
             echo "::notice::QIT partner credentials (QIT_USER/PARTNER_USER, QIT_ACCESS_TOKEN/PARTNER_SECRET) not set. Skipping remote managed tests."
           else
             echo "configured=true" >> "$GITHUB_OUTPUT"
-            vendor/bin/qit partner:add --user="${PARTNER_USER}" --application_password="${PARTNER_SECRET}"
+            vendor/bin/qit partner:add --user="${PARTNER_USER}" --qit_token="${PARTNER_SECRET}"
           fi
 
       - name: Run QIT validation test
