@@ -652,7 +652,7 @@ class GECX_Admin {
             'sanitize_callback' => 'sanitize_text_field',
         ] );
         register_setting( 'gecx_agent_group', 'gecx_floating_position', [
-            'sanitize_callback' => 'sanitize_text_field',
+            'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_floating_position' ],
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_display_style', [
             'sanitize_callback' => 'sanitize_text_field',
@@ -1010,7 +1010,10 @@ class GECX_Admin {
                             </th>
                             <td>
                                 <select id="gecx_button_floating_position" name="gecx_button_floating_position">
-                                    <option value="bottom_center" <?php selected( $floating_position, 'bottom_center' ); ?>><?php esc_html_e( 'Bottom Center (Default)', 'gemini-enterprise-for-cx' ); ?></option>
+                                    <option value="bottom_center" <?php selected( $floating_position, 'bottom_center' ); ?>><?php esc_html_e( 'Bottom Center', 'gemini-enterprise-for-cx' ); ?></option>
+                                    <option value="bottom_left" <?php selected( $floating_position, 'bottom_left' ); ?>><?php esc_html_e( 'Bottom Left', 'gemini-enterprise-for-cx' ); ?></option>
+                                    <option value="bottom_right" <?php selected( $floating_position, 'bottom_right' ); ?>><?php esc_html_e( 'Bottom Right', 'gemini-enterprise-for-cx' ); ?></option>
+                                    <option value="center_left" <?php selected( $floating_position, 'center_left' ); ?>><?php esc_html_e( 'Middle Left', 'gemini-enterprise-for-cx' ); ?></option>
                                     <option value="center_right" <?php selected( $floating_position, 'center_right' ); ?>><?php esc_html_e( 'Middle Right', 'gemini-enterprise-for-cx' ); ?></option>
                                 </select>
                             </td>
@@ -1091,7 +1094,7 @@ class GECX_Admin {
         }
 
         $placement      = isset( $_POST['placement'] ) && in_array( $_POST['placement'], [ 'nav_menu', 'floating' ], true ) ? sanitize_text_field( wp_unslash( $_POST['placement'] ) ) : 'nav_menu';
-        $floating_pos   = isset( $_POST['floating_position'] ) && in_array( $_POST['floating_position'], [ 'bottom_center', 'center_right' ], true ) ? sanitize_text_field( wp_unslash( $_POST['floating_position'] ) ) : 'bottom_center';
+        $floating_pos   = GECX_Storefront::sanitize_floating_position( isset( $_POST['floating_position'] ) ? sanitize_text_field( wp_unslash( $_POST['floating_position'] ) ) : null );
         $allowed_styles = [ 'responsive', 'icon-and-label', 'icon-only', 'label-only' ];
         $display_style  = isset( $_POST['display_style'] ) && in_array( $_POST['display_style'], $allowed_styles, true ) ? sanitize_text_field( wp_unslash( $_POST['display_style'] ) ) : 'responsive';
         $label          = isset( $_POST['label'] ) ? sanitize_text_field( wp_unslash( $_POST['label'] ) ) : '';

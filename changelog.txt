@@ -1,6 +1,9 @@
 *** Gemini Enterprise for CX Changelog ***
 
-2026-09-21 - version 0.3.16
+2026-09-22 - version 0.3.17
+* Add Bottom Right, Bottom Left, and Middle Left options for the floating launcher position.
+
+2026-09-22 - version 0.3.16
 * Add `gecx_should_load_widget` filter, `gecx_defer_widget_until_interaction` option, and `window.gecxLoadWidget` / `gecx:consent-granted` API so consent plugins or deferred-loading configurations can postpone loading the Google-hosted widget script until consent or keyboard/click interaction.
 * Mint the OAuth state and short-lived `admin_jwt` on demand via a POST form to `admin-post.php?action=gecx_connect_agent` instead of embedding them into `render_settings_page()` on every settings screen GET load.
 * Enforce subsite path isolation on `/wp-json/gecx/v1/auth-context` for subdirectory multisite installs using `get_site_by_path()` and `is_user_member_of_blog()`, downgrade requests whose `Referer` names no subsite path (the root blog homepage under the default `Referrer-Policy`) to a guest identity instead of rejecting them, and withhold widened WooCommerce API key capabilities before `rest_pre_dispatch`.

@@ -27,6 +27,29 @@ class GECX_Storefront {
     protected bool $pdp_prompts_injected = false;
 
     /**
+     * Allowed floating positions.
+     */
+    public const ALLOWED_FLOATING_POSITIONS = [ 'bottom_center', 'bottom_left', 'bottom_right', 'center_left', 'center_right' ];
+
+    /**
+     * Default floating position.
+     */
+    public const DEFAULT_FLOATING_POSITION = 'bottom_center';
+
+    /**
+     * Sanitize floating position to an allowed key.
+     *
+     * @param mixed $position Floating position input.
+     * @return string Sanitized position key.
+     */
+    public static function sanitize_floating_position( $position ): string {
+        if ( is_string( $position ) && in_array( $position, self::ALLOWED_FLOATING_POSITIONS, true ) ) {
+            return $position;
+        }
+        return self::DEFAULT_FLOATING_POSITION;
+    }
+
+    /**
      * Constructor.
      *
      * @param string $plugin_file Path to the main plugin file.
@@ -99,20 +122,20 @@ class GECX_Storefront {
             ' .gecx-mobile-header-button { display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; margin: 0 6px; align-self: center; height: auto; line-height: normal; }' .
             ' .gecx-mobile-header-button gecx-agent-button { display: inline-flex; align-items: center; vertical-align: middle; }' .
             ' .gecx-mobile-header-button.gecx-mobile-header-button--floating { position: fixed; bottom: 20px; right: 20px; z-index: 99999; margin: 0; height: auto; }' .
+            ' body.rtl .gecx-mobile-header-button.gecx-mobile-header-button--floating { right: auto; left: 20px; }' .
             ' chat-messenger.slide-over { position: fixed !important; }' .
             ' .gecx-floating-button-container { transition: transform 0.5s cubic-bezier(0.32, 0.72, 0, 1); }' .
             ' body.gecx-chat-no-transition .gecx-floating-button-container { transition: none !important; }' .
             ' @media (prefers-reduced-motion: reduce) { .gecx-floating-button-container { transition: none !important; } }' .
-            ' body.gecx-chat-open .gecx-floating-button-container--center-right, body:has(chat-messenger:not(.messenger-hidden)) .gecx-floating-button-container--center-right { display: none !important; }' .
+            ' body.gecx-chat-open .gecx-floating-button-container--center-right, body:has(chat-messenger:not(.messenger-hidden)) .gecx-floating-button-container--center-right,' .
+            ' body.gecx-chat-open .gecx-floating-button-container--bottom-right, body:has(chat-messenger:not(.messenger-hidden)) .gecx-floating-button-container--bottom-right { display: none !important; }' .
             ' @media (min-width: 600px) and (max-width: 839.98px) {' .
-            '   body.gecx-chat-open .gecx-floating-button-container--bottom-center, body:has(chat-messenger:not(.messenger-hidden)) .gecx-floating-button-container--bottom-center,' .
-            '   body.gecx-chat-open .gecx-floating-button-container:not(.gecx-floating-button-container--center-right), body:has(chat-messenger:not(.messenger-hidden)) .gecx-floating-button-container:not(.gecx-floating-button-container--center-right) {' .
+            '   body.gecx-chat-open .gecx-floating-button-container--bottom-center, body:has(chat-messenger:not(.messenger-hidden)) .gecx-floating-button-container--bottom-center {' .
             '     transform: translateX(calc(-50% - var(--gecx-chat-panel-width, 360px) / 2)) !important;' .
             '   }' .
             ' }' .
             ' @media (min-width: 840px) {' .
-            '   body.gecx-chat-open .gecx-floating-button-container--bottom-center, body:has(chat-messenger:not(.messenger-hidden)) .gecx-floating-button-container--bottom-center,' .
-            '   body.gecx-chat-open .gecx-floating-button-container:not(.gecx-floating-button-container--center-right), body:has(chat-messenger:not(.messenger-hidden)) .gecx-floating-button-container:not(.gecx-floating-button-container--center-right) {' .
+            '   body.gecx-chat-open .gecx-floating-button-container--bottom-center, body:has(chat-messenger:not(.messenger-hidden)) .gecx-floating-button-container--bottom-center {' .
             '     transform: translateX(calc(-50% - var(--gecx-chat-panel-width, clamp(0px, 412px, 50dvw)) / 2)) !important;' .
             '   }' .
             ' }' .
@@ -302,7 +325,7 @@ class GECX_Storefront {
         $rest_url      = esc_url( rest_url() );
         $token_broker  = $this->get_token_broker();
         $placement     = (string) get_option( 'gecx_button_placement', 'nav_menu' );
-        $floating_pos  = (string) get_option( 'gecx_floating_position', 'bottom_center' );
+        $floating_pos  = self::sanitize_floating_position( get_option( 'gecx_floating_position', self::DEFAULT_FLOATING_POSITION ) );
         ?>
         <?php if ( 'floating' === $placement ) : ?>
         <!-- Start Gemini Enterprise for CX Floating Button -->
@@ -554,10 +577,21 @@ class GECX_Storefront {
      * @param string $position Floating position key.
      * @return string Inline CSS string.
      */
-    protected function get_floating_container_style( string $position ): string {
+    public function get_floating_container_style( string $position ): string {
+        $position   = self::sanitize_floating_position( $position );
+        $is_rtl     = function_exists( 'is_rtl' ) && is_rtl();
+        $right_side = $is_rtl ? 'left' : 'right';
+        $left_side  = $is_rtl ? 'right' : 'left';
+
         switch ( $position ) {
+            case 'center_left':
+                return 'position: fixed; top: 50%; ' . $left_side . ': 0; transform: translateY(-50%); z-index: 999999;';
             case 'center_right':
-                return 'position: fixed; top: 50%; right: 0; transform: translateY(-50%); z-index: 999999;';
+                return 'position: fixed; top: 50%; ' . $right_side . ': 0; transform: translateY(-50%); z-index: 999999;';
+            case 'bottom_right':
+                return 'position: fixed; bottom: 20px; ' . $right_side . ': 20px; z-index: 999999;';
+            case 'bottom_left':
+                return 'position: fixed; bottom: 20px; ' . $left_side . ': 20px; z-index: 999999;';
             case 'bottom_center':
             default:
                 return 'position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 999999;';

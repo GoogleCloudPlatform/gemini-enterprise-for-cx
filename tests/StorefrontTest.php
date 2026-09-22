@@ -528,6 +528,10 @@ class StorefrontTest extends GECX_TestCase {
         $this->assertStringContainsString( '.gecx-floating-button-container { transition: transform 0.5s cubic-bezier(0.32, 0.72, 0, 1); }', $inline_styles );
         $this->assertStringContainsString( 'body.gecx-chat-no-transition .gecx-floating-button-container { transition: none !important; }', $inline_styles );
         $this->assertStringContainsString( 'body.gecx-chat-open .gecx-floating-button-container--center-right', $inline_styles );
+        $this->assertStringContainsString( 'body.gecx-chat-open .gecx-floating-button-container--bottom-right', $inline_styles );
+        $this->assertStringContainsString( 'body.gecx-chat-open .gecx-floating-button-container--bottom-center', $inline_styles );
+        $this->assertStringNotContainsString( ':not(.gecx-floating-button-container--center-right)', $inline_styles );
+        $this->assertStringContainsString( 'body.rtl .gecx-mobile-header-button.gecx-mobile-header-button--floating { right: auto; left: 20px; }', $inline_styles );
         $this->assertStringContainsString( 'var(--gecx-chat-panel-width, 360px)', $inline_styles );
         $this->assertStringContainsString( 'var(--gecx-chat-panel-width, clamp(0px, 412px, 50dvw))', $inline_styles );
         $this->assertStringContainsString( '@media (max-width: 599.98px)', $inline_styles );
@@ -549,6 +553,15 @@ class StorefrontTest extends GECX_TestCase {
         $this->assertStringContainsString( 'class="gecx-floating-button-container gecx-floating-button-container--bottom-center"', $html_bottom );
         $this->assertStringContainsString( 'position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);', $html_bottom );
 
+        // Bottom right (20px offset to align with mobile floating button)
+        update_option( 'gecx_floating_position', 'bottom_right' );
+        ob_start();
+        $storefront->inject_chat_widget();
+        $html_bottom_right = ob_get_clean();
+
+        $this->assertStringContainsString( 'class="gecx-floating-button-container gecx-floating-button-container--bottom-right"', $html_bottom_right );
+        $this->assertStringContainsString( 'position: fixed; bottom: 20px; right: 20px; z-index: 999999;', $html_bottom_right );
+
         // Center right
         update_option( 'gecx_floating_position', 'center_right' );
         ob_start();
@@ -557,6 +570,62 @@ class StorefrontTest extends GECX_TestCase {
 
         $this->assertStringContainsString( 'class="gecx-floating-button-container gecx-floating-button-container--center-right"', $html_right );
         $this->assertStringContainsString( 'position: fixed; top: 50%; right: 0; transform: translateY(-50%);', $html_right );
+
+        // Center left
+        update_option( 'gecx_floating_position', 'center_left' );
+        ob_start();
+        $storefront->inject_chat_widget();
+        $html_center_left = ob_get_clean();
+
+        $this->assertStringContainsString( 'class="gecx-floating-button-container gecx-floating-button-container--center-left"', $html_center_left );
+        $this->assertStringContainsString( 'position: fixed; top: 50%; left: 0; transform: translateY(-50%);', $html_center_left );
+
+        // Bottom left
+        update_option( 'gecx_floating_position', 'bottom_left' );
+        ob_start();
+        $storefront->inject_chat_widget();
+        $html_bottom_left = ob_get_clean();
+
+        $this->assertStringContainsString( 'class="gecx-floating-button-container gecx-floating-button-container--bottom-left"', $html_bottom_left );
+        $this->assertStringContainsString( 'position: fixed; bottom: 20px; left: 20px; z-index: 999999;', $html_bottom_left );
+
+        // Unknown stored option falls back to bottom_center
+        update_option( 'gecx_floating_position', 'unknown_invalid_position' );
+        ob_start();
+        $storefront->inject_chat_widget();
+        $html_unknown = ob_get_clean();
+
+        $this->assertStringContainsString( 'class="gecx-floating-button-container gecx-floating-button-container--bottom-center"', $html_unknown );
+        $this->assertStringContainsString( 'position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);', $html_unknown );
+
+        // RTL locales mirror horizontal placement
+        $GLOBALS['gecx_test_is_rtl'] = true;
+
+        update_option( 'gecx_floating_position', 'bottom_right' );
+        ob_start();
+        $storefront->inject_chat_widget();
+        $html_rtl_bottom_right = ob_get_clean();
+        $this->assertStringContainsString( 'position: fixed; bottom: 20px; left: 20px; z-index: 999999;', $html_rtl_bottom_right );
+
+        update_option( 'gecx_floating_position', 'bottom_left' );
+        ob_start();
+        $storefront->inject_chat_widget();
+        $html_rtl_bottom_left = ob_get_clean();
+        $this->assertStringContainsString( 'position: fixed; bottom: 20px; right: 20px; z-index: 999999;', $html_rtl_bottom_left );
+
+        update_option( 'gecx_floating_position', 'center_right' );
+        ob_start();
+        $storefront->inject_chat_widget();
+        $html_rtl_center_right = ob_get_clean();
+        $this->assertStringContainsString( 'position: fixed; top: 50%; left: 0; transform: translateY(-50%); z-index: 999999;', $html_rtl_center_right );
+
+        update_option( 'gecx_floating_position', 'center_left' );
+        ob_start();
+        $storefront->inject_chat_widget();
+        $html_rtl_center_left = ob_get_clean();
+        $this->assertStringContainsString( 'position: fixed; top: 50%; right: 0; transform: translateY(-50%); z-index: 999999;', $html_rtl_center_left );
+
+        $GLOBALS['gecx_test_is_rtl'] = false;
     }
     public function test_widget_stylesheet_is_served_from_the_plugin_directory(): void {
         $storefront = new StorefrontUrlProbe( dirname( __DIR__ ) . '/gecx-agent.php' );

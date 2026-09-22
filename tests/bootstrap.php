@@ -67,6 +67,7 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_is_product']           = false;
     $GLOBALS['gecx_test_is_cart']              = false;
     $GLOBALS['gecx_test_is_checkout']          = false;
+    $GLOBALS['gecx_test_is_rtl']               = false;
     $GLOBALS['gecx_test_the_id']               = 101;
     $GLOBALS['gecx_test_queried_object_id']    = 101;
     $GLOBALS['gecx_test_wp_salt']              = 'secret_salt';
@@ -1106,6 +1107,12 @@ if ( ! function_exists( 'restore_current_blog' ) ) {
 if ( ! function_exists( 'is_customize_preview' ) ) {
     function is_customize_preview(): bool {
         return false;
+    }
+}
+
+if ( ! function_exists( 'is_rtl' ) ) {
+    function is_rtl(): bool {
+        return ! empty( $GLOBALS['gecx_test_is_rtl'] );
     }
 }
 

@@ -37,10 +37,38 @@ class AdminTest extends GECX_TestCase {
         $this->assertEquals( 1, get_option( 'gecx_button_enable_shimmer' ) );
         $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
 
+        // Test bottom_right floating position.
+        $_POST['floating_position'] = 'bottom_right';
+        $admin->ajax_save_button_config();
+        $this->assertEquals( 'bottom_right', get_option( 'gecx_floating_position' ) );
+        $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+
+        // Test bottom_left floating position.
+        $_POST['floating_position'] = 'bottom_left';
+        $admin->ajax_save_button_config();
+        $this->assertEquals( 'bottom_left', get_option( 'gecx_floating_position' ) );
+        $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+
+        // Test center_left floating position.
+        $_POST['floating_position'] = 'center_left';
+        $admin->ajax_save_button_config();
+        $this->assertEquals( 'center_left', get_option( 'gecx_floating_position' ) );
+        $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+
+        // Test fallback to bottom_center on invalid floating_position.
+        $_POST['floating_position'] = 'invalid_pos';
+        $admin->ajax_save_button_config();
+        $this->assertEquals( 'bottom_center', get_option( 'gecx_floating_position' ) );
+        $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+
+        // Reset floating_position to valid state before testing subsequent fields.
+        $_POST['floating_position'] = 'bottom_center';
+
         // Test fallback to responsive on invalid display_style.
         $_POST['display_style'] = 'invalid_style';
         $admin->ajax_save_button_config();
         $this->assertEquals( 'responsive', get_option( 'gecx_button_display_style' ) );
+        $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
     }
 
     public function test_admin_ajax_toggle_app_embed(): void {
