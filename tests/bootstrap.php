@@ -1,6 +1,10 @@
 <?php
 // phpcs:ignoreFile -- Test bootstrap and mocks.
 /**
+ * Copyright 2026 Google LLC
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Test Bootstrap and WordPress Test Environment Mocks.
  */
 
@@ -60,7 +64,6 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_current_user']         = null;
     $GLOBALS['gecx_test_cookie_user_id']       = 0;
     $GLOBALS['gecx_test_users']                = [];
-    $GLOBALS['gecx_test_transients']           = [];
     $GLOBALS['gecx_test_last_redirect']        = null;
     $GLOBALS['gecx_test_last_json_response']   = null;
     $GLOBALS['gecx_test_post_meta']            = [];
@@ -129,8 +132,9 @@ function gecx_reset_test_globals(): void {
 
     $GLOBALS['gecx_test_home_url'] = 'https://example.com';
 
-    $_GET  = [];
-    $_POST = [];
+    $_GET     = [];
+    $_POST    = [];
+    $_REQUEST = [];
     // $_COOKIE drives the CSRF branch of check_admin_permissions(), so it is
     // reset here rather than by hand in the tests that set it.
     $_COOKIE = [];
@@ -529,6 +533,19 @@ if ( ! function_exists( 'wc_get_order' ) ) {
     }
 }
 
+if ( ! defined( 'OBJECT' ) ) {
+    define( 'OBJECT', 'OBJECT' );
+}
+if ( ! defined( 'OBJECT_K' ) ) {
+    define( 'OBJECT_K', 'OBJECT_K' );
+}
+if ( ! defined( 'ARRAY_A' ) ) {
+    define( 'ARRAY_A', 'ARRAY_A' );
+}
+if ( ! defined( 'ARRAY_N' ) ) {
+    define( 'ARRAY_N', 'ARRAY_N' );
+}
+
 if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
     class GECX_Mock_WPDB {
         public string $prefix        = 'wp_';
@@ -616,7 +633,7 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
             if ( false !== strpos( $query, 'DELETE FROM' ) && false !== strpos( $query, 'options' ) ) {
                 if ( preg_match_all( "/LIKE '([^']+)'/", $query, $likes ) ) {
                     foreach ( $likes[1] as $like_pattern ) {
-                        $prefix = str_replace( [ '\\_', '\\%', '%' ], [ '_', '%', '' ], $like_pattern );
+                        $prefix = str_replace( [ '\\_', '\\%', '%' ], [ '_', '%', '' ], stripslashes( $like_pattern ) );
                         foreach ( array_keys( $GLOBALS['gecx_test_options'] ?? [] ) as $opt_name ) {
                             if ( 0 === strpos( (string) $opt_name, $prefix ) ) {
                                 unset( $GLOBALS['gecx_test_options'][ $opt_name ] );
@@ -628,6 +645,44 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
                 return $this->rows_affected;
             }
 
+            return 0;
+        }
+
+        public function get_results( string $query, string $output = OBJECT ): array {
+            if ( false !== strpos( $query, 'woocommerce_sessions' ) && false !== strpos( $query, 'session_value LIKE' ) ) {
+                $results = [];
+                $keys    = array_unique(
+                    array_merge(
+                        array_keys( $this->wc_sessions ),
+                        array_keys( $GLOBALS['gecx_test_wc_sessions_table'] ?? [] )
+                    )
+                );
+                foreach ( $keys as $k ) {
+                    $val = $this->wc_sessions[ $k ] ?? ( $GLOBALS['gecx_test_wc_sessions_table'][ $k ]['session_value'] ?? null );
+                    if ( is_string( $val ) && false !== strpos( $val, 'gecx_session_id' ) ) {
+                        $results[] = (object) [
+                            'session_key'   => (string) $k,
+                            'session_value' => $val,
+                        ];
+                    }
+                }
+                return $results;
+            }
+            return [];
+        }
+
+        public function update( string $table, array $data, array $where, array $format = [], array $where_format = [] ): int {
+            if ( false !== strpos( $table, 'woocommerce_sessions' ) && isset( $where['session_key'], $data['session_value'] ) ) {
+                $key = (string) $where['session_key'];
+                $val = (string) $data['session_value'];
+                $this->wc_sessions[ $key ] = $val;
+                if ( isset( $GLOBALS['gecx_test_wc_sessions_table'][ $key ] ) ) {
+                    $GLOBALS['gecx_test_wc_sessions_table'][ $key ]['session_value'] = $val;
+                }
+                $this->rows_affected = 1;
+                return 1;
+            }
+            $this->rows_affected = 0;
             return 0;
         }
 
@@ -978,15 +1033,29 @@ if ( ! function_exists( 'apply_filters' ) ) {
     }
 }
 
-if ( ! function_exists( 'esc_url' ) ) {
-    function esc_url( string $url ): string {
-        return $url;
+if ( ! function_exists( 'esc_url_raw' ) ) {
+    function esc_url_raw( string $url ): string {
+        $clean = (string) preg_replace( '/[\x00-\x1F\x7F]+/', '', trim( $url ) );
+        if ( '' === $clean ) {
+            return '';
+        }
+        if ( preg_match( '/^([a-zA-Z][a-zA-Z0-9+.-]*):/', $clean, $m ) ) {
+            $scheme = strtolower( $m[1] );
+            if ( ! in_array( $scheme, [ 'http', 'https', 'mailto', 'tel' ], true ) ) {
+                return '';
+            }
+        }
+        return $clean;
     }
 }
 
-if ( ! function_exists( 'esc_url_raw' ) ) {
-    function esc_url_raw( string $url ): string {
-        return $url;
+if ( ! function_exists( 'esc_url' ) ) {
+    function esc_url( string $url ): string {
+        $clean = esc_url_raw( $url );
+        if ( '' === $clean ) {
+            return '';
+        }
+        return str_replace( [ '"', "'", '<', '>' ], [ '&quot;', '&#039;', '&lt;', '&gt;' ], $clean );
     }
 }
 
@@ -1128,9 +1197,12 @@ if ( ! function_exists( 'wp_create_nonce' ) ) {
 
 if ( ! function_exists( 'wp_verify_nonce' ) ) {
     function wp_verify_nonce( $nonce, $action = -1 ): bool {
-        $uid      = get_current_user_id();
+        $uid = get_current_user_id();
+        if ( ! $uid && function_exists( 'apply_filters' ) ) {
+            $uid = (int) apply_filters( 'nonce_user_logged_out', $uid, $action );
+        }
         $expected = $uid > 0 ? 'test_nonce_' . $action . '_u' . $uid : 'test_nonce_' . $action;
-        return $nonce === 'valid_nonce_' . $action || $nonce === $expected;
+        return is_string( $nonce ) && $nonce === $expected;
     }
 }
 
@@ -1155,7 +1227,22 @@ if ( ! function_exists( 'wp_http_validate_url' ) ) {
         if ( ! isset( $parsed['scheme'] ) || ! in_array( $parsed['scheme'], [ 'http', 'https' ], true ) ) {
             return false;
         }
+        if ( isset( $parsed['user'] ) || isset( $parsed['pass'] ) ) {
+            return false;
+        }
         if ( empty( $parsed['host'] ) ) {
+            return false;
+        }
+        $host = strtolower( trim( (string) $parsed['host'], '[]' ) );
+        if ( 'localhost' === $host || '.localhost' === substr( $host, -10 ) ) {
+            return false;
+        }
+        if ( false !== filter_var( $host, FILTER_VALIDATE_IP ) ) {
+            if ( false === filter_var( $host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE ) ) {
+                return false;
+            }
+        }
+        if ( isset( $parsed['port'] ) && ! in_array( (int) $parsed['port'], [ 80, 443, 8080 ], true ) ) {
             return false;
         }
         return $url;
@@ -1470,7 +1557,24 @@ if ( ! function_exists( 'add_query_arg' ) ) {
 
 if ( ! function_exists( 'wp_safe_redirect' ) ) {
     function wp_safe_redirect( string $location, int $status = 302 ): bool {
-        $GLOBALS['gecx_test_last_redirect'] = $location;
+        $clean = esc_url_raw( $location );
+        if ( '' === $clean ) {
+            return false;
+        }
+        $is_relative = ( 0 === strpos( $clean, '/' ) && 0 !== strpos( $clean, '//' ) );
+        if ( ! $is_relative ) {
+            $scheme      = strtolower( (string) wp_parse_url( $clean, PHP_URL_SCHEME ) );
+            $target_host = strtolower( (string) wp_parse_url( $clean, PHP_URL_HOST ) );
+            $home_host   = strtolower( (string) wp_parse_url( home_url(), PHP_URL_HOST ) );
+            $allowed     = [ $home_host ];
+            if ( function_exists( 'apply_filters' ) ) {
+                $allowed = array_map( 'strtolower', (array) apply_filters( 'allowed_redirect_hosts', $allowed, $target_host ) );
+            }
+            if ( ! in_array( $scheme, [ 'http', 'https' ], true ) || '' === $target_host || ! in_array( $target_host, $allowed, true ) ) {
+                return false;
+            }
+        }
+        $GLOBALS['gecx_test_last_redirect'] = $clean;
         return true;
     }
 }
@@ -1488,7 +1592,17 @@ if ( ! function_exists( 'register_setting' ) ) {
 
 if ( ! function_exists( 'check_ajax_referer' ) ) {
     function check_ajax_referer( $action = -1, $query_arg = false, $die = true ): bool {
-        return true;
+        $nonce = '';
+        if ( false !== $query_arg && is_string( $query_arg ) ) {
+            $nonce = $_REQUEST[ $query_arg ] ?? $_POST[ $query_arg ] ?? $_GET[ $query_arg ] ?? '';
+        } else {
+            $nonce = $_REQUEST['_ajax_nonce'] ?? $_POST['_ajax_nonce'] ?? $_GET['_ajax_nonce'] ?? $_REQUEST['_wpnonce'] ?? $_POST['_wpnonce'] ?? $_GET['_wpnonce'] ?? '';
+        }
+        $verified = wp_verify_nonce( is_string( $nonce ) ? $nonce : '', $action );
+        if ( ! $verified && $die ) {
+            wp_die( -1, 403 );
+        }
+        return $verified;
     }
 }
 
@@ -1506,20 +1620,27 @@ if ( ! function_exists( 'wp_send_json_error' ) ) {
 
 if ( ! function_exists( 'set_transient' ) ) {
     function set_transient( string $transient, $value, int $expiration = 0 ): bool {
-        $GLOBALS['gecx_test_transients'][ $transient ] = $value;
+        $GLOBALS['gecx_test_options'][ '_transient_' . $transient ] = $value;
+        if ( $expiration > 0 ) {
+            $GLOBALS['gecx_test_options'][ '_transient_timeout_' . $transient ] = time() + $expiration;
+        }
         return true;
     }
 }
 
 if ( ! function_exists( 'get_transient' ) ) {
     function get_transient( string $transient ) {
-        return $GLOBALS['gecx_test_transients'][ $transient ] ?? false;
+        if ( isset( $GLOBALS['gecx_test_options'] ) && array_key_exists( '_transient_' . $transient, $GLOBALS['gecx_test_options'] ) ) {
+            return $GLOBALS['gecx_test_options'][ '_transient_' . $transient ];
+        }
+        return false;
     }
 }
 
 if ( ! function_exists( 'delete_transient' ) ) {
     function delete_transient( string $transient ): bool {
-        unset( $GLOBALS['gecx_test_transients'][ $transient ] );
+        unset( $GLOBALS['gecx_test_options'][ '_transient_' . $transient ] );
+        unset( $GLOBALS['gecx_test_options'][ '_transient_timeout_' . $transient ] );
         return true;
     }
 }
@@ -1557,15 +1678,15 @@ if ( ! function_exists( 'wp_remote_get' ) ) {
 }
 
 /**
- * Mirrors core: wp_safe_remote_post() sets reject_unsafe_urls and delegates.
- *
- * Kept faithful rather than aliased so a test can tell the two variants apart
- * by inspecting the recorded args, which is the only observable difference
- * without a real HTTP transport.
+ * Mirrors core: wp_safe_remote_post() sets reject_unsafe_urls, validates the
+ * destination via wp_http_validate_url(), and delegates.
  */
 if ( ! function_exists( 'wp_safe_remote_post' ) ) {
     function wp_safe_remote_post( string $url, array $args = [] ) {
         $args['reject_unsafe_urls'] = true;
+        if ( false === wp_http_validate_url( $url ) ) {
+            return new WP_Error( 'http_request_not_executed', 'User has blocked requests through HTTP.' );
+        }
         return wp_remote_post( $url, $args );
     }
 }

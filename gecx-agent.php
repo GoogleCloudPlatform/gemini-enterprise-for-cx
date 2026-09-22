@@ -1,11 +1,20 @@
 <?php
 /**
+ * Copyright 2026 Google LLC
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Plugin Name: Gemini Enterprise for CX
  * Description: Drive sales with an AI agent that's already an expert on your brand and products. Go live instantly on your WooCommerce storefront.
  * Requires Plugins: woocommerce
  * Requires at least: 6.2
  * Requires PHP:     7.4
- * Version:          0.3.17
+ * Version:          0.3.18
  * Author:           Google LLC
  * Author URI:       https://cloud.google.com/gemini
  * License:          GPLv3
@@ -23,7 +32,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 if ( ! defined( 'GECX_VERSION' ) ) {
-    define( 'GECX_VERSION', '0.3.17' );
+    define( 'GECX_VERSION', '0.3.18' );
 }
 
 

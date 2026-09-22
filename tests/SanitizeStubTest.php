@@ -1,6 +1,10 @@
 <?php
 /**
- * Fidelity tests for the sanitize_text_field() stub in tests/bootstrap.php.
+ * Copyright 2026 Google LLC
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Fidelity tests for the sanitize_text_field() and security stubs in tests/bootstrap.php.
  *
  * The stub used to be trim( strip_tags() ). That is a reasonable-looking
  * approximation and it is wrong in a way that matters: it omits the
@@ -109,5 +113,42 @@ class SanitizeStubTest extends TestCase {
             sanitize_textarea_field( "line one\nline%20two" ),
             'Keeping newlines does not exempt a value from the percent-octet loop.'
         );
+    }
+
+    public function test_wp_verify_nonce_rejects_unscoped_valid_nonce_prefix(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 7, 'user7@example.com', [ 'administrator' ] );
+        $this->assertFalse( wp_verify_nonce( 'valid_nonce_wp_rest', 'wp_rest' ) );
+        $this->assertFalse( wp_verify_nonce( 'test_nonce_wp_rest_u99', 'wp_rest' ) );
+        $this->assertTrue( wp_verify_nonce( wp_create_nonce( 'wp_rest' ), 'wp_rest' ) );
+    }
+
+    public function test_wp_safe_redirect_blocks_external_hosts(): void {
+        $GLOBALS['gecx_test_home_url']      = 'https://example.com';
+        $GLOBALS['gecx_test_last_redirect'] = null;
+
+        $this->assertFalse( wp_safe_redirect( 'https://evil.example.org/phish' ) );
+        $this->assertNull( $GLOBALS['gecx_test_last_redirect'] );
+
+        $this->assertTrue( wp_safe_redirect( 'https://example.com/wp-admin/admin.php' ) );
+        $this->assertSame( 'https://example.com/wp-admin/admin.php', $GLOBALS['gecx_test_last_redirect'] );
+    }
+
+    public function test_wp_http_validate_url_and_safe_remote_post_reject_loopback_and_private_ips(): void {
+        $this->assertFalse( wp_http_validate_url( 'http://127.0.0.1/secret' ) );
+        $this->assertFalse( wp_http_validate_url( 'http://169.254.169.254/latest/meta-data/' ) );
+        $this->assertFalse( wp_http_validate_url( 'https://localhost/internal' ) );
+        $this->assertFalse( wp_http_validate_url( 'https://10.0.0.1/admin' ) );
+        $this->assertSame( 'https://gecx.cloud.google.com/woocommerce/webhook', wp_http_validate_url( 'https://gecx.cloud.google.com/woocommerce/webhook' ) );
+
+        $err = wp_safe_remote_post( 'http://169.254.169.254/latest/meta-data/' );
+        $this->assertInstanceOf( WP_Error::class, $err );
+        $this->assertSame( 'http_request_not_executed', $err->get_error_code() );
+    }
+
+    public function test_esc_url_and_esc_url_raw_reject_dangerous_schemes(): void {
+        $this->assertSame( '', esc_url( 'javascript:alert(1)' ) );
+        $this->assertSame( '', esc_url_raw( 'data:text/html,<script>alert(1)</script>' ) );
+        $this->assertSame( '', esc_url( 'vbscript:msgbox(1)' ) );
+        $this->assertSame( 'https://example.com/path?a=1&amp;b=&quot;2&quot;', esc_url( 'https://example.com/path?a=1&amp;b="2"' ) );
     }
 }

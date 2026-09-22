@@ -1,5 +1,9 @@
 <?php
 /**
+ * Copyright 2026 Google LLC
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * REST API Test Suite for Gemini Enterprise for Customer Experience (GECX)
  *
  * @package GECX
@@ -160,7 +164,7 @@ class RestApiTest extends GECX_TestCase {
 
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();
-        $request->set_header( 'X-WP-Nonce', 'valid_nonce_wp_rest' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
 
         $this->assertSame( true, $rest_api->check_admin_permissions( $request ) );
     }
@@ -210,7 +214,7 @@ class RestApiTest extends GECX_TestCase {
     public function test_session_route_check_session_permissions_success(): void {
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();
-        $request->set_header( 'X-WP-Nonce', 'valid_nonce_wp_rest' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
 
         $perm = $rest_api->check_session_permissions( $request );
         $this->assertSame( true, $perm );
@@ -231,7 +235,7 @@ class RestApiTest extends GECX_TestCase {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $rest_api                          = new GECX_Rest_API();
         $request                           = new WP_REST_Request();
-        $request->set_header( 'X-WP-Nonce', 'valid_nonce_wp_rest' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
 
         $perm = $rest_api->check_admin_permissions( $request );
         $this->assertSame( true, $perm );
@@ -253,7 +257,7 @@ class RestApiTest extends GECX_TestCase {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'user@example.com', [ 'customer' ] );
         $rest_api                          = new GECX_Rest_API();
         $request                           = new WP_REST_Request();
-        $request->set_header( 'X-WP-Nonce', 'valid_nonce_wp_rest' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
 
         $perm = $rest_api->check_admin_permissions( $request );
         $this->assertTrue( $perm instanceof WP_Error );
@@ -804,7 +808,7 @@ class RestApiTest extends GECX_TestCase {
 
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();
-        $request->set_header( 'X-WP-Nonce', 'valid_nonce_wp_rest' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
 
         $response = $rest_api->refresh_token_handler( $request );
         $this->assertTrue( $response instanceof WP_REST_Response );
@@ -821,7 +825,7 @@ class RestApiTest extends GECX_TestCase {
 
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();
-        $request->set_header( 'X-WP-Nonce', 'valid_nonce_wp_rest' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
 
         $response = $rest_api->refresh_token_handler( $request );
         $this->assertTrue( $response instanceof WP_REST_Response );
@@ -843,7 +847,7 @@ class RestApiTest extends GECX_TestCase {
 
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();
-        $request->set_header( 'X-WP-Nonce', 'valid_nonce_wp_rest' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
 
         $response = $rest_api->refresh_token_handler( $request );
         $this->assertTrue( $response instanceof WP_Error );
@@ -1631,7 +1635,9 @@ class RestApiTest extends GECX_TestCase {
     public function test_save_session_handler_persists_cart_token_session_id_to_database(): void {
         global $wpdb;
         WC()->cart = new WC_Cart_Mock();
-
+        // Even when WC()->session holds a default uncookied guest ID
+        // ('t_guest_session_123'), an HMAC-verified guest Cart-Token minted by
+        // the agent ('t_agent_shopper_888') must be bound in the DB.
         $token = $this->generate_jwt( 't_agent_shopper_888' );
 
         $rest_api = new GECX_Rest_API();
@@ -1647,6 +1653,72 @@ class RestApiTest extends GECX_TestCase {
         $this->assertArrayHasKey( 't_agent_shopper_888', $wpdb->wc_sessions );
         $stored = maybe_unserialize( $wpdb->wc_sessions['t_agent_shopper_888'] );
         $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-token-1', $stored['gecx_session_id'] );
+    }
+
+    public function test_save_session_handler_rejects_cross_user_cart_token(): void {
+        global $wpdb;
+        WC()->cart = new WC_Cart_Mock();
+        WC()->session->set_customer_id( 't_attacker_111' );
+
+        // 1. Guest caller presenting a Cart-Token for registered user ID '999' is rejected.
+        $victim_user_token = $this->generate_jwt( '999' );
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_header( 'Cart-Token', $victim_user_token );
+        $request->set_param( 'cart_token', $victim_user_token );
+        $request->set_param( 'session_id', 'projects/123/locations/global/commerceSessions/sess-attacker' );
+
+        $res = $rest_api->save_session_handler( $request );
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertArrayNotHasKey( '999', $wpdb->wc_sessions );
+
+        // 2. Logged-in user 42 presenting a Cart-Token for user 999 or guest 't_victim_999' is rejected.
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'attacker@example.com', [ 'customer' ] );
+        $foreign_guest_token               = $this->generate_jwt( 't_victim_999' );
+        $request->set_header( 'Cart-Token', $foreign_guest_token );
+        $request->set_param( 'cart_token', $foreign_guest_token );
+
+        $res2 = $rest_api->save_session_handler( $request );
+        $this->assertInstanceOf( WP_REST_Response::class, $res2 );
+        $this->assertArrayNotHasKey( 't_victim_999', $wpdb->wc_sessions );
+    }
+
+    public function test_session_endpoint_blocked_under_cart_token_auth(): void {
+        $_SERVER['REQUEST_URI']     = '/wp-json/wc/store/v1/cart';
+        $GLOBALS['gecx_test_users'] = [
+            456 => new WP_User( 456, 'shopper456@example.com', [ 'customer' ] ),
+        ];
+
+        $auth = new GECX_Auth();
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $this->assertSame( 456, $auth->authenticate_via_cart_token( 0 ) );
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $result  = $auth->block_cart_token_off_store_api( null, null, $request );
+
+        $this->assertInstanceOf( WP_Error::class, $result );
+        $this->assertSame( 'rest_forbidden', $result->get_error_code() );
+        $this->assertSame( 403, $result->get_error_data()['status'] ?? 0 );
+    }
+
+    public function test_save_session_handler_soft_ignores_invalid_or_expired_cart_token(): void {
+        global $wpdb;
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 12, 'shopper@example.com', [ 'customer' ] );
+
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', 'projects/123/locations/global/commerceSessions/sess-expired' );
+        $request->set_param( 'cart_token', 'invalid-or-expired-token' );
+
+        $res = $rest_api->save_session_handler( $request );
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+
+        $this->assertArrayHasKey( '12', $wpdb->wc_sessions );
+        $stored = maybe_unserialize( $wpdb->wc_sessions['12'] );
+        $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-expired', $stored['gecx_session_id'] );
     }
 
     public function test_sync_cart_session_bridges_cart_token_to_cookie_on_get_cart_with_items(): void {

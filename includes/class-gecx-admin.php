@@ -1,5 +1,14 @@
 <?php
 /**
+ * Copyright 2026 Google LLC
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Gemini Enterprise for CX Admin Handler
  */
 
@@ -30,16 +39,6 @@ class GECX_Admin {
      * Console path that releases this store's agent link on Google's side.
      */
     private const CONSOLE_UNLINK_AGENT_PATH = '/woocommerce/unlink-agent';
-
-    /**
-     * Characters permitted in an agent resource name or token broker name.
-     *
-     * Duplicated from GECX_Rest_API rather than shared. The two classes load
-     * independently and either can be the only one present, so a shared
-     * constant would introduce a load-order dependency for a one-line regex.
-     * Change both together.
-     */
-    private const RESOURCE_NAME_PATTERN = '/^[a-zA-Z0-9_\-\.\/]+$/';
 
     /**
      * Minimum number of seconds between automatic agent state syncs.
@@ -782,13 +781,18 @@ class GECX_Admin {
      * Render the native settings page.
      */
     public function render_settings_page(): void {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( esc_html__( 'You do not have sufficient permissions to access this page.', 'gemini-enterprise-for-cx' ), 403 );
+        }
+
         $current_agent = (string) get_option( 'gecx_agent_name', '' );
 
-        // Re-sync the binding status against the backend. This runs even when no
-        // agent is configured locally: the backend reports LINK_REQUIRED with a
-        // non-empty actual_linked_agent_id when it still holds a link, which is
-        // how a store that has drifted recovers its binding.
-        // Throttled so a slow backend cannot inflate TTFB on every page load.
+        // Re-sync the binding status against the backend on GET render.
+        // SyncState only reconciles local mirror options against the authoritative
+        // store-signed JWT response from Google Cloud (adopting or unlinking the
+        // binding Google already holds for this store's RSA keypair); no caller-
+        // controlled input is read from $_GET, and claim_sync_window() throttles
+        // requests to once per SYNC_THROTTLE_SECONDS.
         $this->sync_agent_state( $current_agent );
         // Reload agent in case the sync adopted or cleared the binding.
         $current_agent = (string) get_option( 'gecx_agent_name', '' );
@@ -1086,9 +1090,13 @@ class GECX_Admin {
      * AJAX handler to save storefront button placement, size, and styling options.
      */
     public function ajax_save_button_config(): void {
-        check_ajax_referer( 'gecx_save_agent_nonce', 'nonce' );
+        if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
+            wp_send_json_error( [ 'message' => 'Invalid nonce' ], 403 );
+            return;
+        }
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
+            return;
         }
 
         $placement      = isset( $_POST['placement'] ) && in_array( $_POST['placement'], [ 'nav_menu', 'floating' ], true ) ? sanitize_text_field( wp_unslash( $_POST['placement'] ) ) : 'nav_menu';
@@ -1113,9 +1121,13 @@ class GECX_Admin {
      * AJAX handler to toggle the storefront chat widget embed state.
      */
     public function ajax_toggle_app_embed(): void {
-        check_ajax_referer( 'gecx_save_agent_nonce', 'nonce' );
+        if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
+            wp_send_json_error( [ 'message' => 'Invalid nonce' ], 403 );
+            return;
+        }
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
+            return;
         }
 
         $enabled = isset( $_POST['enabled'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enabled'] ) ) ? 1 : 0;
@@ -1130,9 +1142,13 @@ class GECX_Admin {
      * AJAX handler to toggle the suggested PDP prompts state.
      */
     public function ajax_toggle_pdp_prompts(): void {
-        check_ajax_referer( 'gecx_save_agent_nonce', 'nonce' );
+        if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
+            wp_send_json_error( [ 'message' => 'Invalid nonce' ], 403 );
+            return;
+        }
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
+            return;
         }
 
         $enabled = isset( $_POST['enabled'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enabled'] ) ) ? 1 : 0;
@@ -1402,11 +1418,11 @@ class GECX_Admin {
         // same thing. Validated raw and rejected, never sanitized into shape:
         // stripping characters would turn a name this store should refuse into
         // one it silently adopts.
-        if ( '' !== $actual && ! preg_match( self::RESOURCE_NAME_PATTERN, $actual ) ) {
+        if ( '' !== $actual && ! preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, $actual ) ) {
             $this->log_sync( 'response agent id is not a valid resource name, ignoring' );
             return;
         }
-        if ( '' !== $actual_broker && ! preg_match( self::RESOURCE_NAME_PATTERN, $actual_broker ) ) {
+        if ( '' !== $actual_broker && ! preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, $actual_broker ) ) {
             $this->log_sync( 'response token broker is not a valid resource name, ignoring' );
             return;
         }
@@ -1593,9 +1609,13 @@ class GECX_Admin {
      * AJAX handler to unlink the agent and reset store status.
      */
     public function ajax_unlink_agent(): void {
-        check_ajax_referer( 'gecx_save_agent_nonce', 'nonce' );
+        if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
+            wp_send_json_error( [ 'message' => 'Invalid nonce' ], 403 );
+            return;
+        }
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
+            return;
         }
 
         $agent_id = (string) get_option( 'gecx_agent_name', '' );
@@ -1667,9 +1687,13 @@ class GECX_Admin {
      * AJAX handler to dismiss the activation notice.
      */
     public function ajax_dismiss_notice(): void {
-        check_ajax_referer( 'gecx_dismiss_notice_nonce', 'nonce' );
+        if ( false === check_ajax_referer( 'gecx_dismiss_notice_nonce', 'nonce', false ) ) {
+            wp_send_json_error( [ 'message' => 'Invalid nonce' ], 403 );
+            return;
+        }
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
+            return;
         }
         update_option( 'gecx_dismiss_activation_notice', true );
         wp_send_json_success();

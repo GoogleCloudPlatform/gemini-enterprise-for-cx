@@ -1,5 +1,9 @@
 <?php
 /**
+ * Copyright 2026 Google LLC
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * SyncState reconciliation tests for Gemini Enterprise for CX (GECX).
  *
  * Covers GECX_Admin::sync_agent_state() and the state changes it applies.

@@ -1,5 +1,9 @@
 <?php
 /**
+ * Copyright 2026 Google LLC
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Asserts that every place the plugin version is written agrees.
  *
  * WordPress.org serves whichever version the "Stable tag" in readme.txt names,

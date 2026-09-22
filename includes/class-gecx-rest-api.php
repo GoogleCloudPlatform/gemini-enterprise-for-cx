@@ -1,5 +1,14 @@
 <?php
 /**
+ * Copyright 2026 Google LLC
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * Gemini Enterprise for CX REST API and Session Handler
  */
 
@@ -653,6 +662,9 @@ class GECX_Rest_API {
                     'description'       => __( 'Optional WooCommerce Store API Cart-Token to associate the session ID with.', 'gemini-enterprise-for-cx' ),
                     'type'              => 'string',
                     'required'          => false,
+                    'validate_callback' => static function( $value ): bool {
+                        return is_string( $value );
+                    },
                 ],
             ],
         ] );
@@ -715,28 +727,53 @@ class GECX_Rest_API {
         // `wp_rest` or `woocommerce-login-nonce`.
         self::set_session_cookie( $session_id );
 
-        // Determine session key (Cart-Token, logged in user ID, or WC session customer ID)
+        // Resolve the WooCommerce session key. A cryptographically verified
+        // Cart-Token is accepted when it authenticated the Store API request,
+        // when it names a numeric user ID matching the logged-in user, or when
+        // the caller is an unauthenticated guest and the token names a guest
+        // session key minted by the agent via the Store API.
+        $current_user_key = ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() )
+            ? (string) get_current_user_id()
+            : '';
+        $wc_customer_key  = method_exists( WC()->session, 'get_customer_id' )
+            ? (string) WC()->session->get_customer_id()
+            : '';
+
         $session_key    = '';
         $raw_cart_token = (string) $request->get_header( 'Cart-Token' );
         if ( '' === $raw_cart_token && method_exists( $request, 'get_headers' ) ) {
             $raw_cart_token = $this->find_cart_token( $request->get_headers() );
         }
         if ( '' === $raw_cart_token ) {
-            $raw_cart_token = (string) ( $request->get_param( 'cart_token' ) ?? $request->get_param( 'cartId' ) ?? $request->get_param( 'cart_id' ) ?? '' );
-        }
-        if ( '' === $raw_cart_token ) {
             $raw_cart_token = self::read_cart_token_from_server();
         }
-        if ( '' !== $raw_cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
-            $session_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
+        if ( '' === $raw_cart_token ) {
+            foreach ( [ 'cart_token', 'cartId', 'cart_id' ] as $param_name ) {
+                $param_val = $request->get_param( $param_name );
+                if ( is_string( $param_val ) && '' !== trim( $param_val ) ) {
+                    $raw_cart_token = sanitize_text_field( $param_val );
+                    break;
+                }
+            }
+        }
+        if ( '' !== $raw_cart_token ) {
+            $candidate_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
+            if ( '' !== $candidate_key ) {
+                $is_numeric_user_id = ctype_digit( $candidate_key );
+                $matches_user       = $is_numeric_user_id && '' !== $current_user_key && $candidate_key === $current_user_key;
+                $valid_guest_token  = ! $is_numeric_user_id && '' === $current_user_key;
+                if ( $matches_user || $valid_guest_token ) {
+                    $session_key = $candidate_key;
+                }
+            }
         }
 
-        if ( empty( $session_key ) && function_exists( 'is_user_logged_in' ) && is_user_logged_in() ) {
-            $session_key = (string) get_current_user_id();
+        if ( empty( $session_key ) && '' !== $current_user_key ) {
+            $session_key = $current_user_key;
         }
 
-        if ( empty( $session_key ) && method_exists( WC()->session, 'get_customer_id' ) ) {
-            $session_key = (string) WC()->session->get_customer_id();
+        if ( empty( $session_key ) && '' !== $wc_customer_key ) {
+            $session_key = $wc_customer_key;
         }
 
         $has_active_session = self::has_woocommerce_session_cookie()
@@ -1303,7 +1340,7 @@ class GECX_Rest_API {
                     'required'          => true,
                     'validate_callback' => static function( $value ): bool {
                         $trimmed = is_string( $value ) ? trim( $value ) : '';
-                        return '' !== $trimmed && 1 === preg_match( self::RESOURCE_NAME_PATTERN, $trimmed );
+                        return '' !== $trimmed && 1 === preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, $trimmed );
                     },
                 ],
                 'token_broker_name' => [
@@ -1314,7 +1351,7 @@ class GECX_Rest_API {
                         if ( null === $value || '' === trim( (string) $value ) ) {
                             return true;
                         }
-                        return is_string( $value ) && 1 === preg_match( self::RESOURCE_NAME_PATTERN, trim( $value ) );
+                        return is_string( $value ) && 1 === preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, trim( $value ) );
                     },
                 ],
             ],
@@ -1322,31 +1359,23 @@ class GECX_Rest_API {
     }
 
     /**
-     * Pattern for a Google Cloud resource name.
-     *
-     * Duplicated from GECX_Admin rather than shared, to avoid making REST
-     * request handling depend on the admin class being loaded.
-     */
-    private const RESOURCE_NAME_PATTERN = '/^[a-zA-Z0-9_\-\.\/]+$/';
-
-    /**
      * Apply an agent link reported by Google Cloud.
      */
     public function link_agent_handler( \WP_REST_Request $request ) {
-        // Both values are validated raw against RESOURCE_NAME_PATTERN, a strict
-        // allowlist. sanitize_text_field() would run first and can only delete
-        // characters the allowlist rejects, so it turns a malformed name into a
-        // plausible one: "projects/123/agents/<script>alert(1)</script>" comes
-        // out of it as "projects/123/agents/", which matches the pattern and
-        // would be written to gecx_agent_name.
+        // Both values are validated raw against GECX_Auth::RESOURCE_NAME_PATTERN,
+        // a strict allowlist. sanitize_text_field() would run first and can only
+        // delete characters the allowlist rejects, so it turns a malformed name
+        // into a plausible one: "projects/123/agents/<script>alert(1)</script>"
+        // comes out of it as "projects/123/agents/", which matches the pattern
+        // and would be written to gecx_agent_name.
         $agent_name = trim( (string) $request->get_param( 'agent_name' ) );
 
-        if ( '' === $agent_name || ! preg_match( self::RESOURCE_NAME_PATTERN, $agent_name ) ) {
+        if ( '' === $agent_name || ! preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, $agent_name ) ) {
             return new \WP_Error( 'gecx_invalid_agent_name', __( 'Missing or malformed agent_name.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 
         $token_broker = trim( (string) $request->get_param( 'token_broker_name' ) );
-        if ( '' !== $token_broker && ! preg_match( self::RESOURCE_NAME_PATTERN, $token_broker ) ) {
+        if ( '' !== $token_broker && ! preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, $token_broker ) ) {
             return new \WP_Error( 'gecx_invalid_token_broker', __( 'Malformed token_broker_name.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 

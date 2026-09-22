@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.17
+Stable tag: 0.3.18
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -73,9 +73,25 @@ During merchant setup, store URL and WooCommerce API credentials are authenticat
 = Do I need an account to use this plugin? =
 Yes. You need a Google account with access to Gemini Enterprise for CX to configure and activate the agent on your store.
 
+== Screenshots ==
+
+1. Step 1: Authorize WooCommerce API permissions for the agent.
+2. Step 2: Connect your store to Google Cloud and link your agent.
+3. Manage agent connection status, storefront launcher placement, button style, and suggested prompts.
+
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.18 =
+* Support Cart-Token capture and session rebind on plain-permalink WordPress stores.
+* Soft-ignore invalid or expired cart tokens during session save while strictly blocking privileged endpoints under cart-token authentication.
+* Cache guest JWTs using public key fingerprinting and single-pass keypair retrieval to avoid redundant asymmetric decryption.
+* Improve uninstall cleanup by bounding session table sweeps and ensuring clean termination even with corrupt session data.
+* Update WordPress.org directory assets and screenshot documentation.
+
+= 0.3.17 =
+* Add Bottom Right, Bottom Left, and Middle Left options for the floating launcher position.
 
 = 0.3.16 =
 * Add `gecx_should_load_widget` filter, `gecx_defer_widget_until_interaction` option, and `window.gecxLoadWidget` / `gecx:consent-granted` API for consent gating and interaction-deferred widget script loading.
