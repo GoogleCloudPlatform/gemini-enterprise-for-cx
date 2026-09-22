@@ -323,7 +323,9 @@ class WebhookLifecycleTest extends TestCase {
         $this->assertSame( $webhook_id, get_option( 'gecx_webhook_id' ) );
     }
 
-    public function test_uninstall_deletes_row_and_extracts_secret_without_woocommerce(): void {
+    public function test_uninstall_deletes_row_and_notifies_with_bearer_without_woocommerce(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        GECX_Auth::get_or_generate_keypair();
         $webhook_id = $this->create_gecx_webhook( 'active', 'wh_db_secret_789' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         delete_option( 'gecx_api_secret' );
@@ -340,15 +342,15 @@ class WebhookLifecycleTest extends TestCase {
         $this->assertArrayNotHasKey( $webhook_id, $GLOBALS['gecx_test_webhooks'] );
         $this->assertFalse( get_option( 'gecx_webhook_id' ) );
 
-        // Verify that the uninstall webhook notification was sent and signed using the secret extracted via $wpdb
+        // Verify that the uninstall webhook notification was sent using the RS256 Bearer JWT without X-WC-Webhook-Signature
         $this->assertTrue( ! empty( $GLOBALS['gecx_test_http_requests'] ) );
         $last_req = end( $GLOBALS['gecx_test_http_requests'] );
         $this->assertSame( 'plugin/uninstalled', $last_req['args']['headers']['X-WC-Webhook-Topic'] );
-        $expected_sig = base64_encode( hash_hmac( 'sha256', $last_req['args']['body'], 'wh_db_secret_789', true ) );
-        $this->assertSame( $expected_sig, $last_req['args']['headers']['X-WC-Webhook-Signature'] );
+        $this->assertTrue( isset( $last_req['args']['headers']['Authorization'] ) );
+        $this->assertArrayNotHasKey( 'X-WC-Webhook-Signature', $last_req['args']['headers'] );
     }
 
-    public function test_uninstall_sends_a_bearer_jwt_alongside_the_hmac_signature(): void {
+    public function test_uninstall_sends_bearer_jwt_without_hmac_signature(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         GECX_Auth::get_or_generate_keypair();
         $this->create_gecx_webhook( 'active', 'wh_db_secret_789' );
@@ -363,9 +365,10 @@ class WebhookLifecycleTest extends TestCase {
         $last_req = end( $GLOBALS['gecx_test_http_requests'] );
         $headers  = $last_req['args']['headers'];
 
-        // The JWT is what the backend authenticates on.
+        // The RS256 Bearer JWT is the sole credential on plugin/uninstalled.
         $this->assertTrue( isset( $headers['Authorization'] ) );
         $this->assertSame( 0, strpos( $headers['Authorization'], 'Bearer ' ) );
+        $this->assertArrayNotHasKey( 'X-WC-Webhook-Signature', $headers );
 
         $jwt   = substr( $headers['Authorization'], strlen( 'Bearer ' ) );
         $parts = explode( '.', $jwt );
@@ -379,16 +382,9 @@ class WebhookLifecycleTest extends TestCase {
         $this->assertSame( 'gecx.cloud.google.com', $claims['aud'] );
         $this->assertTrue( $claims['is_admin'] );
         $this->assertTrue( $claims['exp'] > $claims['iat'] );
-
-        // The legacy signature stays until the backend drops that path.
-        $expected_sig = base64_encode( hash_hmac( 'sha256', $last_req['args']['body'], 'wh_db_secret_789', true ) );
-        $this->assertSame( $expected_sig, $headers['X-WC-Webhook-Signature'] );
     }
 
     public function test_uninstall_notifies_with_the_jwt_when_the_api_secret_is_gone(): void {
-        // A store that has been unlinked no longer holds an API secret or an
-        // order webhook, so the HMAC path has nothing to sign with. The
-        // uninstall still has to reach the backend using the existing RS256 keypair.
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         GECX_Auth::get_or_generate_keypair();
         delete_option( 'gecx_api_secret' );
@@ -429,7 +425,7 @@ class WebhookLifecycleTest extends TestCase {
         $this->assertFalse( get_option( 'gecx_keypair' ) );
     }
 
-    public function test_uninstall_omits_authorization_header_when_stored_keypair_is_corrupt(): void {
+    public function test_uninstall_skips_notification_when_stored_keypair_is_corrupt(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $this->create_gecx_webhook( 'active', 'wh_db_secret_789' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
@@ -449,15 +445,9 @@ class WebhookLifecycleTest extends TestCase {
 
         include dirname( __DIR__ ) . '/uninstall.php';
 
-        $this->assertTrue( ! empty( $GLOBALS['gecx_test_http_requests'] ) );
-        $last_req = end( $GLOBALS['gecx_test_http_requests'] );
-        $headers  = $last_req['args']['headers'];
-
-        // Must NOT attach an unverified/freshly-minted or HS256 Authorization header,
-        // which would cause backend VerifyUninstallAuth to fail before accepting the valid HMAC.
-        $this->assertArrayNotHasKey( 'Authorization', $headers );
-        $expected_sig = base64_encode( hash_hmac( 'sha256', $last_req['args']['body'], 'wh_db_secret_789', true ) );
-        $this->assertSame( $expected_sig, $headers['X-WC-Webhook-Signature'] );
+        // Without a readable RS256 private key, uninstall must not mint an
+        // ephemeral keypair or send an unauthenticated request.
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
     }
 
     public function test_delivery_suppressed_with_alphanumeric_or_raw_session_id(): void {

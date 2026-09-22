@@ -64,9 +64,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         $gecx_console_url = get_option( 'gecx_console_base_url', 'https://gecx.cloud.google.com' );
         $gecx_store_url   = function_exists( 'home_url' ) ? home_url() : '';
 
-        // 1. Retrieve secret from webhook if available, then delete the webhook.
+        // 1. Delete the order.created webhook if present.
         $gecx_webhook_id   = get_option( 'gecx_webhook_id' );
-        $gecx_secret       = '';
         $gecx_wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
 
         if ( $gecx_wc_available ) {
@@ -74,7 +73,6 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                 try {
                     $gecx_webhook = new \WC_Webhook( (int) $gecx_webhook_id );
                     if ( $gecx_webhook->get_id() ) {
-                        $gecx_secret = $gecx_webhook->get_secret();
                         $gecx_webhook->delete( true );
                     }
                 } catch ( \Exception $e ) {
@@ -95,9 +93,6 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                     if ( is_array( $gecx_webhooks ) ) {
                         foreach ( $gecx_webhooks as $gecx_candidate ) {
                             if ( $gecx_candidate instanceof \WC_Webhook && 'order.created' === $gecx_candidate->get_topic() && 'GECX Agent Order Created' === $gecx_candidate->get_name() ) {
-                                if ( empty( $gecx_secret ) ) {
-                                    $gecx_secret = $gecx_candidate->get_secret();
-                                }
                                 $gecx_candidate->delete( true );
                             }
                         }
@@ -121,19 +116,6 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             }
             if ( $gecx_table_exists ) {
                 if ( ! empty( $gecx_webhook_id ) ) {
-                    if ( empty( $gecx_secret ) && method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) ) {
-                        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                        $gecx_found_secret = $wpdb->get_var(
-                            $wpdb->prepare(
-                                'SELECT secret FROM %i WHERE webhook_id = %d',
-                                $gecx_table_name,
-                                (int) $gecx_webhook_id
-                            )
-                        );
-                        if ( ! empty( $gecx_found_secret ) ) {
-                            $gecx_secret = (string) $gecx_found_secret;
-                        }
-                    }
                     if ( method_exists( $wpdb, 'delete' ) ) {
                         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
                         $wpdb->delete( $gecx_table_name, [ 'webhook_id' => (int) $gecx_webhook_id ], [ '%d' ] );
@@ -143,20 +125,6 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                     }
                 }
 
-                if ( empty( $gecx_secret ) && method_exists( $wpdb, 'get_var' ) && method_exists( $wpdb, 'prepare' ) ) {
-                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                    $gecx_found_secret = $wpdb->get_var(
-                        $wpdb->prepare(
-                            'SELECT secret FROM %i WHERE name = %s AND topic = %s LIMIT 1',
-                            $gecx_table_name,
-                            'GECX Agent Order Created',
-                            'order.created'
-                        )
-                    );
-                    if ( ! empty( $gecx_found_secret ) ) {
-                        $gecx_secret = (string) $gecx_found_secret;
-                    }
-                }
                 if ( method_exists( $wpdb, 'delete' ) ) {
                     // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
                     $wpdb->delete(
@@ -178,28 +146,13 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         }
         delete_option( 'gecx_webhook_id' );
 
-        // 2. Notify Google Backend.
+        // 2. Notify Google Backend via RS256 Bearer JWT.
         //
-        // The HMAC signature is derived from the WooCommerce webhook secret,
-        // which is symmetric and readable from the backend's own storage, so on
-        // its own it lets anyone who reads that storage forge an uninstall and
-        // delete a merchant's installation. The store-signed RS256 JWT closes
-        // that, and is what the backend is moving to; today's deployed handler
-        // still requires the signature and ignores the Authorization header.
-        //
-        // Both are sent. Dropping the signature would break every backend that
-        // has not picked up the JWT path yet, and dropping the JWT would leave
-        // the forgery open, so they overlap until the legacy path is removed.
-        // Only notify Google if this site was actually connected. Calling
-        // generate_admin_jwt() unconditionally would generate a fresh 2048-bit
-        // RSA keypair on every unconnected site (and every Multisite subsite)
-        // and send its domain + admin email to Google on plugin deletion.
-        // Furthermore, during uninstall the store's public-key endpoint is
-        // about to be torn down, so a newly minted RSA keypair would fail
-        // backend JWT verification and cause VerifyUninstallAuth to reject an
-        // otherwise valid HMAC-signed uninstall webhook.
-        $gecx_was_connected = ! empty( $gecx_secret )
-            || ! empty( $gecx_agent_name )
+        // Only notify Google if this site was actually connected and holds a
+        // valid RSA keypair. Calling generate_admin_jwt() unconditionally would
+        // generate a fresh 2048-bit RSA keypair on every unconnected site (and
+        // every Multisite subsite) whose public key is unknown to the backend.
+        $gecx_was_connected = ! empty( $gecx_agent_name )
             || ! empty( get_option( 'gecx_keypair' ) )
             // Pre-0.3.15 layout, for a store uninstalled before anything read
             // the keypair and migrated it.
@@ -211,7 +164,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             $gecx_jwt = (string) GECX_Auth::generate_existing_rs256_admin_jwt();
         }
 
-        if ( $gecx_was_connected && ( ! empty( $gecx_jwt ) || ! empty( $gecx_secret ) ) && ! empty( $gecx_store_url ) ) {
+        if ( $gecx_was_connected && ! empty( $gecx_jwt ) && ! empty( $gecx_store_url ) ) {
             $gecx_payload_data = [ 'event' => 'uninstall' ];
             if ( ! empty( $gecx_agent_name ) ) {
                 $gecx_payload_data['agent_name'] = $gecx_agent_name;
@@ -222,15 +175,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                 'Content-Type'        => 'application/json',
                 'X-WC-Webhook-Source' => $gecx_store_url,
                 'X-WC-Webhook-Topic'  => 'plugin/uninstalled',
+                'Authorization'       => 'Bearer ' . $gecx_jwt,
             ];
-            if ( ! empty( $gecx_secret ) ) {
-                // Our C++ Backend relies on a standard HMAC-SHA256 signature, base64 encoded.
-                // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- standard base64 HMAC signature encoding, not obfuscation.
-                $gecx_headers['X-WC-Webhook-Signature'] = base64_encode( hash_hmac( 'sha256', $gecx_payload, $gecx_secret, true ) );
-            }
-            if ( ! empty( $gecx_jwt ) ) {
-                $gecx_headers['Authorization'] = 'Bearer ' . $gecx_jwt;
-            }
 
             $gecx_webhook_url = esc_url_raw( rtrim( (string) $gecx_console_url, '/' ) . '/woocommerce/webhook' );
             $gecx_scheme      = (string) wp_parse_url( $gecx_webhook_url, PHP_URL_SCHEME );
@@ -243,18 +189,9 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                     GECX_Auth::log( 'Uninstall notification skipped for ' . $gecx_store_url . ': too little of the notification time budget remains to complete a request.', 'warning' );
                 }
             } elseif ( 'https' === $gecx_scheme && ( function_exists( 'wp_http_validate_url' ) ? wp_http_validate_url( $gecx_webhook_url ) : filter_var( $gecx_webhook_url, FILTER_VALIDATE_URL ) ) ) {
-                if ( empty( $gecx_secret ) && class_exists( 'GECX_Auth' ) ) {
-                    // Sent JWT-only. Whether the backend accepts it depends on
-                    // the backend's deployed version, so this is recorded
-                    // rather than skipped: suppressing the request here would
-                    // permanently opt this store out of the JWT-only path on
-                    // every backend that does support it.
-                    GECX_Auth::log( 'Uninstall notification for ' . $gecx_store_url . ' carries no webhook secret and is signed only with the store JWT; older backends will reject it and the installation entry will survive.', 'warning' );
-                }
-
                 // Bounded at $gecx_notify_timeout_seconds for this site, and at
                 // $gecx_notify_budget_seconds across the whole network. Only
-                // sites that hold a credential reach this.
+                // sites that hold a store-signed RS256 JWT reach this.
                 //
                 // wp_safe_remote_post() rather than wp_remote_post(), matching
                 // the two GECX_Admin call sites: the destination comes from an
