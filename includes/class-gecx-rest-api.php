@@ -1222,6 +1222,7 @@ class GECX_Rest_API {
             };
             add_filter( 'nonce_user_logged_out', $nonce_user_filter, 999, 2 );
         } elseif ( $current_user_id > 0 && 0 === $effective_user_id && function_exists( 'wp_set_current_user' ) ) {
+            // phpcs:ignore Generic.PHP.ForbiddenFunctions.Discouraged, Generic.PHP.ForbiddenFunctions.Found -- Temporarily isolate non-member or untrusted multisite user as guest so wp_create_nonce() mints a logged-out guest nonce.
             wp_set_current_user( 0 );
             $temporarily_cleared_user = true;
         }
@@ -1238,6 +1239,7 @@ class GECX_Rest_API {
                 remove_filter( 'nonce_user_logged_out', $nonce_user_filter, 999 );
             }
             if ( $temporarily_cleared_user && function_exists( 'wp_set_current_user' ) ) {
+                // phpcs:ignore Generic.PHP.ForbiddenFunctions.Discouraged, Generic.PHP.ForbiddenFunctions.Found -- Restore previously active user context after minting guest nonce.
                 wp_set_current_user( $current_user_id );
             }
         }
