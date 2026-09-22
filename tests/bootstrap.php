@@ -118,6 +118,8 @@ function gecx_reset_test_globals(): void {
 
     $GLOBALS['gecx_test_enqueued_styles']  = [];
     $GLOBALS['gecx_test_enqueued_scripts'] = [];
+    $GLOBALS['gecx_test_current_screen']   = null;
+    unset( $GLOBALS['hook_suffix'] );
 
     // Route resolution state. Tests that set this must not leak it into the
     // next test, which would silently change which branch of
@@ -1209,6 +1211,40 @@ if ( ! function_exists( 'add_action' ) ) {
     function add_action( string $hook_name, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
         $GLOBALS['gecx_test_action_callbacks'][ $hook_name ] = $callback;
         return true;
+    }
+}
+
+if ( ! class_exists( 'WP_Screen' ) ) {
+    class WP_Screen {
+        public string $id = '';
+        public string $base = '';
+
+        public function __construct( string $id = '' ) {
+            $this->id   = $id;
+            $this->base = $id;
+        }
+    }
+}
+
+if ( ! function_exists( 'get_current_screen' ) ) {
+    function get_current_screen() {
+        return $GLOBALS['gecx_test_current_screen'] ?? null;
+    }
+}
+
+if ( ! function_exists( 'set_current_screen' ) ) {
+    function set_current_screen( $screen = null ): void {
+        if ( is_string( $screen ) ) {
+            $GLOBALS['gecx_test_current_screen'] = new WP_Screen( $screen );
+        } elseif ( $screen instanceof WP_Screen || is_null( $screen ) ) {
+            $GLOBALS['gecx_test_current_screen'] = $screen;
+        }
+    }
+}
+
+if ( ! function_exists( 'add_submenu_page' ) ) {
+    function add_submenu_page( $parent_slug, $page_title, $menu_title, $capability, $menu_slug, $callback = '', $position = null ) {
+        return 'marketing_page_' . $menu_slug;
     }
 }
 
