@@ -1,2 +1,5 @@
 .phpunit.result.cache
+.wp-env.json
+clover.xml
+coverage.txt
 vendor/

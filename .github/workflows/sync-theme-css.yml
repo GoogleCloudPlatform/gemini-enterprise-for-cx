@@ -25,12 +25,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Fetch production theme.css
+      - name: Check upstream SHA-256 and rebuild theme.css on drift
+        id: drift
         run: |
-          mkdir -p assets/css
-          curl -fsSL https://www.gstatic.com/gecx/chat-widget/theme.css -o assets/css/theme.css
+          python3 .github/scripts/sync-theme-css.py
+          if git diff --quiet -- assets/css/theme.css; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create Pull Request if updated
+        if: steps.drift.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6.1.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -40,5 +46,7 @@ jobs:
           branch: "automated/sync-theme-css"
           title: "chore: update theme.css from gstatic"
           body: |
-            Automated update detected differences between `assets/css/theme.css` and the live production asset at https://www.gstatic.com/gecx/chat-widget/theme.css.
+            Automated update detected a new `Upstream-SHA256` at `https://www.gstatic.com/gecx/chat-widget/theme.css` and regenerated `assets/css/theme.css` via `.github/scripts/sync-theme-css.py` (preserving the GPL-3.0 header, unminified formatting, stripped `sourceMappingURL` directives, and local WordPress overrides).
+
+            > **Note:** Because this pull request was opened with `GITHUB_TOKEN`, close and reopen it (or push an empty commit) to trigger `pull_request` CI workflows before merging.
           delete-branch: true

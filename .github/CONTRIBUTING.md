@@ -52,14 +52,13 @@ disclosed, and an out-of-date disclosure is grounds for removal.
 
 `assets/css/theme.css` provides the default storefront theme and layout for the `<chat-messenger>` custom element so that no stylesheet is loaded from an external origin at runtime.
 
-* **Upstream Provenance:** Built from the Google Customer Engagement Suite chat-messenger bundle, concatenated from `chat-messenger-layout.css` and `chat-messenger-default.css` (published to `https://www.gstatic.com/gecx/chat-widget/theme.css`).
-* **Automated Sync:** `.github/workflows/sync-theme-css.yml` polls the deployed production stylesheet daily and automatically opens a pull request when upstream changes are detected.
+* **Upstream Provenance:** Built from the Google Customer Engagement Suite chat-messenger bundle, concatenated from `chat-messenger-layout.css` and `chat-messenger-default.css` (published to `https://www.gstatic.com/gecx/chat-widget/theme.css`). The SHA-256 of the reconciled upstream asset is recorded in the `Upstream-SHA256:` header of `assets/css/theme.css`.
+* **Automated Sync:** `.github/workflows/sync-theme-css.yml` runs `.github/scripts/sync-theme-css.py` daily to compare the upstream SHA-256 against `Upstream-SHA256:`. When the digest changes, it regenerates `assets/css/theme.css` (preserving the GPL-3.0 header, unminified formatting, stripped `sourceMappingURL` directives, and local WordPress rules) and opens a pull request.
 * **Manual Refresh:** To check for or apply upstream changes manually:
   ```bash
-  curl -fsSL https://www.gstatic.com/gecx/chat-widget/theme.css -o /tmp/upstream-theme.css
-  diff -u assets/css/theme.css /tmp/upstream-theme.css
+  python3 .github/scripts/sync-theme-css.py --check   # exit 0 if up to date, 1 if drifted
+  python3 .github/scripts/sync-theme-css.py           # regenerate assets/css/theme.css
   ```
-  Note that `assets/css/theme.css` retains the GPL license header and unminified formatting for WordPress.org compliance.
 
 ## Releases
 

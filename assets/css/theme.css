@@ -17,6 +17,15 @@
  * https://www.gstatic.com/gecx/chat-widget/theme.css) and maintained directly
  * as unminified, human-readable source in this repository so that no external
  * stylesheet or source map is fetched at runtime.
+ *
+ * Local modifications applied over upstream:
+ *   1. Expand top-level `body` transition rule with `body.gecx-chat-open` and
+ *      `body:has(chat-messenger.slide-in:not(.messenger-hidden))`.
+ *   2. Omit upstream `.grecaptcha-badge { visibility: hidden; }` so the plugin
+ *      does not hide a merchant store's own reCAPTCHA badge.
+ *   3. Append `@media (prefers-reduced-motion: reduce)` accessibility rules.
+ *
+ * Upstream-SHA256: 6718f699456210b29d8435a361e662c95d039f555c93ca5bcb6b11e8ebf4452d
  */
 
 body,
@@ -141,6 +150,7 @@ chat-messenger.slide-over {
     padding-right: 412px;
   }
 }
+
 :root {
   --chat-messenger-internal-primary-color: #0b57d0;
   --chat-messenger-internal-border-color: #c4c7c5;
