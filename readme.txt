@@ -18,9 +18,9 @@ Gemini Enterprise for CX integrates your WooCommerce store with Google's Gemini 
 
 This plugin relies on the Gemini Enterprise for CX Software as a Service (SaaS) provided by Google Cloud. Connecting to this service requires a Google account.
 
-== 3rd Party Services, Privacy & Terms of Service ==
+== 3rd Party Services, External Assets, Privacy & Terms of Service ==
 
-This plugin connects to 3rd-party services provided by Google to function:
+This plugin connects to 3rd-party services provided by Google to function, and loads one externally hosted script from Google rather than bundling it:
 
 1. **Gemini Enterprise for CX Service & Onboarding Console**
    * **Service Provider:** Google LLC
@@ -29,12 +29,16 @@ This plugin connects to 3rd-party services provided by Google to function:
    * **Data Transmitted:** Store URL, admin authorization tokens, and product/catalog metadata.
    * **Account Requirement:** A Google account with access to Gemini Enterprise for CX.
 
-2. **Storefront Chat Widget Client SDK**
+2. **Storefront Chat Widget Client SDK (externally hosted script)**
    * **Service Provider:** Google LLC
-   * **Endpoints:**
-     * `https://www.gstatic.com/gecx/chat-widget/woocommerce-chat-widget.js`
-   * **Purpose:** Delivers the client runtime required to render the interactive chat widget and product suggestion pills on the customer-facing storefront, and to communicate with the GECX service. The widget stylesheet is bundled with the plugin (`assets/css/theme.css`) and is not fetched remotely.
-   * **Data Transmitted:** Standard HTTP request headers (IP address, User-Agent) when loading static assets. Customer chat messages and product browsing context are processed by GECX during live chat interactions.
+   * **External source:** `https://www.gstatic.com/gecx/chat-widget/woocommerce-chat-widget.js`
+   * **This file is NOT bundled with the plugin.** It is loaded at runtime from Google's servers at the URL above, directly by the visitor's browser. It is the only externally hosted asset this plugin loads; the widget stylesheet is bundled with the plugin (`assets/css/theme.css`) and is not fetched remotely.
+   * **Purpose:** Delivers the client runtime required to render the interactive chat widget and product suggestion pills on the customer-facing storefront, and to communicate with the GECX service.
+   * **When it loads:** Never by default. It is enqueued on storefront pages only after a store administrator has connected the store to Google Cloud, linked an agent, and enabled the agent in the plugin settings. If either condition is unmet, the script is not requested at all.
+   * **Why it is hosted externally:** It is the official client runtime for the Gemini Enterprise for CX SaaS platform, versioned and released with that service rather than with this plugin. It speaks directly to the service's streaming, session and agent protocols, which change far more often than a WordPress plugin release cycle. A copy frozen inside the plugin would break storefronts for any merchant who did not update the plugin in step with every service change.
+   * **Data Transmitted:** Standard HTTP request headers (IP address, User-Agent) when the browser fetches the script. Customer chat messages and product browsing context are processed by GECX during live chat interactions.
+   * **Terms of Service:** https://cloud.google.com/terms
+   * **Privacy Policy:** https://policies.google.com/privacy
 
 **Terms & Policies:**
 * GECX Console: https://gecx.cloud.google.com
@@ -63,9 +67,12 @@ Upload the plugin folder to the `/wp-content/plugins/` directory, then activate 
 = Does this plugin rely on an external SaaS service? =
 Yes. The plugin connects your WooCommerce store to Google's Gemini Enterprise for CX platform to power the AI storefront agent.
 
+= Does the plugin load any files from outside the plugin directory? =
+Yes, one: `https://www.gstatic.com/gecx/chat-widget/woocommerce-chat-widget.js`, the chat widget client SDK, served by Google. It is not bundled with the plugin and is fetched by the visitor's browser at runtime, and only on storefront pages of stores that have connected an agent and enabled it. Everything else the plugin loads ships inside the plugin, including the widget stylesheet (`assets/css/theme.css`). See the 3rd Party Services and External Assets section above for the full disclosure.
+
 = What external endpoints and CDNs are called? =
 * `https://gecx.cloud.google.com` is used in the admin settings dashboard to manage your GECX agent and connect store APIs.
-* `https://www.gstatic.com/gecx/chat-widget/woocommerce-chat-widget.js` is loaded on the customer storefront to provide the chat widget client SDK. The widget stylesheet is served from the plugin directory, not from a remote origin.
+* `https://www.gstatic.com/gecx/chat-widget/woocommerce-chat-widget.js` is loaded on the customer storefront to provide the chat widget client SDK.
 
 = What data is sent to Google? =
 During merchant setup, store URL and WooCommerce API credentials are authenticated. During storefront usage, customer chat queries and viewed product context are processed to return relevant answers. Standard request headers (such as IP address) are processed by Google's infrastructure in accordance with the Google Privacy Policy.
@@ -89,6 +96,7 @@ The complete release history is kept in changelog.txt at the plugin root.
 * Cache guest JWTs using public key fingerprinting and single-pass keypair retrieval to avoid redundant asymmetric decryption.
 * Improve uninstall cleanup by bounding session table sweeps and ensuring clean termination even with corrupt session data.
 * Update WordPress.org directory assets and screenshot documentation.
+* Document the chat widget client SDK as an externally hosted script in readme.txt, covering its source URL, the fact that it is not bundled, the conditions under which it loads, and why it is not shipped with the plugin.
 
 = 0.3.17 =
 * Add Bottom Right, Bottom Left, and Middle Left options for the floating launcher position.
