@@ -93,6 +93,7 @@ The complete release history is kept in changelog.txt at the plugin root.
 = 0.3.19 =
 * Restrict `/wp-json/gecx/v1/auth-context` to `POST`. `GET` was registered only for widget bundles that predate the switch to `POST`, and a `GET` response can be served from a CDN edge configured to cache everything, handing one shopper's nonce and customer JWT to the next.
 * Stop accepting `Sec-Fetch-Site: none` on `/wp-json/gecx/v1/auth-context`. A browser only sends `none` for a user-initiated load with no initiator document, which a `POST`-only route cannot receive, so the header is now required to say `same-origin`.
+* Require a WordPress-resolved `rest_route` (`$GLOBALS['wp']->query_vars['rest_route']`) in `GECX_Auth::is_request_to_route()` instead of inferring the route from unparsed superglobals (`$_POST`, `$_GET`, `$_SERVER['REQUEST_URI']`) before `WP::parse_request()` has run. WooCommerce's `WC_REST_Authentication::authentication_fallback()` re-triggers user determination inside `WP_REST_Server::serve_request()` after `WP::parse_request()` has populated `query_vars['rest_route']` on both pretty and plain permalinks.
 * Document the chat widget client SDK as an externally hosted script in readme.txt, covering its source URL, the fact that it is not bundled, the conditions under which it loads, and why it is not shipped with the plugin.
 
 = 0.3.18 =

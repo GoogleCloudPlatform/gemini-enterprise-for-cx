@@ -90,13 +90,24 @@ wp eval '
 # it has to refuse a request that cannot prove it is same-origin. A bare
 # curl carries no Sec-Fetch-Site, Origin or Referer, which is exactly the
 # shape that must be refused.
-status="$(curl -s -o /tmp/gecx_auth_bare.json -w '%{http_code}' "${SITE_URL}/wp-json/gecx/v1/auth-context")"
+#
+# The route is POST only. A GET is refused by routing before the permission
+# callback is consulted, so these have to be POSTs to reach the gate at all.
+status="$(curl -s -o /tmp/gecx_auth_bare.json -w '%{http_code}' -X POST "${SITE_URL}/wp-json/gecx/v1/auth-context")"
 assert_status 'auth-context refuses an unattributable request' '403' "${status}" /tmp/gecx_auth_bare.json
 
 status="$(curl -s -o /tmp/gecx_auth.json -w '%{http_code}' \
+  -X POST \
   -H 'Sec-Fetch-Site: same-origin' \
   "${SITE_URL}/wp-json/gecx/v1/auth-context")"
 assert_status 'auth-context serves a same-origin request' '200' "${status}" /tmp/gecx_auth.json
+
+# A state-changing read of the session cookie must not be reachable by a
+# method a cross-site context can issue without preflight.
+status="$(curl -s -o /tmp/gecx_auth_get.json -w '%{http_code}' \
+  -H 'Sec-Fetch-Site: same-origin' \
+  "${SITE_URL}/wp-json/gecx/v1/auth-context")"
+assert_status 'auth-context is not served over GET' '404' "${status}" /tmp/gecx_auth_get.json
 
 for key in '"success"' '"nonce"' '"customer_jwt"'; do
   if ! grep -q "${key}" /tmp/gecx_auth.json; then
