@@ -10,4 +10,11 @@
             <directory suffix="Test.php">./tests</directory>
         </testsuite>
     </testsuites>
+    <coverage processUncoveredFiles="true">
+        <include>
+            <directory suffix=".php">./includes</directory>
+            <file>./gecx-agent.php</file>
+            <file>./uninstall.php</file>
+        </include>
+    </coverage>
 </phpunit>

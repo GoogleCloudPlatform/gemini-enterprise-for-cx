@@ -12,11 +12,11 @@
  *
  * Layout and default theme variables for the <chat-messenger> custom element
  * rendered on the storefront. Derived from the upstream Google Cloud
- * Customer Engagement Suite chat-messenger bundle v0.10.0 stylesheets
- * (chat-messenger-layout.css and chat-messenger-default.css from
- * https://www.gstatic.com/ces-console/fast/chat-messenger/prod/v0.10.0/) and
- * maintained directly as unminified, human-readable source in this repository
- * so that no external stylesheet or source map is fetched at runtime.
+ * Customer Engagement Suite chat-messenger stylesheets (concatenating
+ * chat-messenger-layout.css and chat-messenger-default.css, published to
+ * https://www.gstatic.com/gecx/chat-widget/theme.css) and maintained directly
+ * as unminified, human-readable source in this repository so that no external
+ * stylesheet or source map is fetched at runtime.
  */
 
 body,

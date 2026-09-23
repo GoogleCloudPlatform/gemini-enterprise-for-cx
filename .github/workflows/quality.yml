@@ -39,7 +39,7 @@ jobs:
 
       - name: Annotate PHPCS results
         if: always()
-        run: cs2pr ./phpcs-report.xml || true
+        run: cs2pr ./phpcs-report.xml
 
   plugin-check:
     name: WordPress Plugin Check
@@ -80,8 +80,8 @@ jobs:
         uses: WordPress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
         with:
           build-dir: './build/gemini-enterprise-for-cx'
-          # Warnings are surfaced in the job output; errors fail the build.
-          ignore-warnings: true
+          # Both warnings and errors fail the build.
+          ignore-warnings: false
 
       - name: Upload the installable zip
         # Downloadable from the run's Artifacts section, or with

@@ -32,7 +32,26 @@ jobs:
           php-version: ${{ matrix.php-version }}
           extensions: openssl, json, mbstring, curl
           tools: phpunit:9.6.36
-          coverage: none
+          coverage: ${{ matrix.php-version == '8.2' && 'pcov' || 'none' }}
+
+      - name: Run PHPUnit tests with coverage
+        if: matrix.php-version == '8.2'
+        run: |
+          phpunit --configuration phpunit.xml.dist --coverage-text --coverage-clover clover.xml | tee coverage.txt
+          echo "### Test Coverage Summary (PHP 8.2)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          sed -n '/Code Coverage Report:/,$p' coverage.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: matrix.php-version == '8.2'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-clover
+          path: clover.xml
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Run PHPUnit tests
+        if: matrix.php-version != '8.2'
         run: phpunit --configuration phpunit.xml.dist

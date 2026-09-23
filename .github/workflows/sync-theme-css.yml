@@ -1,0 +1,44 @@
+name: Sync Theme CSS
+
+on:
+  schedule:
+    # Runs daily at 08:00 UTC
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sync-theme:
+    name: Sync theme.css from gstatic
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
+
+      - name: Fetch production theme.css
+        run: |
+          mkdir -p assets/css
+          curl -fsSL https://www.gstatic.com/gecx/chat-widget/theme.css -o assets/css/theme.css
+
+      - name: Create Pull Request if updated
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6.1.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(theme): sync theme.css with gstatic release"
+          committer: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          branch: "automated/sync-theme-css"
+          title: "chore: update theme.css from gstatic"
+          body: |
+            Automated update detected differences between `assets/css/theme.css` and the live production asset at https://www.gstatic.com/gecx/chat-widget/theme.css.
+          delete-branch: true

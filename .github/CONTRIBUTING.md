@@ -24,7 +24,7 @@ Once we receive your signed CLA, we'll be able to review and accept pull request
 ```bash
 composer install     # installs PHPUnit, PHPCS, WPCS and PHPCompatibility
 composer test        # PHPUnit, the same suite CI runs
-composer lint        # PHPCS, error severity only; this is what CI gates on
+composer lint        # PHPCS, errors and warnings; this is what CI gates on
 composer lint:all    # PHPCS including warnings
 composer lint:fix    # PHPCBF, auto-fixes what it can
 ```
@@ -42,6 +42,19 @@ chat widget SDK on `gstatic.com`, or the console on `gecx.cloud.google.com` —
 update the "3rd Party Services" and FAQ disclosures in `readme.txt` in the same
 pull request. The WordPress.org directory requires every remote request to be
 disclosed, and an out-of-date disclosure is grounds for removal.
+
+## Assets and Stylesheets
+
+`assets/css/theme.css` provides the default storefront theme and layout for the `<chat-messenger>` custom element so that no stylesheet is loaded from an external origin at runtime.
+
+* **Upstream Provenance:** Built from the Google Customer Engagement Suite chat-messenger bundle, concatenated from `chat-messenger-layout.css` and `chat-messenger-default.css` (published to `https://www.gstatic.com/gecx/chat-widget/theme.css`).
+* **Automated Sync:** `.github/workflows/sync-theme-css.yml` polls the deployed production stylesheet daily and automatically opens a pull request when upstream changes are detected.
+* **Manual Refresh:** To check for or apply upstream changes manually:
+  ```bash
+  curl -fsSL https://www.gstatic.com/gecx/chat-widget/theme.css -o /tmp/upstream-theme.css
+  diff -u assets/css/theme.css /tmp/upstream-theme.css
+  ```
+  Note that `assets/css/theme.css` retains the GPL license header and unminified formatting for WordPress.org compliance.
 
 ## Releases
 
