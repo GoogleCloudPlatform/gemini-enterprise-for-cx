@@ -37,6 +37,9 @@ jobs:
       - name: Run PHPUnit tests with coverage
         if: matrix.php-version == '8.2'
         run: |
+          # Without pipefail the exit status of the pipeline is tee's, so a
+          # failing suite would report success.
+          set -o pipefail
           phpunit --configuration phpunit.xml.dist --coverage-text --coverage-clover clover.xml | tee coverage.txt
           echo "### Test Coverage Summary (PHP 8.2)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"

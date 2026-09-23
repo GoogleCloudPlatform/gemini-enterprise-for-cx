@@ -10,11 +10,16 @@
             <directory suffix="Test.php">./tests</directory>
         </testsuite>
     </testsuites>
-    <coverage processUncoveredFiles="true">
+    <!--
+    processUncoveredFiles is deliberately left off (PHPUnit defaults it to
+    false). Turning it on makes PHPUnit include_once every file listed here
+    that no test loaded, and uninstall.php answers a bare include with `die;`
+    while the plugin entrypoints re-declare classes the suite has already
+    loaded. Either one ends the run.
+    -->
+    <coverage>
         <include>
             <directory suffix=".php">./includes</directory>
-            <file>./gecx-agent.php</file>
-            <file>./uninstall.php</file>
         </include>
     </coverage>
 </phpunit>
