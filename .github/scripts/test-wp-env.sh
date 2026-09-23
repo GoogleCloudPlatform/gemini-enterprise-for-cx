@@ -108,9 +108,13 @@ done
 echo 'PASS: auth-context returned success, nonce and customer_jwt.'
 
 # The operator endpoints are capability-gated and must not answer an
-# anonymous caller.
+# anonymous caller. agent_name is supplied because WordPress validates the
+# registered args before it runs permission_callback: omitting it returns 400
+# and the capability gate is never reached, so the assertion would prove
+# nothing. The value is schema-valid and must still be refused.
 status="$(curl -s -o /tmp/gecx_link.json -w '%{http_code}' \
-  -X POST "${SITE_URL}/wp-json/gecx/v1/link-agent")"
+  -X POST "${SITE_URL}/wp-json/gecx/v1/link-agent" \
+  -d 'agent_name=projects/123/locations/global/agents/456')"
 assert_status 'link-agent rejects an anonymous caller' '401,403' "${status}" /tmp/gecx_link.json
 
 status="$(curl -s -o /tmp/gecx_pubkey.json -w '%{http_code}' \

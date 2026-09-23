@@ -42,6 +42,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Configure wp-env
+        # "testsEnvironment": false is load-bearing. Left unset, wp-env builds
+        # and boots a second, complete WordPress + MySQL stack that nothing
+        # here ever addresses, roughly doubling the job. The option is also
+        # what silences wp-env's deprecation warning about that default.
         run: |
           cat << 'EOF' > .wp-env.json
           {
@@ -50,6 +54,7 @@ jobs:
               ".",
               "https://downloads.wordpress.org/plugin/woocommerce.WC_VERSION.zip"
             ],
+            "testsEnvironment": false,
             "config": {
               "WP_DEBUG": true,
               "WP_DEBUG_LOG": true,
