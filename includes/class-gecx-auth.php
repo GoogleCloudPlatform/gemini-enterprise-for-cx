@@ -897,7 +897,7 @@ class GECX_Auth {
      *
      * The token always asserts is_admin: false, whatever the shopper can do in
      * WordPress. It is handed to the chat widget over
-     * GET /gecx/v1/auth-context and held in the DOM as a property of the
+     * POST /gecx/v1/auth-context and held in the DOM as a property of the
      * widget element, where any script on the page can read it, so it must not
      * carry a claim that grants anything. An operator who needs one calls
      * generate_admin_jwt(), which gates on capability and lives for 300

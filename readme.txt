@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.18
+Stable tag: 0.3.19
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -90,13 +90,17 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 
 The complete release history is kept in changelog.txt at the plugin root.
 
+= 0.3.19 =
+* Restrict `/wp-json/gecx/v1/auth-context` to `POST`. `GET` was registered only for widget bundles that predate the switch to `POST`, and a `GET` response can be served from a CDN edge configured to cache everything, handing one shopper's nonce and customer JWT to the next.
+* Stop accepting `Sec-Fetch-Site: none` on `/wp-json/gecx/v1/auth-context`. A browser only sends `none` for a user-initiated load with no initiator document, which a `POST`-only route cannot receive, so the header is now required to say `same-origin`.
+* Document the chat widget client SDK as an externally hosted script in readme.txt, covering its source URL, the fact that it is not bundled, the conditions under which it loads, and why it is not shipped with the plugin.
+
 = 0.3.18 =
 * Support Cart-Token capture and session rebind on plain-permalink WordPress stores.
 * Soft-ignore invalid or expired cart tokens during session save while strictly blocking privileged endpoints under cart-token authentication.
 * Cache guest JWTs using public key fingerprinting and single-pass keypair retrieval to avoid redundant asymmetric decryption.
 * Improve uninstall cleanup by bounding session table sweeps and ensuring clean termination even with corrupt session data.
 * Update WordPress.org directory assets and screenshot documentation.
-* Document the chat widget client SDK as an externally hosted script in readme.txt, covering its source URL, the fact that it is not bundled, the conditions under which it loads, and why it is not shipped with the plugin.
 
 = 0.3.17 =
 * Add Bottom Right, Bottom Left, and Middle Left options for the floating launcher position.

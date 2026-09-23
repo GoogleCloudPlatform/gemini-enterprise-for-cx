@@ -1,5 +1,10 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-09-23 - version 0.3.19
+* Restrict `/wp-json/gecx/v1/auth-context` to `POST`. `GET` was registered only so widget bundles predating the switch to `POST` kept working; those are no longer deployed, and a `GET` response can be served from a CDN edge configured to cache everything, handing one shopper's nonce and customer JWT to the next.
+* Stop accepting `Sec-Fetch-Site: none` on `/wp-json/gecx/v1/auth-context`. A browser sends `none` only for a user-initiated load with no initiator document, which a `POST`-only route cannot receive, so the only remaining sender is a non-browser client setting the header itself around a stolen cookie. The header must now say `same-origin`.
+* Document the chat widget client SDK as an externally hosted script in readme.txt, covering its source URL, the fact that it is not bundled, the conditions under which it loads, and why it is not shipped with the plugin.
+
 2026-09-22 - version 0.3.18
 * Support Cart-Token capture and session rebind on plain-permalink WordPress stores by parsing endpoints per configured URL.
 * Soft-ignore invalid or expired cart tokens during session save while strictly blocking privileged endpoints under cart-token authentication.

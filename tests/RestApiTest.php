@@ -1375,6 +1375,22 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 403, $perm->get_error_data()['status'] );
     }
 
+    public function test_auth_context_permissions_rejects_sec_fetch_site_none(): void {
+        // "none" is what a browser sends for a user-initiated load with no
+        // initiator document, which a POST-only route cannot receive from a
+        // browser at all. What is left is a client setting the header itself,
+        // so it is refused even when the Origin looks right.
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_header( 'Sec-Fetch-Site', 'none' );
+        $request->set_header( 'Origin', 'https://example.com' );
+
+        $perm = $rest_api->check_auth_context_permissions( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
+    }
+
     public function test_auth_context_permissions_accepts_a_same_origin_referer_without_origin(): void {
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();
@@ -1494,17 +1510,18 @@ class RestApiTest extends GECX_TestCase {
         $this->assertNull( $data['customer_jwt'] );
     }
 
-    public function test_auth_context_route_accepts_post_and_get(): void {
+    public function test_auth_context_route_accepts_post_only(): void {
         // The widget posts, so that a CDN told to "cache everything" cannot
-        // serve one shopper's nonce and JWT to the next. GET has to keep
-        // working for bundles deployed before that switch.
+        // serve one shopper's nonce and JWT to the next. GET was registered
+        // alongside POST only for bundles deployed before that switch, and
+        // must not come back.
         $rest_api = new GECX_Rest_API();
 
         $rest_api->register_auth_context_rest_route();
 
         $route = $GLOBALS['gecx_test_rest_routes']['gecx/v1/auth-context'] ?? null;
         $this->assertNotEmpty( $route );
-        $this->assertSame( [ 'GET', 'POST' ], $route['methods'] );
+        $this->assertSame( 'POST', $route['methods'] );
     }
 
     public function test_sync_cart_session_ignores_unrelated_rest_routes(): void {
