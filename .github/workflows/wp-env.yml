@@ -1,0 +1,77 @@
+name: WordPress & WooCommerce Runtime Matrix
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  wp-env:
+    name: WP ${{ matrix.wp-version }} / WC ${{ matrix.wc-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        wp-version: ['6.2', '7.1']
+        wc-version: ['7.1.0', '9.9.0', '11.1.0']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@0a44ba7841725637a54e280ec667c2763fd0ff44 # v4.0.4
+        with:
+          node-version: '20'
+
+      - name: Configure wp-env
+        run: |
+          cat << EOF > .wp-env.json
+          {
+            "core": "https://wordpress.org/wordpress-${{ matrix.wp-version }}.zip",
+            "plugins": [
+              ".",
+              "https://downloads.wordpress.org/plugin/woocommerce.${{ matrix.wc-version }}.zip"
+            ],
+            "config": {
+              "WP_DEBUG": true,
+              "WP_DEBUG_LOG": true,
+              "SCRIPT_DEBUG": true
+            }
+          }
+          EOF
+          cat .wp-env.json
+
+      - name: Start wp-env
+        run: npx @wordpress/env start
+
+      - name: Run runtime integration tests
+        run: bash .github/scripts/test-wp-env.sh
+
+      - name: Output WordPress debug.log
+        if: always()
+        run: |
+          npx @wordpress/env run cli wp eval '
+            $log = WP_CONTENT_DIR . "/debug.log";
+            if (file_exists($log)) {
+              echo "=== WordPress debug.log ===\n";
+              readfile($log);
+            } else {
+              echo "No debug.log generated.\n";
+            }
+          '
+
+      - name: Stop wp-env
+        if: always()
+        run: npx @wordpress/env stop
