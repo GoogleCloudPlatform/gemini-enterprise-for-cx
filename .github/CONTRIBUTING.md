@@ -34,6 +34,11 @@ which enforces the WordPress.org plugin directory requirements, and a check that
 the version in `gecx-agent.php`, `GECX_VERSION`, the `Stable tag` in `readme.txt`
 and the newest `changelog.txt` entry all name the same release.
 
+Plugin Check runs in strict mode, so one of its warnings fails the build exactly
+as an error does. That is deliberate: its warnings are directory review findings,
+and the cheapest time to deal with one is before submission rather than after a
+reviewer rejects the release.
+
 `readme.txt` is the only supported place to declare `Tested up to`. Do not add it
 back to the plugin headers.
 
