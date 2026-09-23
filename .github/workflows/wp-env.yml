@@ -42,6 +42,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Configure wp-env
+        # WooCommerce is listed before "." deliberately. wp-env activates
+        # pluginSources in array order, chained with &&, and gecx-agent.php
+        # carries "Requires Plugins: woocommerce". On WordPress 6.5 and later
+        # the core Plugin Dependencies check refuses to activate this plugin
+        # while WooCommerce is still inactive, which aborts the chain and
+        # fails `wp-env start` outright.
+        #
         # "testsEnvironment": false is load-bearing. Left unset, wp-env builds
         # and boots a second, complete WordPress + MySQL stack that nothing
         # here ever addresses, roughly doubling the job. The option is also
@@ -51,8 +58,8 @@ jobs:
           {
             "core": "https://wordpress.org/wordpress-WP_VERSION.zip",
             "plugins": [
-              ".",
-              "https://downloads.wordpress.org/plugin/woocommerce.WC_VERSION.zip"
+              "https://downloads.wordpress.org/plugin/woocommerce.WC_VERSION.zip",
+              "."
             ],
             "testsEnvironment": false,
             "config": {
