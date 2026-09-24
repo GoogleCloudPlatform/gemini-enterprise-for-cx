@@ -788,14 +788,16 @@ class GECX_Admin {
         $connect_params = [
             'return_url' => rawurlencode( $return_url ),
         ];
-        if ( ! empty( $admin_jwt ) ) {
-            $connect_params['admin_jwt'] = rawurlencode( $admin_jwt );
-        }
 
-        return add_query_arg(
+        $connect_url = add_query_arg(
             $connect_params,
             $console_base . self::CONSOLE_APP_PATH
         );
+        if ( ! empty( $admin_jwt ) ) {
+            $connect_url .= '#admin_jwt=' . rawurlencode( $admin_jwt );
+        }
+
+        return $connect_url;
     }
 
     /**
