@@ -761,6 +761,19 @@ class GECX_Admin {
             return;
         }
 
+        if ( ! self::is_standard_rest_api_enabled() ) {
+            set_transient(
+                'gecx_admin_notice_error',
+                __( 'Gemini Enterprise for CX requires pretty permalinks and the default /wp-json REST API prefix. Please enable pretty permalinks under Settings > Permalinks before connecting.', 'gemini-enterprise-for-cx' ),
+                60
+            );
+            wp_safe_redirect( admin_url( 'admin.php?page=gemini-enterprise-for-cx' ) );
+            if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
+                exit;
+            }
+            return;
+        }
+
         if ( function_exists( 'nocache_headers' ) ) {
             nocache_headers();
         }
@@ -775,6 +788,41 @@ class GECX_Admin {
         if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
             exit;
         }
+    }
+
+    /**
+     * Checks whether the store's WordPress REST API is reachable at the
+     * standard `<home_url>/wp-json/` path required by WooCommerce OAuth
+     * (`/wc-auth/v1/authorize`) and the Google Cloud backend.
+     *
+     * Rejects plain permalinks (`?rest_route=/`), PATHINFO permalinks
+     * (`/index.php/wp-json/`), and custom `rest_url_prefix` values.
+     *
+     * @return bool True when pretty permalinks and the default `/wp-json` prefix are active.
+     */
+    public static function is_standard_rest_api_enabled(): bool {
+        if ( '' === (string) get_option( 'permalink_structure', '/%postname%/' ) ) {
+            return false;
+        }
+
+        $prefix = function_exists( 'rest_get_url_prefix' )
+            ? trim( (string) rest_get_url_prefix(), '/' )
+            : 'wp-json';
+        if ( 'wp-json' !== $prefix ) {
+            return false;
+        }
+
+        if ( function_exists( 'rest_url' ) && function_exists( 'home_url' ) ) {
+            $expected_rest_base = untrailingslashit( (string) home_url() ) . '/wp-json';
+            $actual_rest_base   = untrailingslashit( (string) rest_url() );
+            $expected_no_scheme = (string) preg_replace( '#^https?://#i', '', $expected_rest_base );
+            $actual_no_scheme   = (string) preg_replace( '#^https?://#i', '', $actual_rest_base );
+            if ( $expected_no_scheme !== $actual_no_scheme ) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -813,7 +861,8 @@ class GECX_Admin {
         // SyncState can report that Google can no longer use this store's
         // credentials. Treat that as unauthorized so the merchant is offered
         // the authorize step again instead of a dead end.
-        $is_authorized = (bool) get_option( self::AUTH_COMPLETE_OPTION, false ) && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
+        $is_authorized  = (bool) get_option( self::AUTH_COMPLETE_OPTION, false ) && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
+        $rest_api_ready = self::is_standard_rest_api_enabled();
 
         $oauth_return_url = add_query_arg(
             [
@@ -839,6 +888,22 @@ class GECX_Admin {
             <div id="gecx-admin-notices"></div>
 
             <?php settings_errors( 'gecx_messages' ); ?>
+
+            <?php if ( ! $rest_api_ready ) : ?>
+                <div class="notice notice-error">
+                    <p>
+                        <?php
+                        echo wp_kses_post(
+                            sprintf(
+                                /* translators: %s: URL to the WordPress Permalinks settings page. */
+                                __( '<strong>Permalinks configuration required:</strong> Gemini Enterprise for CX requires pretty permalinks and the default <code>/wp-json</code> REST API prefix. Please enable a non-Plain structure in <a href="%s">Settings &gt; Permalinks</a> and ensure no filter overrides <code>rest_url_prefix</code>.', 'gemini-enterprise-for-cx' ),
+                                esc_url( admin_url( 'options-permalink.php' ) )
+                            )
+                        );
+                        ?>
+                    </p>
+                </div>
+            <?php endif; ?>
 
             <?php
             $error_notice = get_transient( 'gecx_admin_notice_error' );
@@ -874,12 +939,23 @@ class GECX_Admin {
                         </p>
 
                         <div style="margin: 24px 0;">
-                            <a href="<?php echo esc_url( $oauth_url ); ?>"
-                                id="gecx-authorize-btn"
-                                class="button button-primary button-hero"
-                                style="display: inline-flex; align-items: center; gap: 8px;">
-                                <?php esc_html_e( 'Authorize Store', 'gemini-enterprise-for-cx' ); ?>
-                            </a>
+                            <?php if ( $rest_api_ready ) : ?>
+                                <a href="<?php echo esc_url( $oauth_url ); ?>"
+                                    id="gecx-authorize-btn"
+                                    class="button button-primary button-hero"
+                                    style="display: inline-flex; align-items: center; gap: 8px;">
+                                    <?php esc_html_e( 'Authorize Store', 'gemini-enterprise-for-cx' ); ?>
+                                </a>
+                            <?php else : ?>
+                                <button type="button"
+                                    id="gecx-authorize-btn"
+                                    class="button button-primary button-hero"
+                                    disabled="disabled"
+                                    aria-disabled="true"
+                                    style="display: inline-flex; align-items: center; gap: 8px;">
+                                    <?php esc_html_e( 'Authorize Store', 'gemini-enterprise-for-cx' ); ?>
+                                </button>
+                            <?php endif; ?>
                         </div>
 
                         <p class="description">
@@ -898,21 +974,39 @@ class GECX_Admin {
                         </p>
 
                         <div style="margin: 24px 0; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-                            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin: 0; display: inline-flex;">
-                                <input type="hidden" name="action" value="gecx_connect_agent" />
-                                <?php wp_nonce_field( 'gecx_connect_agent_action', 'gecx_connect_nonce' ); ?>
-                                <button type="submit"
+                            <?php if ( $rest_api_ready ) : ?>
+                                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin: 0; display: inline-flex;">
+                                    <input type="hidden" name="action" value="gecx_connect_agent" />
+                                    <?php wp_nonce_field( 'gecx_connect_agent_action', 'gecx_connect_nonce' ); ?>
+                                    <button type="submit"
+                                        id="gecx-connect-btn"
+                                        class="button button-primary button-hero"
+                                        style="display: inline-flex; align-items: center; gap: 8px;">
+                                        <?php esc_html_e( 'Connect with Google Cloud', 'gemini-enterprise-for-cx' ); ?>
+                                    </button>
+                                </form>
+                                <a href="<?php echo esc_url( $oauth_url ); ?>"
+                                    id="gecx-reauthorize-btn"
+                                    class="button button-secondary">
+                                    <?php esc_html_e( 'Re-authorize Store', 'gemini-enterprise-for-cx' ); ?>
+                                </a>
+                            <?php else : ?>
+                                <button type="button"
                                     id="gecx-connect-btn"
                                     class="button button-primary button-hero"
+                                    disabled="disabled"
+                                    aria-disabled="true"
                                     style="display: inline-flex; align-items: center; gap: 8px;">
                                     <?php esc_html_e( 'Connect with Google Cloud', 'gemini-enterprise-for-cx' ); ?>
                                 </button>
-                            </form>
-                            <a href="<?php echo esc_url( $oauth_url ); ?>"
-                                id="gecx-reauthorize-btn"
-                                class="button button-secondary">
-                                <?php esc_html_e( 'Re-authorize Store', 'gemini-enterprise-for-cx' ); ?>
-                            </a>
+                                <button type="button"
+                                    id="gecx-reauthorize-btn"
+                                    class="button button-secondary"
+                                    disabled="disabled"
+                                    aria-disabled="true">
+                                    <?php esc_html_e( 'Re-authorize Store', 'gemini-enterprise-for-cx' ); ?>
+                                </button>
+                            <?php endif; ?>
                         </div>
 
                         <p class="description">
