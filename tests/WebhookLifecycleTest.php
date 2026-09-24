@@ -314,6 +314,105 @@ class WebhookLifecycleTest extends TestCase {
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
     }
 
+    public function test_webhook_registration_does_not_end_merchant_unlink(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/webhooks/order-created' );
+        $request->set_param( 'consumer_secret', 'cs_' . str_repeat( 'a', 40 ) );
+        $response = ( new GECX_Rest_API() )->order_created_webhooks_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $response );
+        // The WooCommerce keys survive an unlink, so this call is not evidence
+        // that the merchant chose to re-link.
+        $this->assertSame( 1, (int) get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
+    }
+
+    public function test_link_agent_ends_unlink_but_respects_merchant_disable(): void {
+        $webhook_id = $this->create_gecx_webhook( 'paused' );
+        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+        update_option( GECX_Admin::MERCHANT_DISABLED_OPTION, 1 );
+        update_option( 'gecx_agent_enabled', 0 );
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/link-agent' );
+        $request->set_param( 'agent_name', 'projects/123/locations/global/agents/agent-2' );
+        ( new GECX_Rest_API() )->link_agent_handler( $request );
+
+        $this->assertSame( 'projects/123/locations/global/agents/agent-2', get_option( 'gecx_agent_name' ) );
+        $this->assertFalse( get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
+        $this->assertSame( 0, (int) get_option( 'gecx_agent_enabled' ) );
+        $this->assertSame( 'paused', ( new WC_Webhook( $webhook_id ) )->get_status() );
+    }
+
+    public function test_ensure_order_webhook_refuses_disallowed_console_host(): void {
+        delete_option( 'gecx_webhook_id' );
+        update_option( 'gecx_console_base_url', 'https://attacker.example' );
+
+        $result = GECX_Rest_API::ensure_order_webhook( 'cs_' . str_repeat( 'b', 40 ) );
+
+        $this->assertInstanceOf( WP_Error::class, $result );
+        $this->assertSame( 'console_url_refused', $result->get_error_code() );
+        foreach ( $GLOBALS['gecx_test_webhooks'] as $webhook ) {
+            $this->assertStringNotContainsString( 'attacker.example', (string) ( $webhook['delivery_url'] ?? '' ) );
+        }
+    }
+
+    public function test_uninstall_revokes_wc_auth_api_keys(): void {
+        $GLOBALS['gecx_test_wc_api_keys'] = [
+            7 => [ 'description' => 'Gemini Enterprise For CX - API (2026-09-01 10:00:00)' ],
+            8 => [ 'description' => 'Some other app - API (2026-09-01 10:00:00)' ],
+            // Hand-made by the merchant: matches the LIKE case-insensitively
+            // but is not read_write, so it is kept.
+            9 => [
+                'description' => 'gemini enterprise for cx - API (reporting)',
+                'permissions' => 'read',
+            ],
+        ];
+
+        if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+            define( 'WP_UNINSTALL_PLUGIN', true );
+        }
+
+        include dirname( __DIR__ ) . '/uninstall.php';
+
+        $this->assertSame( [ 8, 9 ], array_keys( $GLOBALS['gecx_test_wc_api_keys'] ) );
+    }
+
+    public function test_uninstall_does_not_notify_store_that_only_holds_a_keypair(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        // Activation generates a keypair on every site, connected or not.
+        GECX_Auth::get_or_generate_keypair();
+        delete_option( 'gecx_webhook_id' );
+        delete_option( 'gecx_agent_name' );
+        delete_option( 'gecx_auth_complete' );
+        $GLOBALS['gecx_test_http_requests'] = [];
+
+        if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+            define( 'WP_UNINSTALL_PLUGIN', true );
+        }
+
+        include dirname( __DIR__ ) . '/uninstall.php';
+
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertFalse( get_option( 'gecx_keypair' ) );
+    }
+
+    public function test_uninstall_does_not_notify_disallowed_console_host(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        GECX_Auth::get_or_generate_keypair();
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_console_base_url', 'https://attacker.example' );
+        $GLOBALS['gecx_test_http_requests'] = [];
+
+        if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+            define( 'WP_UNINSTALL_PLUGIN', true );
+        }
+
+        include dirname( __DIR__ ) . '/uninstall.php';
+
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+    }
+
     public function test_activation_pauses_webhook_when_unlinked_but_authorized(): void {
         $webhook_id = $this->create_gecx_webhook( 'active' );
         delete_option( 'gecx_agent_name' );

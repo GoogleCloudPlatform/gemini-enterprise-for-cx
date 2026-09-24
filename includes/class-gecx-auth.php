@@ -26,6 +26,45 @@ class GECX_Auth {
     public const RESOURCE_NAME_PATTERN = '/^[a-zA-Z0-9_\-\.\/]+$/';
 
     /**
+     * Production Google Cloud console origin.
+     */
+    public const DEFAULT_CONSOLE_BASE_URL = 'https://gecx.cloud.google.com';
+
+    /**
+     * Hosts the console base URL may point at.
+     *
+     * The console base URL receives the WooCommerce consumer key and secret
+     * (as the wc-auth callback_url) and store-signed admin JWTs, and it can be
+     * changed through the gecx_console_base_url option and filter. Pinning the
+     * host means a single arbitrary option write elsewhere on the site cannot
+     * redirect those credentials. Non-production hosts can be added from
+     * wp-config.php via the GECX_CONSOLE_ALLOWED_HOSTS constant (array or
+     * comma-separated string), which is not reachable from the database.
+     */
+    public const CONSOLE_ALLOWED_HOSTS = [ 'gecx.cloud.google.com' ];
+
+    /**
+     * Option set when the merchant explicitly unlinks the agent. See
+     * GECX_Admin::MERCHANT_UNLINKED_OPTION.
+     */
+    public const MERCHANT_UNLINKED_OPTION = 'gecx_merchant_unlinked';
+
+    /**
+     * Option set when the merchant switches the storefront widget off. See
+     * GECX_Admin::MERCHANT_DISABLED_OPTION.
+     */
+    public const MERCHANT_DISABLED_OPTION = 'gecx_merchant_disabled';
+
+    /**
+     * app_name sent to /wc-auth/v1/authorize.
+     *
+     * WooCommerce stores every key it issues through that flow with the
+     * description "<app_name> - API (<gmdate Y-m-d H:i:s>)", which is how
+     * revoke_woocommerce_api_keys() finds the keys this plugin requested.
+     */
+    public const WC_AUTH_APP_NAME = 'Gemini Enterprise For CX';
+
+    /**
      * Transient name used to cache guest customer JWTs (`user_id: 0`) for a
      * fraction of their lifetime so unauthenticated auth-context / refresh-token
      * bursts do not invoke 2048-bit RSA signing on every request.
@@ -131,6 +170,139 @@ class GECX_Auth {
         // Backstop, on the dispatch path rather than in individual permission
         // callbacks. See block_cart_token_off_store_api().
         add_filter( 'rest_pre_dispatch', [ $this, 'block_cart_token_off_store_api' ], 10, 3 );
+    }
+
+    /**
+     * Resolve the Google Cloud console base URL.
+     *
+     * Reads the gecx_console_base_url option and filter, then accepts the
+     * result only if is_allowed_console_base_url() does. Anything else yields
+     * an empty string so callers send nothing: falling back to the production
+     * host would turn a misconfigured staging or test install into one that
+     * talks to production.
+     *
+     * @return string Base URL without a trailing slash, or '' when the
+     *                configured value is not allowed.
+     */
+    public static function get_console_base_url(): string {
+        $configured = get_option( 'gecx_console_base_url', self::DEFAULT_CONSOLE_BASE_URL );
+        $configured = apply_filters( 'gecx_console_base_url', is_string( $configured ) ? $configured : '' );
+        $configured = is_string( $configured ) ? trim( $configured ) : '';
+
+        if ( ! self::is_allowed_console_base_url( $configured ) ) {
+            static $logged = false;
+            if ( ! $logged ) {
+                $logged = true;
+                self::log( 'Refusing console base URL that is not an allowed https origin.', 'warning' );
+            }
+            return '';
+        }
+
+        return rtrim( $configured, '/' );
+    }
+
+    /**
+     * Whether a URL is an https origin on an allowed console host.
+     *
+     * Userinfo, ports, paths, queries and fragments are all rejected: the
+     * plugin appends its own paths, and any of those components can be used
+     * to make a URL look like it names one host while connecting to another.
+     *
+     * @param string $url Candidate base URL.
+     */
+    public static function is_allowed_console_base_url( string $url ): bool {
+        if ( '' === $url ) {
+            return false;
+        }
+
+        $parts = wp_parse_url( $url );
+        if ( ! is_array( $parts ) || empty( $parts['host'] ) ) {
+            return false;
+        }
+        if ( 'https' !== strtolower( (string) ( $parts['scheme'] ?? '' ) ) ) {
+            return false;
+        }
+        foreach ( [ 'user', 'pass', 'port', 'query', 'fragment' ] as $component ) {
+            if ( isset( $parts[ $component ] ) ) {
+                return false;
+            }
+        }
+        if ( '' !== trim( (string) ( $parts['path'] ?? '' ), '/' ) ) {
+            return false;
+        }
+
+        return in_array( strtolower( (string) $parts['host'] ), self::get_allowed_console_hosts(), true );
+    }
+
+    /**
+     * Allowed console hosts, including any added by GECX_CONSOLE_ALLOWED_HOSTS.
+     *
+     * @return string[] Lower-case host names.
+     */
+    private static function get_allowed_console_hosts(): array {
+        $hosts = self::CONSOLE_ALLOWED_HOSTS;
+
+        if ( defined( 'GECX_CONSOLE_ALLOWED_HOSTS' ) ) {
+            $extra = constant( 'GECX_CONSOLE_ALLOWED_HOSTS' );
+            if ( is_string( $extra ) ) {
+                $extra = explode( ',', $extra );
+            }
+            if ( is_array( $extra ) ) {
+                foreach ( $extra as $host ) {
+                    if ( is_string( $host ) && '' !== trim( $host ) ) {
+                        $hosts[] = trim( $host );
+                    }
+                }
+            }
+        }
+
+        return array_values( array_unique( array_map( 'strtolower', $hosts ) ) );
+    }
+
+    /**
+     * Delete every WooCommerce REST API key issued to this plugin by
+     * /wc-auth/v1/authorize.
+     *
+     * WooCommerce stores those keys locally in {prefix}woocommerce_api_keys and
+     * authenticates each request against that table, so deleting the rows is
+     * what revokes them; nothing on the Google side has to agree. Keys are
+     * matched on the description WooCommerce derives from WC_AUTH_APP_NAME
+     * and on the read_write permission this plugin requests, which also
+     * sweeps up keys left over from earlier re-authorizations. The permission
+     * check keeps a key the merchant created by hand with a similar
+     * description (LIKE is case-insensitive under the default collation) out
+     * of the match unless it also has read_write access.
+     *
+     * @return int Number of keys deleted.
+     */
+    public static function revoke_woocommerce_api_keys(): int {
+        global $wpdb;
+        if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) {
+            return 0;
+        }
+
+        $table = $wpdb->prefix . 'woocommerce_api_keys';
+
+        // WooCommerce may have been deleted along with its tables.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Schema probe, nothing to cache.
+        $found = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) );
+        if ( $found !== $table ) {
+            return 0;
+        }
+
+        $description_like = $wpdb->esc_like( self::WC_AUTH_APP_NAME . ' - API (' ) . '%';
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- WooCommerce exposes no API for deleting keys by description, and keys are not cached.
+        $deleted = $wpdb->query(
+            $wpdb->prepare(
+                'DELETE FROM %i WHERE description LIKE %s AND permissions = %s',
+                $table,
+                $description_like,
+                'read_write'
+            )
+        );
+
+        return is_int( $deleted ) ? $deleted : 0;
     }
 
     /**

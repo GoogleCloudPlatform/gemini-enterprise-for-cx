@@ -259,8 +259,8 @@ wp eval '
   update_option( "gecx_pdp_prompts_enabled", "yes" );
   update_option( "gecx_button_placement", "floating" );
   update_option( "gecx_plugin_version", "0.0.0-test" );
-  // Loopback, so the notification in uninstall.php is refused by
-  // wp_safe_remote_post() instead of reaching anything real.
+  // Not an allowed console host, so uninstall.php sends no notification
+  // and mints no JWT instead of reaching anything real.
   update_option( "gecx_console_base_url", "https://127.0.0.1" );
   set_transient( "gecx_admin_notice_error", "temporary error", 300 );
   set_transient( "gecx_guest_jwt_cache", "cached jwt", 300 );

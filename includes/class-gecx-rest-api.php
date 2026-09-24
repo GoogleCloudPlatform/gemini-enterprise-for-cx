@@ -341,6 +341,32 @@ class GECX_Rest_API {
     }
 
     /**
+     * Customer ID named by the request's WooCommerce session cookie, once
+     * WooCommerce has verified the cookie's HMAC.
+     *
+     * has_woocommerce_session_cookie() only checks that a cookie is present,
+     * which any client can fake. WC_Session_Handler::get_session_cookie()
+     * checks the hash WooCommerce signed the cookie with and returns false for
+     * anything else.
+     *
+     * @return string Customer ID, or '' when there is no valid session cookie.
+     */
+    private static function get_verified_session_cookie_customer_id(): string {
+        if ( ! self::has_woocommerce_session_cookie() || ! function_exists( 'WC' ) ) {
+            return '';
+        }
+        $session = WC()->session;
+        if ( ! is_object( $session ) || ! method_exists( $session, 'get_session_cookie' ) ) {
+            return '';
+        }
+        $cookie = $session->get_session_cookie();
+        if ( ! is_array( $cookie ) || empty( $cookie[0] ) ) {
+            return '';
+        }
+        return (string) $cookie[0];
+    }
+
+    /**
      * Sets the WooCommerce session cookie for a guest customer ID.
      *
      * In WooCommerce Store API requests, WC()->session is an instance of
@@ -757,6 +783,7 @@ class GECX_Rest_API {
                 }
             }
         }
+        $cart_token_verified = false;
         if ( '' !== $raw_cart_token ) {
             $candidate_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
             if ( '' !== $candidate_key ) {
@@ -764,7 +791,8 @@ class GECX_Rest_API {
                 $matches_user       = $is_numeric_user_id && '' !== $current_user_key && $candidate_key === $current_user_key;
                 $valid_guest_token  = ! $is_numeric_user_id && '' === $current_user_key;
                 if ( $matches_user || $valid_guest_token ) {
-                    $session_key = $candidate_key;
+                    $session_key         = $candidate_key;
+                    $cart_token_verified = true;
                 }
             }
         }
@@ -791,15 +819,28 @@ class GECX_Rest_API {
             }
         }
 
-        // Always persist gecx_session_id directly to the database session table so
-        // order attribution is preserved even when the shopper starts as an uncookied guest.
+        // Persist gecx_session_id directly to the database session table so
+        // order attribution survives across requests, but only for a session
+        // that already exists: one named by the browser's WooCommerce session
+        // cookie (HMAC-verified, and naming this very row), by an HMAC-verified
+        // Cart-Token, or by the logged-in user. An uncookied guest has none of
+        // those, and WC_Session_Handler hands it a freshly generated t_ key on
+        // every request. Writing that key would let anyone holding the shared
+        // logged-out wp_rest nonce insert an unbounded number of rows. Such a
+        // guest's attribution is carried by the gecx_session_id cookie set
+        // above instead.
+        $cookie_customer_key     = self::get_verified_session_cookie_customer_id();
+        $may_persist_session_row = ( '' !== $cookie_customer_key && $cookie_customer_key === $session_key )
+            || $cart_token_verified
+            || '' !== $current_user_key;
+
         global $wpdb;
         $uses_sql_session_handler = ! isset( WC()->session )
             || ! class_exists( 'WC_Session_Handler' )
             || WC()->session instanceof \WC_Session_Handler
             || ( class_exists( '\Automattic\WooCommerce\StoreApi\SessionHandler' ) && WC()->session instanceof \Automattic\WooCommerce\StoreApi\SessionHandler );
 
-        if ( ! empty( $session_key ) && $uses_sql_session_handler && isset( $wpdb ) ) {
+        if ( $may_persist_session_row && ! empty( $session_key ) && $uses_sql_session_handler && isset( $wpdb ) ) {
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Direct query required to sync WooCommerce session data across requests.
             $existing_session = $wpdb->get_var( $wpdb->prepare(
                 "SELECT session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s",
@@ -1386,13 +1427,22 @@ class GECX_Rest_API {
         }
 
         update_option( 'gecx_agent_name', $agent_name );
-        update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_auth_complete', 1, 'no' );
         if ( '' !== $token_broker ) {
             update_option( 'gecx_token_broker_name', $token_broker );
         }
         delete_option( 'gecx_dismiss_activation_notice' );
-        self::set_order_webhook_status( 'active' );
+
+        // An explicit link ends the merchant's earlier unlink: from here on
+        // SyncState reconciles this binding again.
+        delete_option( GECX_Auth::MERCHANT_UNLINKED_OPTION );
+
+        // A widget the merchant switched off stays off until they switch it
+        // back on, and so does the order webhook.
+        if ( ! get_option( GECX_Auth::MERCHANT_DISABLED_OPTION, false ) ) {
+            update_option( 'gecx_agent_enabled', 1 );
+            self::set_order_webhook_status( 'active' );
+        }
 
         return new \WP_REST_Response( [
             'success'    => true,
@@ -1472,11 +1522,13 @@ class GECX_Rest_API {
     /**
      * Ensures the order.created WooCommerce webhook is registered and signed with the preferred HMAC secret.
      *
-     * @param string $delivery_url Optional delivery URL. Defaults to console base webhook URL.
+     * Deliveries always go to the allowlisted console base URL; callers cannot
+     * choose another destination.
+     *
      * @param string $secret Optional explicit secret. Defaults to preferred webhook secret.
      * @return \WC_Webhook|\WP_Error Webhook instance or WP_Error on failure.
      */
-    public static function ensure_order_webhook( string $delivery_url = '', string $secret = '' ) {
+    public static function ensure_order_webhook( string $secret = '' ) {
         if ( ! class_exists( 'WC_Webhook' ) || ( defined( 'GECX_PHPUNIT_RUNNING' ) && ! empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) ) ) {
             return new \WP_Error( 'woocommerce_not_active', __( 'WooCommerce WC_Webhook class not available.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
         }
@@ -1489,11 +1541,16 @@ class GECX_Rest_API {
             return new \WP_Error( 'missing_secret', __( 'No webhook secret configured.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 
-        if ( empty( $delivery_url ) ) {
-            $console_url  = get_option( 'gecx_console_base_url', 'https://gecx.cloud.google.com' );
-            $console_url  = (string) apply_filters( 'gecx_console_base_url', (string) $console_url );
-            $delivery_url = rtrim( $console_url, '/' ) . '/woocommerce/webhook';
+        $console_url = GECX_Auth::get_console_base_url();
+        if ( '' === $console_url ) {
+            return new \WP_Error( 'console_url_refused', __( 'The configured Google Cloud console URL is not allowed, so no webhook was registered.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
+        $delivery_url = $console_url . '/woocommerce/webhook';
+
+        // Defence in depth: the origin is already allowlisted, but the
+        // gecx_console_base_url filter runs inside get_console_base_url(), so
+        // re-check the final URL rather than trust that nothing upstream
+        // changes.
 
         $delivery_url = esc_url_raw( $delivery_url );
         $scheme       = (string) wp_parse_url( $delivery_url, PHP_URL_SCHEME );
@@ -1607,7 +1664,7 @@ class GECX_Rest_API {
             return new \WP_Error( 'missing_secret', __( 'No webhook secret configured or provided.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 
-        $webhook = self::ensure_order_webhook( '', $webhook_secret );
+        $webhook = self::ensure_order_webhook( $webhook_secret );
         if ( is_wp_error( $webhook ) ) {
             return $webhook;
         }

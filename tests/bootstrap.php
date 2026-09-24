@@ -98,6 +98,8 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_wc_session']           = null;
     $GLOBALS['gecx_test_deleted_cache_keys']   = [];
     $GLOBALS['gecx_test_wc_sessions_table']    = [];
+    // Rows of {prefix}woocommerce_api_keys, keyed by key_id.
+    $GLOBALS['gecx_test_wc_api_keys']          = [];
     $GLOBALS['gecx_test_scheduled_events']     = [];
     $GLOBALS['gecx_test_action_callbacks']     = [];
     $GLOBALS['gecx_test_defer_cron']           = false;
@@ -336,6 +338,26 @@ if ( ! class_exists( 'WC_Session_Handler' ) ) {
         public function has_session(): bool {
             return $this->has_active_session;
         }
+        /**
+         * Mirrors WC_Session_Handler::get_session_cookie(): parses the
+         * wp_woocommerce_session_* cookie and returns false unless its hash
+         * verifies. Here a hash of 'forged' stands in for a failed HMAC check.
+         *
+         * @return array|false
+         */
+        public function get_session_cookie() {
+            foreach ( $_COOKIE as $name => $value ) {
+                if ( 0 !== strpos( (string) $name, 'wp_woocommerce_session_' ) ) {
+                    continue;
+                }
+                $parts = explode( '||', (string) $value );
+                if ( 4 !== count( $parts ) || '' === $parts[0] || '' === $parts[3] || 'forged' === $parts[3] ) {
+                    return false;
+                }
+                return $parts;
+            }
+            return false;
+        }
     }
 }
 
@@ -565,7 +587,7 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
         public function prepare( string $query, ...$args ): string {
             $arg_index = 0;
             return preg_replace_callback(
-                '/%([dsifF])/',
+                '/%([dsifFi])/',
                 static function ( array $matches ) use ( &$arg_index, $args ) {
                     $type = $matches[1];
                     $arg  = $args[ $arg_index++ ] ?? null;
@@ -586,6 +608,9 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
                 $unescaped = str_replace( '\\_', '_', stripslashes( $query ) );
                 if ( false !== strpos( $unescaped, 'woocommerce_sessions' ) ) {
                     return $this->prefix . 'woocommerce_sessions';
+                }
+                if ( false !== strpos( $unescaped, 'woocommerce_api_keys' ) ) {
+                    return empty( $GLOBALS['gecx_test_wc_api_keys_table_missing'] ) ? $this->prefix . 'woocommerce_api_keys' : null;
                 }
                 return $this->prefix . 'wc_webhooks';
             }
@@ -632,6 +657,23 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
                 ];
                 $this->rows_affected = 1;
                 return 1;
+            }
+
+            if ( false !== strpos( $query, 'DELETE FROM' ) && false !== strpos( $query, 'woocommerce_api_keys' ) ) {
+                if ( preg_match( "/description LIKE '([^']+)'/", $query, $like ) ) {
+                    $prefix = str_replace( [ '\\_', '\\%', '%' ], [ '_', '%', '' ], stripslashes( $like[1] ) );
+                    $permissions = preg_match( "/permissions = '([^']+)'/", $query, $perm ) ? $perm[1] : null;
+                    foreach ( array_keys( $GLOBALS['gecx_test_wc_api_keys'] ?? [] ) as $key_id ) {
+                        $row = $GLOBALS['gecx_test_wc_api_keys'][ $key_id ];
+                        // Case-insensitive, like LIKE under the default collation.
+                        if ( 0 === stripos( (string) ( $row['description'] ?? '' ), $prefix )
+                            && ( null === $permissions || ( $row['permissions'] ?? 'read_write' ) === $permissions ) ) {
+                            unset( $GLOBALS['gecx_test_wc_api_keys'][ $key_id ] );
+                            $this->rows_affected++;
+                        }
+                    }
+                }
+                return $this->rows_affected;
             }
 
             if ( false !== strpos( $query, 'DELETE FROM' ) && false !== strpos( $query, 'options' ) ) {
