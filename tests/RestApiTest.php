@@ -2216,6 +2216,33 @@ class RestApiTest extends GECX_TestCase {
         $this->assertArrayHasKey( 'agent_name', $link_route['args'] );
         $this->assertArrayHasKey( 'token_broker_name', $link_route['args'] );
     }
+
+    public function test_concorde_omnichannel_session_id_accepted_for_save_and_webhook_gate(): void {
+        $concorde_session = 'projects/123456789/locations/global/omnichannelSessions/sess_concorde_abc123';
+        $this->assertTrue( GECX_Rest_API::is_valid_session_id( $concorde_session, false ) );
+        $this->assertTrue( GECX_Rest_API::is_valid_session_id( $concorde_session, true ) );
+
+        update_option( 'gecx_webhook_id', 901 );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/a1' );
+        update_option( 'gecx_agent_enabled', 1 );
+
+        $order_id = 4041;
+        $GLOBALS['gecx_test_orders'][ $order_id ] = new WC_Order( $order_id );
+        $GLOBALS['gecx_test_orders'][ $order_id ]->update_meta_data( '_gecx_session_id', $concorde_session );
+
+        $rest_api = new GECX_Rest_API();
+        $this->assertTrue( $rest_api->gate_order_webhook_delivery( true, 901, $order_id ) );
+
+        $response = (object) [ 'data' => [] ];
+        $prepared = $rest_api->add_session_id_to_order_rest_response( $response, $GLOBALS['gecx_test_orders'][ $order_id ] );
+        $this->assertSame( $concorde_session, $prepared->data['_gecx_session_id'] );
+
+        $GLOBALS['gecx_test_orders'][ $order_id ]->update_meta_data( '_gecx_session_id', 'invalid_unqualified_session' );
+        $this->assertFalse( $rest_api->gate_order_webhook_delivery( true, 901, $order_id ) );
+
+        $GLOBALS['gecx_test_orders'][ $order_id ]->update_meta_data( '_gecx_session_id', '' );
+        $this->assertFalse( $rest_api->gate_order_webhook_delivery( true, 901, $order_id ) );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {

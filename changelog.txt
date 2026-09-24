@@ -1,5 +1,10 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-09-24 - version 0.3.20
+* Accept `omnichannelSessions` resource names alongside `commerceSessions` when saving sessions and gating order webhook delivery.
+* Expose `_gecx_session_id` on WooCommerce HPOS REST order responses via `woocommerce_rest_prepare_shop_order_object`, and read per-product suggested prompts overrides through `WC_Product::get_meta()` with `get_post_meta()` fallback.
+* Parse the numeric timestamp prefix of `gecx_last_sync_attempt` explicitly with `strtok()`, and harden `uninstall.php` session cleanup with table-existence checks and keyset pagination.
+
 2026-09-23 - version 0.3.19
 * Restrict `/wp-json/gecx/v1/auth-context` to `POST`. `GET` was registered only so widget bundles predating the switch to `POST` kept working; those are no longer deployed, and a `GET` response can be served from a CDN edge configured to cache everything, handing one shopper's nonce and customer JWT to the next.
 * Stop accepting `Sec-Fetch-Site: none` on `/wp-json/gecx/v1/auth-context`. A browser sends `none` only for a user-initiated load with no initiator document, which a `POST`-only route cannot receive, so the only remaining sender is a non-browser client setting the header itself around a stolen cookie. The header must now say `same-origin`.

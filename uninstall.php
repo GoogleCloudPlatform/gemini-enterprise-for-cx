@@ -289,47 +289,59 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         // Note: session_value LIKE '%gecx_session_id%' performs an unindexed full scan of
         // woocommerce_sessions, acceptable only as a one-shot batch cleanup during uninstall.
         if ( isset( $wpdb ) && is_object( $wpdb ) && method_exists( $wpdb, 'get_results' ) && method_exists( $wpdb, 'update' ) && method_exists( $wpdb, 'prepare' ) ) {
-            $gecx_sessions_table = $wpdb->prefix . 'woocommerce_sessions';
-            $gecx_sessions_like  = '%' . ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( 'gecx_session_id' ) : 'gecx_session_id' ) . '%';
-            $gecx_batch_limit    = 500;
-            $gecx_max_batches    = 100;
-            $gecx_batch_count    = 0;
-            do {
-                $gecx_updated = 0;
-                ++$gecx_batch_count;
+            $gecx_sessions_table  = $wpdb->prefix . 'woocommerce_sessions';
+            $gecx_sessions_exists = true;
+            if ( method_exists( $wpdb, 'get_var' ) ) {
+                $gecx_escaped_sessions_table = method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( $gecx_sessions_table ) : $gecx_sessions_table;
                 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                $gecx_session_rows = $wpdb->get_results(
-                    $wpdb->prepare(
-                        'SELECT session_key, session_value FROM %i WHERE session_value LIKE %s LIMIT %d',
-                        $gecx_sessions_table,
-                        $gecx_sessions_like,
-                        $gecx_batch_limit
-                    )
-                );
-                if ( ! is_array( $gecx_session_rows ) || empty( $gecx_session_rows ) ) {
-                    break;
-                }
-                foreach ( $gecx_session_rows as $gecx_row ) {
-                    if ( ! isset( $gecx_row->session_key, $gecx_row->session_value ) || ! function_exists( 'maybe_unserialize' ) || ! function_exists( 'maybe_serialize' ) ) {
-                        continue;
-                    }
-                    $gecx_session_data = maybe_unserialize( $gecx_row->session_value );
-                    if ( is_array( $gecx_session_data ) && array_key_exists( 'gecx_session_id', $gecx_session_data ) ) {
-                        unset( $gecx_session_data['gecx_session_id'] );
-                        $gecx_serialized = maybe_serialize( $gecx_session_data );
-                        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-                        $wpdb->update(
+                $gecx_sessions_exists = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $gecx_escaped_sessions_table ) ) === $gecx_sessions_table );
+            }
+            if ( $gecx_sessions_exists ) {
+                $gecx_sessions_like = '%' . ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( 'gecx_session_id' ) : 'gecx_session_id' ) . '%';
+                $gecx_batch_limit   = 500;
+                $gecx_max_batches   = 100;
+                $gecx_batch_count   = 0;
+                $gecx_last_key      = '';
+                do {
+                    ++$gecx_batch_count;
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+                    $gecx_session_rows = $wpdb->get_results(
+                        $wpdb->prepare(
+                            'SELECT session_key, session_value FROM %i WHERE session_key > %s AND session_value LIKE %s ORDER BY session_key ASC LIMIT %d',
                             $gecx_sessions_table,
-                            [ 'session_value' => $gecx_serialized ],
-                            [ 'session_key' => (string) $gecx_row->session_key ],
-                            [ '%s' ],
-                            [ '%s' ]
-                        );
-                        ++$gecx_updated;
+                            $gecx_last_key,
+                            $gecx_sessions_like,
+                            $gecx_batch_limit
+                        )
+                    );
+                    if ( ! is_array( $gecx_session_rows ) || empty( $gecx_session_rows ) ) {
+                        break;
                     }
-                }
-                $gecx_fetched_count = count( $gecx_session_rows );
-            } while ( $gecx_fetched_count === $gecx_batch_limit && $gecx_updated > 0 && $gecx_batch_count < $gecx_max_batches );
+                    foreach ( $gecx_session_rows as $gecx_row ) {
+                        if ( ! isset( $gecx_row->session_key, $gecx_row->session_value ) ) {
+                            continue;
+                        }
+                        $gecx_last_key = (string) $gecx_row->session_key;
+                        if ( ! function_exists( 'maybe_unserialize' ) || ! function_exists( 'maybe_serialize' ) ) {
+                            continue;
+                        }
+                        $gecx_session_data = maybe_unserialize( $gecx_row->session_value );
+                        if ( is_array( $gecx_session_data ) && array_key_exists( 'gecx_session_id', $gecx_session_data ) ) {
+                            unset( $gecx_session_data['gecx_session_id'] );
+                            $gecx_serialized = maybe_serialize( $gecx_session_data );
+                            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+                            $wpdb->update(
+                                $gecx_sessions_table,
+                                [ 'session_value' => $gecx_serialized ],
+                                [ 'session_key' => (string) $gecx_row->session_key ],
+                                [ '%s' ],
+                                [ '%s' ]
+                            );
+                        }
+                    }
+                    $gecx_fetched_count = count( $gecx_session_rows );
+                } while ( $gecx_fetched_count === $gecx_batch_limit && $gecx_batch_count < $gecx_max_batches );
+            }
         }
 
         // 4. Clear plugin post meta.

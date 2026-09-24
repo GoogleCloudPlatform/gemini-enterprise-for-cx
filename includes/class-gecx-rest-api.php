@@ -148,6 +148,7 @@ class GECX_Rest_API {
         add_action( 'woocommerce_checkout_create_order', [ $this, 'attach_session_to_order_metadata' ], 10, 2 );
         add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'attach_session_to_order_metadata_store_api' ], 10, 2 );
         add_action( 'rest_api_init', [ $this, 'register_session_rest_field' ] );
+        add_filter( 'woocommerce_rest_prepare_shop_order_object', [ $this, 'add_session_id_to_order_rest_response' ], 10, 2 );
         add_filter( 'woocommerce_webhook_should_deliver', [ $this, 'gate_order_webhook_delivery' ], 10, 3 );
         add_filter( 'woocommerce_webhook_payload', [ $this, 'minimize_order_webhook_payload' ], 10, 4 );
 
@@ -683,9 +684,9 @@ class GECX_Rest_API {
             return false;
         }
         if ( $strict_resource_name ) {
-            return 1 === preg_match( '#^projects/[0-9]+/locations/[a-zA-Z0-9_\-]+/commerceSessions/[a-zA-Z0-9_\-:]+$#', $session_id );
+            return 1 === preg_match( '#^projects/[0-9]+/locations/[a-zA-Z0-9_\-]+/(?:commerceSessions|omnichannelSessions)/[a-zA-Z0-9_\-:]+$#', $session_id );
         }
-        return 1 === preg_match( '#^(projects/[0-9]+/locations/[a-zA-Z0-9_\-]+/commerceSessions/[a-zA-Z0-9_\-:]+|[a-zA-Z0-9_\-:]+)$#', $session_id );
+        return 1 === preg_match( '#^(projects/[0-9]+/locations/[a-zA-Z0-9_\-]+/(?:commerceSessions|omnichannelSessions)/[a-zA-Z0-9_\-:]+|[a-zA-Z0-9_\-:]+)$#', $session_id );
     }
 
     /**
@@ -1916,6 +1917,20 @@ class GECX_Rest_API {
                 'context'     => [ 'view', 'edit' ],
             ],
         ] );
+    }
+
+    /**
+     * Adds `_gecx_session_id` to the HPOS WooCommerce REST API order response.
+     *
+     * @param mixed $response WP_REST_Response object.
+     * @param mixed $order    WC_Order object.
+     * @return mixed
+     */
+    public function add_session_id_to_order_rest_response( $response, $order ) {
+        if ( is_object( $response ) && isset( $response->data ) && is_array( $response->data ) && is_object( $order ) && method_exists( $order, 'get_meta' ) ) {
+            $response->data['_gecx_session_id'] = (string) $order->get_meta( '_gecx_session_id', true );
+        }
+        return $response;
     }
 
     /**
