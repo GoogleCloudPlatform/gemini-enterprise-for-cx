@@ -160,10 +160,11 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         // existed). Holding a keypair is not evidence of that, because
         // activation generates one on every site, so a store that was
         // activated and never connected would otherwise send its URL and the
-        // administrator's email to Google on the way out. An explicit
-        // Disconnect clears gecx_auth_complete and the agent, so only the
-        // retained webhook would still trigger a notification there, which is
-        // correct: the backend may still hold a record for the store.
+        // administrator's email to Google on the way out. Unlinking an agent
+        // clears the agent name but keeps gecx_auth_complete, the paused order
+        // webhook and the WooCommerce API keys, so an unlinked store still
+        // notifies Google, which is correct: the backend still holds its
+        // installation record and credentials.
         $gecx_was_connected = ! empty( $gecx_agent_name )
             || ! empty( $gecx_webhook_id )
             || ! empty( get_option( 'gecx_auth_complete', 0 ) );
@@ -230,6 +231,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         if ( class_exists( 'GECX_Auth' ) ) {
             GECX_Auth::revoke_woocommerce_api_keys();
         }
+        // Literal names: GECX_Auth is not guaranteed to be loaded here.
         delete_option( 'gecx_merchant_unlinked' );
         delete_option( 'gecx_merchant_disabled' );
         if ( function_exists( 'wp_clear_scheduled_hook' ) ) {

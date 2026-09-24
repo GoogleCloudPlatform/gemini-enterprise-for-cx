@@ -44,6 +44,18 @@ class GECX_Auth {
     public const CONSOLE_ALLOWED_HOSTS = [ 'gecx.cloud.google.com' ];
 
     /**
+     * Option set when the merchant explicitly unlinks the agent. See
+     * GECX_Admin::MERCHANT_UNLINKED_OPTION.
+     */
+    public const MERCHANT_UNLINKED_OPTION = 'gecx_merchant_unlinked';
+
+    /**
+     * Option set when the merchant switches the storefront widget off. See
+     * GECX_Admin::MERCHANT_DISABLED_OPTION.
+     */
+    public const MERCHANT_DISABLED_OPTION = 'gecx_merchant_disabled';
+
+    /**
      * app_name sent to /wc-auth/v1/authorize.
      *
      * WooCommerce stores every key it issues through that flow with the
@@ -254,8 +266,12 @@ class GECX_Auth {
      * WooCommerce stores those keys locally in {prefix}woocommerce_api_keys and
      * authenticates each request against that table, so deleting the rows is
      * what revokes them; nothing on the Google side has to agree. Keys are
-     * matched on the description WooCommerce derives from WC_AUTH_APP_NAME,
-     * which also sweeps up keys left over from earlier re-authorizations.
+     * matched on the description WooCommerce derives from WC_AUTH_APP_NAME
+     * and on the read_write permission this plugin requests, which also
+     * sweeps up keys left over from earlier re-authorizations. The permission
+     * check keeps a key the merchant created by hand with a similar
+     * description (LIKE is case-insensitive under the default collation) out
+     * of the match unless it also has read_write access.
      *
      * @return int Number of keys deleted.
      */
@@ -279,9 +295,10 @@ class GECX_Auth {
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- WooCommerce exposes no API for deleting keys by description, and keys are not cached.
         $deleted = $wpdb->query(
             $wpdb->prepare(
-                'DELETE FROM %i WHERE description LIKE %s',
+                'DELETE FROM %i WHERE description LIKE %s AND permissions = %s',
                 $table,
-                $description_like
+                $description_like,
+                'read_write'
             )
         );
 

@@ -427,7 +427,7 @@ class RestApiTest extends GECX_TestCase {
 
     public function test_ensure_order_webhook_woocommerce_not_active_returns_error(): void {
         $GLOBALS['gecx_test_disable_wc_webhook'] = true;
-        $res = GECX_Rest_API::ensure_order_webhook( 'https://example.com/webhook', 'cs_test_secret' );
+        $res = GECX_Rest_API::ensure_order_webhook( 'cs_test_secret' );
         $this->assertTrue( $res instanceof WP_Error );
         $this->assertEquals( 'woocommerce_not_active', $res->get_error_code() );
         $this->assertEquals( 500, $res->get_error_data()['status'] );
@@ -436,27 +436,29 @@ class RestApiTest extends GECX_TestCase {
     public function test_ensure_order_webhook_missing_secret_returns_error(): void {
         delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_webhook_id' );
-        $res = GECX_Rest_API::ensure_order_webhook( 'https://example.com/webhook', '' );
+        $res = GECX_Rest_API::ensure_order_webhook( '' );
         $this->assertTrue( $res instanceof WP_Error );
         $this->assertEquals( 'missing_secret', $res->get_error_code() );
         $this->assertEquals( 400, $res->get_error_data()['status'] );
     }
 
-    public function test_ensure_order_webhook_rejects_non_https_url(): void {
+    public function test_ensure_order_webhook_refuses_non_https_console_url(): void {
         delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_webhook_id' );
-        $res = GECX_Rest_API::ensure_order_webhook( 'http://insecure-site.com/webhook', 'cs_test_secret' );
+        update_option( 'gecx_console_base_url', 'http://gecx.cloud.google.com' );
+        $res = GECX_Rest_API::ensure_order_webhook( 'cs_test_secret' );
         $this->assertTrue( $res instanceof WP_Error );
-        $this->assertEquals( 'invalid_delivery_url', $res->get_error_code() );
+        $this->assertEquals( 'console_url_refused', $res->get_error_code() );
         $this->assertEquals( 400, $res->get_error_data()['status'] );
     }
 
-    public function test_ensure_order_webhook_rejects_malformed_url(): void {
+    public function test_ensure_order_webhook_refuses_malformed_console_url(): void {
         delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_webhook_id' );
-        $res = GECX_Rest_API::ensure_order_webhook( 'javascript:alert(1)', 'cs_test_secret' );
+        update_option( 'gecx_console_base_url', 'javascript:alert(1)' );
+        $res = GECX_Rest_API::ensure_order_webhook( 'cs_test_secret' );
         $this->assertTrue( $res instanceof WP_Error );
-        $this->assertEquals( 'invalid_delivery_url', $res->get_error_code() );
+        $this->assertEquals( 'console_url_refused', $res->get_error_code() );
         $this->assertEquals( 400, $res->get_error_data()['status'] );
     }
 
@@ -549,10 +551,10 @@ class RestApiTest extends GECX_TestCase {
         delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_webhook_id' );
 
-        $created = GECX_Rest_API::ensure_order_webhook( 'https://custom.com/webhook', 'cs_created_secret' );
+        $created = GECX_Rest_API::ensure_order_webhook( 'cs_created_secret' );
         $this->assertTrue( $created instanceof WC_Webhook );
         $this->assertEquals( 'order.created', $created->get_topic() );
-        $this->assertEquals( 'https://custom.com/webhook', $created->get_delivery_url() );
+        $this->assertEquals( 'https://gecx.cloud.google.com/woocommerce/webhook', $created->get_delivery_url() );
         $this->assertEquals( 'cs_created_secret', $created->get_secret() );
         $this->assertEquals( 'active', $created->get_status() );
         $this->assertEquals( 'wp_api_v3', $created->get_api_version() );
@@ -560,10 +562,10 @@ class RestApiTest extends GECX_TestCase {
         $this->assertEquals( $created_id, get_option( 'gecx_webhook_id' ) );
 
         // Update existing webhook
-        $updated = GECX_Rest_API::ensure_order_webhook( 'https://updated.com/webhook', 'cs_updated_secret' );
+        $updated = GECX_Rest_API::ensure_order_webhook( 'cs_updated_secret' );
         $this->assertTrue( $updated instanceof WC_Webhook );
         $this->assertEquals( $created_id, $updated->get_id() );
-        $this->assertEquals( 'https://updated.com/webhook', $updated->get_delivery_url() );
+        $this->assertEquals( 'https://gecx.cloud.google.com/woocommerce/webhook', $updated->get_delivery_url() );
         $this->assertEquals( 'cs_updated_secret', $updated->get_secret() );
     }
 
@@ -582,11 +584,12 @@ class RestApiTest extends GECX_TestCase {
         $this->assertEquals( '', get_option( 'gecx_webhook_id', '' ) );
 
         // Call ensure_order_webhook - should locate existing webhook and update it rather than duplicating
-        $result = GECX_Rest_API::ensure_order_webhook( 'https://new-url.com/webhook', 'cs_new_secret' );
+        $result = GECX_Rest_API::ensure_order_webhook( 'cs_new_secret' );
         $this->assertTrue( $result instanceof WC_Webhook );
         $this->assertEquals( $existing_id, $result->get_id() );
         $this->assertEquals( $existing_id, get_option( 'gecx_webhook_id' ) );
-        $this->assertEquals( 'https://new-url.com/webhook', $result->get_delivery_url() );
+        // A stale delivery URL is rewritten to the console webhook URL.
+        $this->assertEquals( 'https://gecx.cloud.google.com/woocommerce/webhook', $result->get_delivery_url() );
         $this->assertEquals( 'cs_new_secret', $result->get_secret() );
         $this->assertCount( 1, $GLOBALS['gecx_test_webhooks'] );
     }

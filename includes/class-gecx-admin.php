@@ -70,9 +70,10 @@ class GECX_Admin {
      * reported, but apply_sync_status() will not write an agent the backend
      * reports back into this store: no re-link, no re-enabled storefront
      * widget, no reactivated order webhook. It is cleared when the merchant
-     * completes the connect flow or an agent is linked through link-agent.
+     * completes the connect flow, when an agent is linked through link-agent,
+     * and when SyncState first reports that the backend holds no link.
      */
-    public const MERCHANT_UNLINKED_OPTION = 'gecx_merchant_unlinked';
+    public const MERCHANT_UNLINKED_OPTION = GECX_Auth::MERCHANT_UNLINKED_OPTION;
 
     /**
      * Option set when the merchant switches the storefront widget off.
@@ -82,7 +83,7 @@ class GECX_Admin {
      * is set. It is cleared when the merchant switches the widget back on, and
      * by an explicit unlink.
      */
-    public const MERCHANT_DISABLED_OPTION = 'gecx_merchant_disabled';
+    public const MERCHANT_DISABLED_OPTION = GECX_Auth::MERCHANT_DISABLED_OPTION;
 
     /**
      * Option set once the merchant has authorized or connected the store.
@@ -1482,14 +1483,12 @@ class GECX_Admin {
             return '';
         }
 
-        $console_base = untrailingslashit( $this->get_console_base_url() );
-
-        // get_console_base_url() runs the value through a filter, so any plugin
-        // on the site can rewrite the destination. The body carries a
-        // store-signed JWT, so refuse to send it over a non-TLS scheme.
-        // sslverify is intentionally left at its default and must stay there.
-        if ( 'https' !== wp_parse_url( $console_base, PHP_URL_SCHEME ) ) {
-            $this->log_sync( 'skipped, console base URL is not https' );
+        // get_console_base_url() returns '' unless the configured value is an
+        // https origin on an allowed host. sslverify is intentionally left at
+        // its default and must stay there.
+        $console_base = $this->get_console_base_url();
+        if ( '' === $console_base ) {
+            $this->log_sync( 'skipped, console base URL refused' );
             return '';
         }
 
@@ -1612,6 +1611,18 @@ class GECX_Admin {
             return;
         }
 
+        // Once the backend reports no linked agent, the unlink the merchant
+        // asked for has landed on Google's side. Any agent reported after that
+        // comes from a new LinkAgent call, which is the merchant linking again
+        // from the console; LinkAgent pushes link-agent to this store only
+        // best-effort and relies on SyncState when that push fails, so the
+        // flag must not outlive the unlink it guards.
+        if ( '' === $actual && self::is_merchant_unlinked()
+            && in_array( $status, [ 'WOOCOMMERCE_SYNC_STATUS_SYNCED', 'WOOCOMMERCE_SYNC_STATUS_LINK_REQUIRED' ], true ) ) {
+            delete_option( self::MERCHANT_UNLINKED_OPTION );
+            $this->log_sync( 'backend confirms no linked agent, clearing unlink flag' );
+        }
+
         if ( 'WOOCOMMERCE_SYNC_STATUS_SYNCED' === $status ) {
             // Whatever the backend objected to before is resolved.
             delete_option( self::STORE_AUTH_INVALID_OPTION );
@@ -1644,9 +1655,9 @@ class GECX_Admin {
         // objected to previously is resolved.
         delete_option( self::STORE_AUTH_INVALID_OPTION );
 
-        // The merchant unlinked this agent. Whatever the backend still reports
-        // is not consent to link it again; only the connect flow or link-agent
-        // does that.
+        // The merchant unlinked this store and the backend has not yet
+        // confirmed it holds no link, so what it reports is the stale binding,
+        // not consent to link again.
         if ( '' !== $actual && self::is_merchant_unlinked() ) {
             $this->log_sync( 'backend reports an agent the merchant unlinked, not adopting' );
             return;
@@ -1741,22 +1752,26 @@ class GECX_Admin {
     /**
      * Release this store's agent link on Google's side via POST /woocommerce/unlink-agent.
      *
+     * When the console base URL is refused, nothing this store sends can
+     * reach Google, so there is nothing to wait for: the unlink proceeds
+     * locally and the unlinked flag keeps a later SyncState from undoing it.
+     * A transport error, 5xx or missing admin JWT still fails the unlink so
+     * the merchant can retry.
+     *
      * @param string $agent_id Agent the store currently believes it is linked to.
-     * @return bool True when Google confirms the store is no longer linked.
+     * @return bool True when Google confirms the store is no longer linked, or
+     *              when the console base URL is refused.
      */
     private function unlink_agent_remotely( string $agent_id ): bool {
+        $console_base = $this->get_console_base_url();
+        if ( '' === $console_base ) {
+            $this->log_sync( 'unlink not sent, console base URL refused; unlinking locally' );
+            return true;
+        }
+
         $admin_jwt = GECX_Auth::generate_admin_jwt();
         if ( empty( $admin_jwt ) ) {
             $this->log_sync( 'unlink skipped, admin JWT unavailable' );
-            return false;
-        }
-
-        $console_base = untrailingslashit( $this->get_console_base_url() );
-
-        // Same reasoning as sync_agent_state(): the destination is filterable,
-        // and the body carries a store-signed JWT, so refuse a non-TLS scheme.
-        if ( 'https' !== wp_parse_url( $console_base, PHP_URL_SCHEME ) ) {
-            $this->log_sync( 'unlink skipped, console base URL is not https' );
             return false;
         }
 

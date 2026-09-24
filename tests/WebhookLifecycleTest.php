@@ -348,10 +348,10 @@ class WebhookLifecycleTest extends TestCase {
         delete_option( 'gecx_webhook_id' );
         update_option( 'gecx_console_base_url', 'https://attacker.example' );
 
-        $result = GECX_Rest_API::ensure_order_webhook( '', 'cs_' . str_repeat( 'b', 40 ) );
+        $result = GECX_Rest_API::ensure_order_webhook( 'cs_' . str_repeat( 'b', 40 ) );
 
         $this->assertInstanceOf( WP_Error::class, $result );
-        $this->assertSame( 'invalid_delivery_url', $result->get_error_code() );
+        $this->assertSame( 'console_url_refused', $result->get_error_code() );
         foreach ( $GLOBALS['gecx_test_webhooks'] as $webhook ) {
             $this->assertStringNotContainsString( 'attacker.example', (string) ( $webhook['delivery_url'] ?? '' ) );
         }
@@ -361,6 +361,12 @@ class WebhookLifecycleTest extends TestCase {
         $GLOBALS['gecx_test_wc_api_keys'] = [
             7 => [ 'description' => 'Gemini Enterprise For CX - API (2026-09-01 10:00:00)' ],
             8 => [ 'description' => 'Some other app - API (2026-09-01 10:00:00)' ],
+            // Hand-made by the merchant: matches the LIKE case-insensitively
+            // but is not read_write, so it is kept.
+            9 => [
+                'description' => 'gemini enterprise for cx - API (reporting)',
+                'permissions' => 'read',
+            ],
         ];
 
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
@@ -369,7 +375,7 @@ class WebhookLifecycleTest extends TestCase {
 
         include dirname( __DIR__ ) . '/uninstall.php';
 
-        $this->assertSame( [ 8 ], array_keys( $GLOBALS['gecx_test_wc_api_keys'] ) );
+        $this->assertSame( [ 8, 9 ], array_keys( $GLOBALS['gecx_test_wc_api_keys'] ) );
     }
 
     public function test_uninstall_does_not_notify_store_that_only_holds_a_keypair(): void {

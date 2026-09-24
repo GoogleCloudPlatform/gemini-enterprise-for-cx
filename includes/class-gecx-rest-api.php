@@ -1435,9 +1435,8 @@ class GECX_Rest_API {
 
         // An explicit link ends the merchant's earlier unlink: from here on
         // SyncState reconciles this binding again.
-        $unlinked_option = class_exists( 'GECX_Admin' ) ? GECX_Admin::MERCHANT_UNLINKED_OPTION : 'gecx_merchant_unlinked';
-        $disabled_option = class_exists( 'GECX_Admin' ) ? GECX_Admin::MERCHANT_DISABLED_OPTION : 'gecx_merchant_disabled';
-        delete_option( $unlinked_option );
+        $disabled_option = GECX_Auth::MERCHANT_DISABLED_OPTION;
+        delete_option( GECX_Auth::MERCHANT_UNLINKED_OPTION );
 
         // A widget the merchant switched off stays off until they switch it
         // back on, and so does the order webhook.
@@ -1524,11 +1523,13 @@ class GECX_Rest_API {
     /**
      * Ensures the order.created WooCommerce webhook is registered and signed with the preferred HMAC secret.
      *
-     * @param string $delivery_url Optional delivery URL. Defaults to console base webhook URL.
+     * Deliveries always go to the allowlisted console base URL; callers cannot
+     * choose another destination.
+     *
      * @param string $secret Optional explicit secret. Defaults to preferred webhook secret.
      * @return \WC_Webhook|\WP_Error Webhook instance or WP_Error on failure.
      */
-    public static function ensure_order_webhook( string $delivery_url = '', string $secret = '' ) {
+    public static function ensure_order_webhook( string $secret = '' ) {
         if ( ! class_exists( 'WC_Webhook' ) || ( defined( 'GECX_PHPUNIT_RUNNING' ) && ! empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) ) ) {
             return new \WP_Error( 'woocommerce_not_active', __( 'WooCommerce WC_Webhook class not available.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
         }
@@ -1541,13 +1542,11 @@ class GECX_Rest_API {
             return new \WP_Error( 'missing_secret', __( 'No webhook secret configured.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 
-        if ( empty( $delivery_url ) ) {
-            $console_url = GECX_Auth::get_console_base_url();
-            if ( '' === $console_url ) {
-                return new \WP_Error( 'invalid_delivery_url', __( 'Webhook delivery URL must be a valid HTTPS URL.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
-            }
-            $delivery_url = $console_url . '/woocommerce/webhook';
+        $console_url = GECX_Auth::get_console_base_url();
+        if ( '' === $console_url ) {
+            return new \WP_Error( 'console_url_refused', __( 'The configured Google Cloud console URL is not allowed, so no webhook was registered.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
+        $delivery_url = $console_url . '/woocommerce/webhook';
 
         $delivery_url = esc_url_raw( $delivery_url );
         $scheme       = (string) wp_parse_url( $delivery_url, PHP_URL_SCHEME );
@@ -1661,7 +1660,7 @@ class GECX_Rest_API {
             return new \WP_Error( 'missing_secret', __( 'No webhook secret configured or provided.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 
-        $webhook = self::ensure_order_webhook( '', $webhook_secret );
+        $webhook = self::ensure_order_webhook( $webhook_secret );
         if ( is_wp_error( $webhook ) ) {
             return $webhook;
         }

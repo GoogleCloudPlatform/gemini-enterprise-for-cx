@@ -720,6 +720,24 @@ class AdminTest extends GECX_TestCase {
         $this->assertSame( 0, (int) get_option( 'gecx_agent_enabled' ) );
     }
 
+    public function test_unlink_proceeds_locally_when_console_url_refused(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+        update_option( 'gecx_auth_complete', 1 );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+        update_option( 'gecx_console_base_url', 'https://attacker.example' );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->ajax_unlink_agent();
+
+        $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertFalse( get_option( 'gecx_agent_name' ) );
+        $this->assertSame( 0, (int) get_option( 'gecx_agent_enabled' ) );
+        $this->assertSame( 1, (int) get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
+    }
+
     public function test_failed_remote_unlink_changes_nothing(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];

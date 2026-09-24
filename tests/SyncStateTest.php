@@ -1138,6 +1138,42 @@ class SyncStateTest extends GECX_TestCase {
         $this->assert_notice_code( 'gecx_sync_api_keys_invalid' );
     }
 
+    public function test_unlink_flag_clears_once_backend_reports_no_link(): void {
+        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus' => self::LINK_REQUIRED,
+                        'shopDomain' => 'example.com',
+                    ]
+                )
+            )
+        );
+        $this->sync( '' );
+        $this->assertFalse( get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
+        delete_option( 'gecx_sync_last_attempt' );
+
+        // The merchant links again from the console and the best-effort
+        // link-agent push did not reach the store: SyncState adopts it.
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => 'agents/agent_b',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+        $this->sync( '' );
+        $this->assertSame( 'agents/agent_b', get_option( 'gecx_agent_name' ) );
+    }
+
     public function test_link_required_adopt_respects_merchant_disable(): void {
         $webhook = new WC_Webhook();
         $webhook->set_name( 'GECX Agent Order Created' );

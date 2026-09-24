@@ -662,8 +662,12 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
             if ( false !== strpos( $query, 'DELETE FROM' ) && false !== strpos( $query, 'woocommerce_api_keys' ) ) {
                 if ( preg_match( "/description LIKE '([^']+)'/", $query, $like ) ) {
                     $prefix = str_replace( [ '\\_', '\\%', '%' ], [ '_', '%', '' ], stripslashes( $like[1] ) );
+                    $permissions = preg_match( "/permissions = '([^']+)'/", $query, $perm ) ? $perm[1] : null;
                     foreach ( array_keys( $GLOBALS['gecx_test_wc_api_keys'] ?? [] ) as $key_id ) {
-                        if ( 0 === strpos( (string) ( $GLOBALS['gecx_test_wc_api_keys'][ $key_id ]['description'] ?? '' ), $prefix ) ) {
+                        $row = $GLOBALS['gecx_test_wc_api_keys'][ $key_id ];
+                        // Case-insensitive, like LIKE under the default collation.
+                        if ( 0 === stripos( (string) ( $row['description'] ?? '' ), $prefix )
+                            && ( null === $permissions || ( $row['permissions'] ?? 'read_write' ) === $permissions ) ) {
                             unset( $GLOBALS['gecx_test_wc_api_keys'][ $key_id ] );
                             $this->rows_affected++;
                         }
