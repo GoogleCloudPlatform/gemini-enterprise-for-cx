@@ -680,8 +680,8 @@ class AdminTest extends GECX_TestCase {
 
         // 1. Response for ajax_unlink_agent (/woocommerce/unlink-agent)
         $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 200, '' );
-        // 2. Would be consumed by a SyncState call during render_settings_page;
-        // none may be made while the merchant is disconnected.
+        // 2. SyncState during render_settings_page. The backend still reports
+        // the agent; the store must not adopt it after the merchant unlinked.
         $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response(
             200,
             wp_json_encode(
@@ -716,8 +716,6 @@ class AdminTest extends GECX_TestCase {
         $this->assertStringContainsString( 'Store Authorization Complete', $html );
         $this->assertStringNotContainsString( 'id="gecx-authorize-btn"', $html );
 
-        // Only the unlink call went out; the settings page did not sync.
-        $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertSame( 0, (int) get_option( 'gecx_agent_enabled' ) );
     }

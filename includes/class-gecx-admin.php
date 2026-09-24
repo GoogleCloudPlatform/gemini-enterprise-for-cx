@@ -66,10 +66,11 @@ class GECX_Admin {
     /**
      * Option set when the merchant explicitly unlinks the agent.
      *
-     * While set, no SyncState reconciliation runs, so nothing the backend
-     * reports can re-link an agent, re-enable the storefront widget or
-     * reactivate the order webhook. It is cleared when the merchant completes
-     * the connect flow or an agent is linked through link-agent.
+     * SyncState still runs while set, so credential problems are still
+     * reported, but apply_sync_status() will not write an agent the backend
+     * reports back into this store: no re-link, no re-enabled storefront
+     * widget, no reactivated order webhook. It is cleared when the merchant
+     * completes the connect flow or an agent is linked through link-agent.
      */
     public const MERCHANT_UNLINKED_OPTION = 'gecx_merchant_unlinked';
 
@@ -238,11 +239,10 @@ class GECX_Admin {
 
         $current_agent = (string) get_option( 'gecx_agent_name', '' );
         $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
-        if ( self::is_merchant_unlinked() || ( ! $auth_complete && ! $this->has_existing_state( $current_agent ) ) ) {
-            // There is nothing to reconcile yet, or the merchant unlinked
-            // and nothing may be reconciled until they reconnect. Record the
-            // version anyway so the store's first authorization is not also
-            // treated as an upgrade.
+        if ( ! $auth_complete && ! $this->has_existing_state( $current_agent ) ) {
+            // There is nothing to reconcile yet. Record the version anyway so
+            // the store's first authorization is not also treated as an
+            // upgrade.
             update_option( self::PLUGIN_VERSION_OPTION, $current_version, false );
             return;
         }
@@ -307,7 +307,7 @@ class GECX_Admin {
 
         $current_agent = (string) get_option( 'gecx_agent_name', '' );
         $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
-        if ( self::is_merchant_unlinked() || ( ! $auth_complete && ! $this->has_existing_state( $current_agent ) ) ) {
+        if ( ! $auth_complete && ! $this->has_existing_state( $current_agent ) ) {
             update_option( self::PLUGIN_VERSION_OPTION, $current_version, false );
             delete_option( self::VERSION_SYNC_USER_OPTION );
             return;
@@ -1464,14 +1464,6 @@ class GECX_Admin {
      *                response was obtained.
      */
     private function sync_agent_state( string $current_agent, bool $force = false, ?int $user_id = null ): string {
-        // Checked before the legacy backfill below: an unlinked store keeps
-        // its paused order webhook, which has_existing_state() would otherwise
-        // read as grounds to mark authorization complete again.
-        if ( self::is_merchant_unlinked() ) {
-            $this->log_sync( 'skipped, merchant unlinked the agent' );
-            return '';
-        }
-
         $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
         if ( ! $auth_complete && $this->has_existing_state( $current_agent ) ) {
             update_option( self::AUTH_COMPLETE_OPTION, 1, 'no' );
@@ -1630,6 +1622,9 @@ class GECX_Admin {
             // locally. The backend reports the canonical name and the broker on
             // this path too, and a SYNCED store never reaches the adopt branch
             // below, so this is the only chance to pick them up.
+            if ( self::is_merchant_unlinked() ) {
+                return;
+            }
             if ( '' !== $actual && $actual !== $current_agent ) {
                 update_option( 'gecx_agent_name', $actual );
             }
@@ -1648,6 +1643,14 @@ class GECX_Admin {
         // the backend already accepted the JWT and the API keys, so whatever it
         // objected to previously is resolved.
         delete_option( self::STORE_AUTH_INVALID_OPTION );
+
+        // The merchant unlinked this agent. Whatever the backend still reports
+        // is not consent to link it again; only the connect flow or link-agent
+        // does that.
+        if ( '' !== $actual && self::is_merchant_unlinked() ) {
+            $this->log_sync( 'backend reports an agent the merchant unlinked, not adopting' );
+            return;
+        }
 
         // The backend reports the agent it actually holds, so adopt it when
         // there is one.

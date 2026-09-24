@@ -1068,24 +1068,74 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertSame( GECX_VERSION, get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
     }
 
-    public function test_sync_is_skipped_after_merchant_disconnect(): void {
+    public function test_unlinked_store_does_not_adopt_reported_agent(): void {
         update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
         update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+        update_option( 'gecx_agent_enabled', 0 );
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => 'agents/agent_a',
+                        'tokenBrokerName'     => 'brokers/broker_a',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
 
-        $this->assertSame( '', $this->sync( '' ) );
+        $this->sync( '' );
 
-        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
+        $this->assertFalse( get_option( 'gecx_token_broker_name' ) );
+        $this->assertSame( 0, (int) get_option( 'gecx_agent_enabled' ) );
     }
 
-    public function test_version_change_records_version_without_sync_after_merchant_disconnect(): void {
-        $this->seed_upgraded_store();
+    public function test_unlinked_store_ignores_agent_on_synced(): void {
+        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
         update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::SYNCED,
+                        'actualLinkedAgentId' => 'agents/agent_a',
+                        'tokenBrokerName'     => 'brokers/broker_a',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
 
-        $this->run_version_check();
+        $this->sync( '' );
 
-        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
-        $this->assertEquals( GECX_VERSION, get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+        $this->assertFalse( get_option( 'gecx_agent_name' ) );
+        $this->assertFalse( get_option( 'gecx_token_broker_name' ) );
+    }
+
+    public function test_unlinked_store_still_reports_invalid_credentials(): void {
+        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus' => 'WOOCOMMERCE_SYNC_STATUS_WOOCOMMERCE_API_KEYS_INVALID',
+                        'shopDomain' => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        $this->sync( '' );
+
+        $this->assertSame( 1, (int) get_option( GECX_Admin::STORE_AUTH_INVALID_OPTION ) );
+        $this->assert_notice_code( 'gecx_sync_api_keys_invalid' );
     }
 
     public function test_link_required_adopt_respects_merchant_disable(): void {
