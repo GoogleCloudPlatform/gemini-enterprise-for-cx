@@ -1182,7 +1182,8 @@ class GECX_Admin {
             return true;
         }
 
-        $last = (int) get_option( self::SYNC_THROTTLE_OPTION, 0 );
+        $last_stamp = (string) get_option( self::SYNC_THROTTLE_OPTION, '' );
+        $last       = '' !== $last_stamp ? (int) strtok( $last_stamp, ':' ) : 0;
         if ( ! $force && $now - $last < self::SYNC_THROTTLE_SECONDS ) {
             return false;
         }

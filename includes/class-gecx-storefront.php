@@ -556,7 +556,13 @@ class GECX_Storefront {
         }
 
         if ( $product_id > 0 ) {
-            $override = get_post_meta( $product_id, '_gecx_suggested_prompts_override', true );
+            $product  = function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null;
+            $override = ( $product && method_exists( $product, 'get_meta' ) )
+                ? $product->get_meta( '_gecx_suggested_prompts_override', true )
+                : get_post_meta( $product_id, '_gecx_suggested_prompts_override', true );
+            if ( '' === (string) $override && function_exists( 'get_post_meta' ) ) {
+                $override = get_post_meta( $product_id, '_gecx_suggested_prompts_override', true );
+            }
             if ( ! empty( $override ) ) {
                 $prompts_array = array_filter( array_map( 'trim', preg_split( '/\r\n|\r|\n/', (string) $override ) ) );
                 if ( ! empty( $prompts_array ) ) {

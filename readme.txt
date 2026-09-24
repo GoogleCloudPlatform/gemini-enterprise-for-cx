@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.19
+Stable tag: 0.3.20
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -89,6 +89,11 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.20 =
+* Accept `omnichannelSessions` resource names alongside `commerceSessions` when saving sessions and gating order webhook delivery.
+* Expose `_gecx_session_id` on WooCommerce HPOS REST order responses via `woocommerce_rest_prepare_shop_order_object`, and read per-product suggested prompts overrides through `WC_Product::get_meta()` with `get_post_meta()` fallback.
+* Parse the numeric timestamp prefix of `gecx_last_sync_attempt` explicitly with `strtok()`, and harden `uninstall.php` session cleanup with table-existence checks and keyset pagination.
 
 = 0.3.19 =
 * Restrict `/wp-json/gecx/v1/auth-context` to `POST`. `GET` was registered only for widget bundles that predate the switch to `POST`, and a `GET` response can be served from a CDN edge configured to cache everything, handing one shopper's nonce and customer JWT to the next.

@@ -580,7 +580,8 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
 
         public function get_var( string $query ) {
             if ( 0 === strpos( $query, 'SHOW TABLES LIKE' ) ) {
-                if ( false !== strpos( $query, 'woocommerce_sessions' ) ) {
+                $unescaped = str_replace( '\\_', '_', stripslashes( $query ) );
+                if ( false !== strpos( $unescaped, 'woocommerce_sessions' ) ) {
                     return $this->prefix . 'woocommerce_sessions';
                 }
                 return $this->prefix . 'wc_webhooks';
@@ -650,6 +651,10 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
 
         public function get_results( string $query, string $output = OBJECT ): array {
             if ( false !== strpos( $query, 'woocommerce_sessions' ) && false !== strpos( $query, 'session_value LIKE' ) ) {
+                $min_key = '';
+                if ( preg_match( "/session_key > '([^']*)'/", $query, $m ) ) {
+                    $min_key = stripslashes( $m[1] );
+                }
                 $results = [];
                 $keys    = array_unique(
                     array_merge(
@@ -657,7 +662,11 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
                         array_keys( $GLOBALS['gecx_test_wc_sessions_table'] ?? [] )
                     )
                 );
+                sort( $keys, SORT_STRING );
                 foreach ( $keys as $k ) {
+                    if ( '' !== $min_key && strcmp( (string) $k, $min_key ) <= 0 ) {
+                        continue;
+                    }
                     $val = $this->wc_sessions[ $k ] ?? ( $GLOBALS['gecx_test_wc_sessions_table'][ $k ]['session_value'] ?? null );
                     if ( is_string( $val ) && false !== strpos( $val, 'gecx_session_id' ) ) {
                         $results[] = (object) [
