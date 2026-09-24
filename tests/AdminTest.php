@@ -780,6 +780,74 @@ class AdminTest extends GECX_TestCase {
         $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
         $this->assertFalse( get_option( 'gecx_dismiss_activation_notice', false ) );
     }
+
+    public function test_is_standard_rest_api_enabled_requires_pretty_permalinks_and_wp_json(): void {
+        $this->assertTrue( GECX_Admin::is_standard_rest_api_enabled() );
+
+        $GLOBALS['gecx_test_rest_url_prefix'] = 'api';
+        $this->assertFalse( GECX_Admin::is_standard_rest_api_enabled() );
+        $GLOBALS['gecx_test_rest_url_prefix'] = 'wp-json';
+
+        $GLOBALS['gecx_test_rest_plain_permalinks'] = true;
+        $this->assertFalse( GECX_Admin::is_standard_rest_api_enabled() );
+        $GLOBALS['gecx_test_rest_plain_permalinks'] = false;
+
+        update_option( 'permalink_structure', '' );
+        $this->assertFalse( GECX_Admin::is_standard_rest_api_enabled() );
+        delete_option( 'permalink_structure' );
+    }
+
+    public function test_render_settings_page_disables_authorize_and_connect_when_rest_api_non_standard(): void {
+        $GLOBALS['gecx_test_current_user']    = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $GLOBALS['gecx_test_rest_url_prefix'] = 'custom-api';
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+
+        ob_start();
+        $admin->render_settings_page();
+        $html = (string) ob_get_clean();
+
+        $this->assertStringContainsString( 'Permalinks configuration required:', $html );
+        $this->assertStringContainsString( 'options-permalink.php', $html );
+        $this->assertStringContainsString( 'id="gecx-authorize-btn"', $html );
+        $this->assertStringContainsString( 'disabled="disabled"', $html );
+        $this->assertStringNotContainsString( 'href="https://example.com/wc-auth/v1/authorize', $html );
+
+        // Step 2 (authorized, unlinked) also disables Connect and Re-authorize buttons under plain permalinks.
+        $GLOBALS['gecx_test_rest_url_prefix']       = 'wp-json';
+        $GLOBALS['gecx_test_rest_plain_permalinks'] = true;
+        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( 'gecx_sync_last_attempt', time() . ':' . GECX_VERSION );
+
+        ob_start();
+        $admin->render_settings_page();
+        $step2_html = (string) ob_get_clean();
+
+        $this->assertStringContainsString( 'Permalinks configuration required:', $step2_html );
+        $this->assertStringContainsString( 'id="gecx-connect-btn"', $step2_html );
+        $this->assertStringContainsString( 'id="gecx-reauthorize-btn"', $step2_html );
+        $this->assertStringNotContainsString( 'name="action" value="gecx_connect_agent"', $step2_html );
+    }
+
+    public function test_handle_connect_agent_redirect_rejects_plain_permalinks_or_custom_prefix(): void {
+        $GLOBALS['gecx_test_current_user']          = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $GLOBALS['gecx_test_rest_plain_permalinks'] = true;
+        $_POST                                      = [
+            'gecx_connect_nonce' => wp_create_nonce( 'gecx_connect_agent_action' ),
+        ];
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->handle_connect_agent_redirect();
+
+        $this->assertSame(
+            'https://example.com/wp-admin/admin.php?page=gemini-enterprise-for-cx',
+            $GLOBALS['gecx_test_last_redirect']
+        );
+        $this->assertStringContainsString(
+            '/wp-json',
+            (string) get_transient( 'gecx_admin_notice_error' )
+        );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {

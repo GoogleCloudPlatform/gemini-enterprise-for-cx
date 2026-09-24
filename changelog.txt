@@ -4,6 +4,7 @@
 * Accept `omnichannelSessions` resource names alongside `commerceSessions` when saving sessions and gating order webhook delivery.
 * Expose `_gecx_session_id` on WooCommerce HPOS REST order responses via `woocommerce_rest_prepare_shop_order_object`, and read per-product suggested prompts overrides through `WC_Product::get_meta()` with `get_post_meta()` fallback.
 * Parse the numeric timestamp prefix of `gecx_last_sync_attempt` explicitly with `strtok()`, and harden `uninstall.php` session cleanup with table-existence checks and keyset pagination.
+* Require pretty permalinks and the default `/wp-json` REST API prefix on the settings screen before enabling store authorization and Google Cloud connection.
 
 2026-09-23 - version 0.3.19
 * Restrict `/wp-json/gecx/v1/auth-context` to `POST`. `GET` was registered only so widget bundles predating the switch to `POST` kept working; those are no longer deployed, and a `GET` response can be served from a CDN edge configured to cache everything, handing one shopper's nonce and customer JWT to the next.
