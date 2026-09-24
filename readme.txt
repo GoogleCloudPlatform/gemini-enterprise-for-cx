@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.20
+Stable tag: 0.3.21
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -89,6 +89,13 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.21 =
+* Revoke the WooCommerce REST API keys issued through `/wc-auth/v1/authorize` on uninstall. Keys are matched on the plugin's wc-auth description and `read_write` permission. Unlinking an agent keeps the keys and store authorization, so the merchant returns to Step 2.
+* Respect merchant intent in SyncState. An explicit unlink sets `gecx_merchant_unlinked`, which stops SyncState from adopting a reported agent until the backend first reports no link, the merchant completes the connect flow, or an agent is linked via `link-agent`. Credential errors are still reported while it is set. Switching the widget off sets `gecx_merchant_disabled`, and an adopted binding then leaves the widget and order webhook off.
+* Send store-signed JWTs, the connect redirect, webhook deliveries and the uninstall notification only to an `https` origin on an allowed console host (`gecx.cloud.google.com`, extendable with the `GECX_CONSOLE_ALLOWED_HOSTS` constant). A refused `gecx_console_base_url` fails closed, and unlink then completes locally. `GECX_Rest_API::ensure_order_webhook()` no longer accepts a delivery URL.
+* Notify Google on uninstall only when the store was connected (linked agent, order webhook, or completed authorization), not merely because activation generated a keypair.
+* Write a `gecx_session_id` session row only for an HMAC-verified WooCommerce session cookie that matches the session, a verified Cart-Token, or a logged-in user.
 
 = 0.3.20 =
 * Accept `omnichannelSessions` resource names alongside `commerceSessions` when saving sessions and gating order webhook delivery.

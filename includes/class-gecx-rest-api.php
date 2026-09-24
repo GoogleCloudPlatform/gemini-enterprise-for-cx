@@ -1435,12 +1435,11 @@ class GECX_Rest_API {
 
         // An explicit link ends the merchant's earlier unlink: from here on
         // SyncState reconciles this binding again.
-        $disabled_option = GECX_Auth::MERCHANT_DISABLED_OPTION;
         delete_option( GECX_Auth::MERCHANT_UNLINKED_OPTION );
 
         // A widget the merchant switched off stays off until they switch it
         // back on, and so does the order webhook.
-        if ( ! get_option( $disabled_option, false ) ) {
+        if ( ! get_option( GECX_Auth::MERCHANT_DISABLED_OPTION, false ) ) {
             update_option( 'gecx_agent_enabled', 1 );
             self::set_order_webhook_status( 'active' );
         }
@@ -1547,6 +1546,11 @@ class GECX_Rest_API {
             return new \WP_Error( 'console_url_refused', __( 'The configured Google Cloud console URL is not allowed, so no webhook was registered.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
         $delivery_url = $console_url . '/woocommerce/webhook';
+
+        // Defence in depth: the origin is already allowlisted, but the
+        // gecx_console_base_url filter runs inside get_console_base_url(), so
+        // re-check the final URL rather than trust that nothing upstream
+        // changes.
 
         $delivery_url = esc_url_raw( $delivery_url );
         $scheme       = (string) wp_parse_url( $delivery_url, PHP_URL_SCHEME );

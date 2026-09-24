@@ -72,6 +72,12 @@ class GECX_Admin {
      * widget, no reactivated order webhook. It is cleared when the merchant
      * completes the connect flow, when an agent is linked through link-agent,
      * and when SyncState first reports that the backend holds no link.
+     *
+     * Known trade-off: after a local-only unlink (console base URL refused),
+     * or a 403 where the backend still holds another agent, SyncState keeps
+     * reporting an agent, so the flag stays set and the store ignores that
+     * binding until the merchant reconnects or an agent is linked again.
+     * That is deliberate: it fails closed.
      */
     public const MERCHANT_UNLINKED_OPTION = GECX_Auth::MERCHANT_UNLINKED_OPTION;
 
