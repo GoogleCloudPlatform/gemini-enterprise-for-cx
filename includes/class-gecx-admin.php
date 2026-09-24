@@ -639,7 +639,7 @@ class GECX_Admin {
      */
     public function register_settings(): void {
         register_setting( 'gecx_agent_group', 'gecx_agent_name', [
-            'sanitize_callback' => 'sanitize_text_field',
+            'sanitize_callback' => [ self::class, 'sanitize_agent_name' ],
         ] );
         register_setting( 'gecx_agent_group', 'gecx_agent_enabled', [
             'sanitize_callback' => 'absint',
@@ -648,13 +648,13 @@ class GECX_Admin {
             'sanitize_callback' => 'absint',
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_placement', [
-            'sanitize_callback' => 'sanitize_text_field',
+            'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_button_placement' ],
         ] );
         register_setting( 'gecx_agent_group', 'gecx_floating_position', [
             'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_floating_position' ],
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_display_style', [
-            'sanitize_callback' => 'sanitize_text_field',
+            'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_button_display_style' ],
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_label', [
             'sanitize_callback' => 'sanitize_text_field',
@@ -668,6 +668,23 @@ class GECX_Admin {
         register_setting( 'gecx_agent_group', 'gecx_defer_widget_until_interaction', [
             'sanitize_callback' => 'absint',
         ] );
+    }
+
+    /**
+     * Sanitize agent resource name against canonical format.
+     *
+     * @param mixed $agent_name Raw agent name option value.
+     * @return string Validated agent resource name, or empty string if invalid.
+     */
+    public static function sanitize_agent_name( $agent_name ): string {
+        if ( ! is_string( $agent_name ) && ! is_numeric( $agent_name ) ) {
+            return '';
+        }
+        $sanitized = sanitize_text_field( (string) $agent_name );
+        if ( '' === $sanitized || 1 !== preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, $sanitized ) ) {
+            return '';
+        }
+        return $sanitized;
     }
 
     /**
@@ -801,7 +818,8 @@ class GECX_Admin {
      * @return bool True when pretty permalinks and the default `/wp-json` prefix are active.
      */
     public static function is_standard_rest_api_enabled(): bool {
-        if ( '' === (string) get_option( 'permalink_structure', '/%postname%/' ) ) {
+        $structure = (string) get_option( 'permalink_structure', '' );
+        if ( '' === $structure || false !== strpos( $structure, 'index.php' ) ) {
             return false;
         }
 
@@ -1193,10 +1211,9 @@ class GECX_Admin {
             return;
         }
 
-        $placement      = isset( $_POST['placement'] ) && in_array( $_POST['placement'], [ 'nav_menu', 'floating' ], true ) ? sanitize_text_field( wp_unslash( $_POST['placement'] ) ) : 'nav_menu';
+        $placement      = GECX_Storefront::sanitize_button_placement( isset( $_POST['placement'] ) ? sanitize_text_field( wp_unslash( $_POST['placement'] ) ) : null );
         $floating_pos   = GECX_Storefront::sanitize_floating_position( isset( $_POST['floating_position'] ) ? sanitize_text_field( wp_unslash( $_POST['floating_position'] ) ) : null );
-        $allowed_styles = [ 'responsive', 'icon-and-label', 'icon-only', 'label-only' ];
-        $display_style  = isset( $_POST['display_style'] ) && in_array( $_POST['display_style'], $allowed_styles, true ) ? sanitize_text_field( wp_unslash( $_POST['display_style'] ) ) : 'responsive';
+        $display_style  = GECX_Storefront::sanitize_button_display_style( isset( $_POST['display_style'] ) ? sanitize_text_field( wp_unslash( $_POST['display_style'] ) ) : null );
         $label          = isset( $_POST['label'] ) ? sanitize_text_field( wp_unslash( $_POST['label'] ) ) : '';
         $short_label    = isset( $_POST['short_label'] ) ? sanitize_text_field( wp_unslash( $_POST['short_label'] ) ) : '';
         $enable_shimmer = isset( $_POST['enable_shimmer'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enable_shimmer'] ) ) ? 1 : 0;

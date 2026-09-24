@@ -762,6 +762,152 @@ JS;
 
         $this->assertSame( 0, $status, 'Storefront.js failed to capture and attach Cart-Token on plain permalink store: ' . implode( "\n", $output ) );
     }
+
+    public function test_storefront_js_freezes_config_and_rejects_tampered_widget_html(): void {
+        $node = exec( 'which node' );
+        if ( empty( $node ) ) {
+            $this->markTestSkipped( 'Node.js is not available to test storefront.js runtime.' );
+        }
+
+        $script_path = dirname( __DIR__ ) . '/assets/js/storefront.js';
+        $test_runner = <<<'JS'
+const fs = require('fs');
+const vm = require('vm');
+const code = fs.readFileSync(process.argv[2], 'utf8');
+
+let domLoadedCallback = null;
+let appendedNavItem = null;
+const navUl = {
+  appendChild: (child) => { appendedNavItem = child; }
+};
+
+function makeMockTemplateOrDiv(tag) {
+  let rawHtml = '';
+  const parseNode = (htmlStr) => {
+    const hasForbidden = /<(script|iframe|object|embed|svg|img|link|style)\b/i.test(htmlStr);
+    const match = htmlStr.match(/^<([a-z0-9-]+)([^>]*)><\/\1>$/i);
+    return {
+      querySelector: (sel) => {
+        if (sel.indexOf('script') !== -1) {
+          return hasForbidden ? {} : null;
+        }
+        if (!match || match[1].toLowerCase() !== sel.toLowerCase()) {
+          return null;
+        }
+        const attrs = [];
+        const attrRegex = /([a-zA-Z0-9_-]+)="([^"]*)"/g;
+        let m;
+        while ((m = attrRegex.exec(match[2])) !== null) {
+          attrs.push({ name: m[1], value: m[2] });
+        }
+        return {
+          children: [],
+          attributes: attrs
+        };
+      }
+    };
+  };
+  if (tag === 'template') {
+    const tpl = {};
+    Object.defineProperty(tpl, 'innerHTML', {
+      set: (v) => { rawHtml = v; tpl.content = parseNode(v); },
+      get: () => rawHtml
+    });
+    tpl.content = parseNode('');
+    return tpl;
+  }
+  const el = {
+    tagName: tag.toUpperCase(),
+    className: '',
+    style: {},
+    attrs: {},
+    children: [],
+    setAttribute: function(k, v) { this.attrs[k] = v; },
+    appendChild: function(c) { this.children.push(c); }
+  };
+  return el;
+}
+
+const initialConfig = {
+  isWidgetEnabled: true,
+  placement: 'nav_menu',
+  buttonHtml: '<gecx-agent-button display-style="responsive" onclick="evil()"></gecx-agent-button>',
+  sessionUrl: 'https://example.com/wp-json/gecx/v1/session'
+};
+
+const sandbox = {
+  window: {
+    location: { origin: 'https://example.com' },
+    innerWidth: 1024,
+    addEventListener: () => {},
+    gecxStorefrontConfig: initialConfig,
+    fetch: () => Promise.resolve({ headers: { get: () => null } })
+  },
+  document: {
+    readyState: 'loading',
+    addEventListener: (evt, cb) => {
+      if (evt === 'DOMContentLoaded') {
+        domLoadedCallback = cb;
+      }
+    },
+    createElement: (tag) => makeMockTemplateOrDiv(tag),
+    querySelector: (sel) => {
+      if (sel.indexOf('header nav ul') !== -1) {
+        return navUl;
+      }
+      return null;
+    },
+    querySelectorAll: () => []
+  },
+  Object: Object,
+  URL: URL,
+  RegExp: RegExp,
+  console: console
+};
+vm.createContext(sandbox);
+vm.runInContext(code, sandbox);
+
+if (!Object.isFrozen(sandbox.window.gecxStorefrontConfig)) {
+  console.error('Expected window.gecxStorefrontConfig to be frozen');
+  process.exit(1);
+}
+
+// Attempt post-load replacement of window.gecxStorefrontConfig with malicious payload
+sandbox.window.gecxStorefrontConfig = {
+  isWidgetEnabled: true,
+  placement: 'nav_menu',
+  buttonHtml: '<script>alert(1)</script>'
+};
+
+if (typeof domLoadedCallback === 'function') {
+  domLoadedCallback();
+}
+
+if (!appendedNavItem || appendedNavItem.children.length !== 1) {
+  console.error('Expected safe button element to be appended from frozen initial config');
+  process.exit(1);
+}
+const btn = appendedNavItem.children[0];
+if (btn.tagName !== 'GECX-AGENT-BUTTON' || btn.attrs['display-style'] !== 'responsive' || btn.attrs['onclick']) {
+  console.error('Unexpected button element or unstripped onclick attribute:', JSON.stringify(btn));
+  process.exit(1);
+}
+process.exit(0);
+JS;
+
+        $temp_runner = (string) tempnam( sys_get_temp_dir(), 'gecx_js_freeze_' );
+        file_put_contents( $temp_runner, $test_runner );
+
+        $cmd    = sprintf( '%s %s %s', escapeshellcmd( $node ), escapeshellarg( $temp_runner ), escapeshellarg( $script_path ) );
+        $output = [];
+        $status = 0;
+        exec( $cmd, $output, $status );
+        if ( file_exists( $temp_runner ) ) {
+            unlink( $temp_runner );
+        }
+
+        $this->assertSame( 0, $status, 'Storefront.js config freeze / safe element test failed: ' . implode( "\n", $output ) );
+    }
 }
 
 /**

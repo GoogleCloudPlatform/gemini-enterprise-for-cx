@@ -31,6 +31,48 @@ function gecxIsValidCartTokenFormat(token) {
 }
 
 /**
+ * Frozen snapshot of window.gecxStorefrontConfig captured at script evaluation
+ * time so post-load mutations to the global object cannot alter REST URLs or
+ * widget markup injected on DOMContentLoaded / resize.
+ * @type {?Object}
+ */
+const gecxInitialStorefrontConfig = (function() {
+  const raw = (typeof window !== 'undefined' && window.gecxStorefrontConfig) ?
+      window.gecxStorefrontConfig :
+      (typeof gecxStorefrontConfig !== 'undefined' ? gecxStorefrontConfig : null);
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const copy = Object.assign({}, raw);
+  if (typeof Object.freeze === 'function') {
+    try {
+      Object.freeze(raw);
+      Object.freeze(copy);
+    } catch (err) {
+      // Ignore freeze failure on non-extensible host objects.
+    }
+  }
+  return copy;
+})();
+
+/**
+ * Returns the frozen storefront configuration object.
+ * @return {?Object}
+ */
+function gecxGetStorefrontConfig() {
+  if (gecxInitialStorefrontConfig) {
+    return gecxInitialStorefrontConfig;
+  }
+  if (typeof window !== 'undefined' && window.gecxStorefrontConfig) {
+    return window.gecxStorefrontConfig;
+  }
+  if (typeof gecxStorefrontConfig !== 'undefined') {
+    return gecxStorefrontConfig;
+  }
+  return null;
+}
+
+/**
  * The Store API cart endpoint for this store.
  *
  * Read from the localized config, which is built with rest_url() and so is
@@ -40,7 +82,7 @@ function gecxIsValidCartTokenFormat(token) {
  * @return {string}
  */
 function gecxCartRestUrl() {
-  const config = window.gecxStorefrontConfig;
+  const config = gecxGetStorefrontConfig();
   if (config && config.cartRestUrl) {
     return config.cartRestUrl;
   }
@@ -52,7 +94,7 @@ function gecxCartRestUrl() {
  * @return {string}
  */
 function gecxSessionRestUrl() {
-  const config = window.gecxStorefrontConfig;
+  const config = gecxGetStorefrontConfig();
   if (config && config.sessionUrl) {
     return config.sessionUrl;
   }
@@ -214,7 +256,7 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
  * @return {boolean}
  */
 function gecxIsCartOrCheckout() {
-  const config = window.gecxStorefrontConfig;
+  const config = gecxGetStorefrontConfig();
   if (config && typeof config.isCartOrCheckout !== 'undefined') {
     return !!config.isCartOrCheckout;
   }
@@ -229,7 +271,7 @@ function gecxIsCartOrCheckout() {
  * @return {boolean}
  */
 function gecxIsCheckout() {
-  const config = window.gecxStorefrontConfig;
+  const config = gecxGetStorefrontConfig();
   if (config && typeof config.isCheckout !== 'undefined') {
     return !!config.isCheckout;
   }
@@ -243,7 +285,7 @@ function gecxIsCheckout() {
  * @return {boolean}
  */
 function gecxIsCart() {
-  const config = window.gecxStorefrontConfig;
+  const config = gecxGetStorefrontConfig();
   if (config && typeof config.isCart !== 'undefined') {
     return !!config.isCart;
   }
@@ -353,7 +395,7 @@ function gecxResolveRestNonce() {
     return gecxRestNoncePromise;
   }
 
-  const config = window.gecxStorefrontConfig;
+  const config = gecxGetStorefrontConfig();
   const url = (config && config.authContextUrl) ? config.authContextUrl : '';
   if (!url) {
     gecxRestNoncePromise = Promise.resolve('');
@@ -578,12 +620,62 @@ function findMobileHeaderAnchor() {
   return null;
 }
 
+/**
+ * Safely parses localized widget HTML into a freshly constructed custom element
+ * matching expectedTagName, copying only non-event-handler attributes and
+ * rejecting markup with unexpected tags or child elements.
+ * @param {string} html
+ * @param {string} expectedTagName
+ * @return {?Element}
+ */
+function gecxCreateSafeWidgetElement(html, expectedTagName) {
+  if (!html || typeof html !== 'string' || !expectedTagName) {
+    return null;
+  }
+  const tagLower = expectedTagName.toLowerCase();
+  const tpl = document.createElement('template');
+  let rootSearch = null;
+  if (tpl && tpl.content) {
+    tpl.innerHTML = html;
+    rootSearch = tpl.content;
+  } else {
+    const scratch = document.createElement('div');
+    scratch.innerHTML = html;
+    rootSearch = scratch;
+  }
+  if (!rootSearch || typeof rootSearch.querySelector !== 'function') {
+    return null;
+  }
+  if (rootSearch.querySelector('script, iframe, object, embed, svg, img, link, style')) {
+    return null;
+  }
+  const parsed = rootSearch.querySelector(tagLower);
+  if (!parsed || (parsed.children && parsed.children.length > 0)) {
+    return null;
+  }
+  const safeEl = document.createElement(tagLower);
+  const attrs = parsed.attributes || [];
+  for (let i = 0; i < attrs.length; i++) {
+    const attr = attrs[i];
+    if (!attr || !attr.name) {
+      continue;
+    }
+    const nameLower = attr.name.toLowerCase();
+    if (nameLower.indexOf('on') === 0 || !/^[a-z0-9-]+$/.test(nameLower)) {
+      continue;
+    }
+    safeEl.setAttribute(nameLower, attr.value);
+  }
+  return safeEl;
+}
+
 // Client-side DOM check for mobile header button placement.
 function initMobileHeaderPlacement() {
-  if (typeof gecxStorefrontConfig === 'undefined' || !gecxStorefrontConfig.isWidgetEnabled) {
+  const cfg = gecxGetStorefrontConfig();
+  if (!cfg || !cfg.isWidgetEnabled) {
     return;
   }
-  if (gecxStorefrontConfig.placement !== 'nav_menu') {
+  if (cfg.placement !== 'nav_menu') {
     return;
   }
 
@@ -600,10 +692,13 @@ function initMobileHeaderPlacement() {
         anchor.parentNode.insertBefore(existing, anchor);
       }
     } else {
-      const container = document.createElement('div');
-      container.className = 'gecx-mobile-header-button';
-      container.innerHTML = gecxStorefrontConfig.buttonHtml;
-      anchor.parentNode.insertBefore(container, anchor);
+      const btnEl = gecxCreateSafeWidgetElement(cfg.buttonHtml, 'gecx-agent-button');
+      if (btnEl) {
+        const container = document.createElement('div');
+        container.className = 'gecx-mobile-header-button';
+        container.appendChild(btnEl);
+        anchor.parentNode.insertBefore(container, anchor);
+      }
     }
     // Hide all in-menu items so they do not duplicate inside the opened drawer.
     for (let i = 0; i < navItems.length; i++) {
@@ -622,10 +717,13 @@ function initMobileHeaderPlacement() {
     if (window.innerWidth < 600 && !document.querySelector('header nav, nav.main-navigation, .wp-block-navigation')) {
       // Tier 3: Floating Action Button (FAB) safety net only on small screens without any navigation.
       if (!existing) {
-        const container = document.createElement('div');
-        container.className = 'gecx-mobile-header-button gecx-mobile-header-button--floating';
-        container.innerHTML = gecxStorefrontConfig.buttonHtml;
-        document.body.appendChild(container);
+        const btnEl = gecxCreateSafeWidgetElement(cfg.buttonHtml, 'gecx-agent-button');
+        if (btnEl) {
+          const container = document.createElement('div');
+          container.className = 'gecx-mobile-header-button gecx-mobile-header-button--floating';
+          container.appendChild(btnEl);
+          document.body.appendChild(container);
+        }
       }
     }
   }
@@ -633,10 +731,11 @@ function initMobileHeaderPlacement() {
 
 // Client-side DOM check for desktop navigation placement.
 function initNavPlacement() {
-  if (typeof gecxStorefrontConfig === 'undefined' || !gecxStorefrontConfig.isWidgetEnabled) {
+  const cfg = gecxGetStorefrontConfig();
+  if (!cfg || !cfg.isWidgetEnabled) {
     return;
   }
-  if (gecxStorefrontConfig.placement !== 'nav_menu') {
+  if (cfg.placement !== 'nav_menu') {
     return;
   }
   if (document.querySelector('.gecx-nav-menu-item')) {
@@ -647,24 +746,28 @@ function initNavPlacement() {
   const navContainer = document.querySelector(
     'header nav ul, nav.main-navigation ul, nav.primary-navigation ul, #site-navigation ul, header .wp-block-navigation__container, header .nav-menu'
   );
-  if (navContainer && gecxStorefrontConfig.buttonHtml) {
-    const li = document.createElement('li');
-    li.className = 'menu-item gecx-nav-menu-item wp-block-navigation-item';
-    li.style.display = 'inline-flex';
-    li.style.alignItems = 'center';
-    li.style.justifyContent = 'center';
-    li.style.verticalAlign = 'middle';
-    li.innerHTML = gecxStorefrontConfig.buttonHtml;
-    navContainer.appendChild(li);
+  if (navContainer && cfg.buttonHtml) {
+    const btnEl = gecxCreateSafeWidgetElement(cfg.buttonHtml, 'gecx-agent-button');
+    if (btnEl) {
+      const li = document.createElement('li');
+      li.className = 'menu-item gecx-nav-menu-item wp-block-navigation-item';
+      li.style.display = 'inline-flex';
+      li.style.alignItems = 'center';
+      li.style.justifyContent = 'center';
+      li.style.verticalAlign = 'middle';
+      li.appendChild(btnEl);
+      navContainer.appendChild(li);
+    }
   }
 }
 
 // Client-side DOM check for PDP suggested prompts placement (Page builders & non-standard templates fallback).
 function initPdpPlacement() {
-  if (typeof gecxStorefrontConfig === 'undefined' || !gecxStorefrontConfig.isWidgetEnabled) {
+  const cfg = gecxGetStorefrontConfig();
+  if (!cfg || !cfg.isWidgetEnabled) {
     return;
   }
-  if (!gecxStorefrontConfig.isPdp || !gecxStorefrontConfig.pdpPromptsHtml) {
+  if (!cfg.isPdp || !cfg.pdpPromptsHtml) {
     return;
   }
   if (document.querySelector('gecx-suggested-prompts')) {
@@ -677,7 +780,14 @@ function initPdpPlacement() {
     '.summary.entry-summary form.cart, .single-product-summary form.cart, form.cart, .elementor-widget-woocommerce-product-add-to-cart, .et_pb_wc_add_to_cart, .wp-block-woocommerce-add-to-cart-form, .summary.entry-summary, .single-product-summary'
   );
   if (pdpTarget) {
-    pdpTarget.insertAdjacentHTML('afterend', gecxStorefrontConfig.pdpPromptsHtml);
+    const promptsEl = gecxCreateSafeWidgetElement(cfg.pdpPromptsHtml, 'gecx-suggested-prompts');
+    if (promptsEl) {
+      if (typeof pdpTarget.insertAdjacentElement === 'function') {
+        pdpTarget.insertAdjacentElement('afterend', promptsEl);
+      } else if (pdpTarget.parentNode) {
+        pdpTarget.parentNode.insertBefore(promptsEl, pdpTarget.nextSibling);
+      }
+    }
   }
 }
 
@@ -729,7 +839,7 @@ function gecxLoadWidget() {
     gecxWidgetScriptPromise = Promise.resolve();
     return gecxWidgetScriptPromise;
   }
-  const config = window.gecxStorefrontConfig;
+  const config = gecxGetStorefrontConfig();
   const scriptUrl =
       (config && config.widgetScriptUrl) ? config.widgetScriptUrl : '';
   if (!scriptUrl) {
@@ -774,7 +884,7 @@ window.addEventListener('gecx-load-widget', gecxHandleLoadWidgetEvent);
 document.addEventListener('gecx-load-widget', gecxHandleLoadWidgetEvent);
 
 function initDeferredWidgetListeners() {
-  const config = window.gecxStorefrontConfig;
+  const config = gecxGetStorefrontConfig();
   if (!config || config.shouldLoadWidget !== false) {
     return;
   }
