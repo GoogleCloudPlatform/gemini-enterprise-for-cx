@@ -32,21 +32,37 @@ jobs:
           if git diff --quiet -- assets/css/theme.css; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
+            python3 .github/scripts/sync-theme-css.py --check
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Set up PHP for pre-PR verification
+        if: steps.drift.outputs.changed == 'true'
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.2'
+          extensions: openssl, json, mbstring, curl
+          tools: phpunit:9.6.36
+          coverage: none
+
+      - name: Run version parity and PHPUnit verification on updated theme.css
+        if: steps.drift.outputs.changed == 'true'
+        run: |
+          php .github/scripts/check-version.php
+          phpunit --configuration phpunit.xml.dist
 
       - name: Create Pull Request if updated
         if: steps.drift.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c # v6.1.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GECX_CI_TOKEN || secrets.GITHUB_TOKEN }}
           commit-message: "chore(theme): sync theme.css with gstatic release"
           committer: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
           author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
           branch: "automated/sync-theme-css"
           title: "chore: update theme.css from gstatic"
           body: |
-            Automated update detected a new `Upstream-SHA256` at `https://www.gstatic.com/gecx/chat-widget/theme.css` and regenerated `assets/css/theme.css` via `.github/scripts/sync-theme-css.py` (preserving the GPL-3.0 header, unminified formatting, stripped `sourceMappingURL` directives, and local WordPress overrides).
+            Automated update detected a new `Upstream-SHA256` at `https://www.gstatic.com/gecx/chat-widget/theme.css`, regenerated `assets/css/theme.css` via `.github/scripts/sync-theme-css.py` (preserving the GPL-3.0 header, unminified formatting, stripped `sourceMappingURL` directives, and local WordPress overrides), and verified SHA-256 parity and the PHPUnit test suite prior to opening this pull request.
 
-            > **Note:** Because this pull request was opened with `GITHUB_TOKEN`, close and reopen it (or push an empty commit) to trigger `pull_request` CI workflows before merging.
+            > **Note:** Configure the repository secret `GECX_CI_TOKEN` (fine-grained PAT or GitHub App token with `contents: write` and `pull-requests: write`) to trigger `pull_request` workflows automatically on open. If opened via the default `GITHUB_TOKEN` fallback, close and reopen the PR (or push an empty commit) to trigger `pull_request` checks before merging.
           delete-branch: true

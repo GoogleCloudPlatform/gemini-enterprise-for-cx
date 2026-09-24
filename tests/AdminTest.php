@@ -792,9 +792,46 @@ class AdminTest extends GECX_TestCase {
         $this->assertFalse( GECX_Admin::is_standard_rest_api_enabled() );
         $GLOBALS['gecx_test_rest_plain_permalinks'] = false;
 
+        update_option( 'permalink_structure', '/index.php/%postname%/' );
+        $this->assertFalse( GECX_Admin::is_standard_rest_api_enabled() );
+
         update_option( 'permalink_structure', '' );
         $this->assertFalse( GECX_Admin::is_standard_rest_api_enabled() );
+
         delete_option( 'permalink_structure' );
+        $this->assertFalse( GECX_Admin::is_standard_rest_api_enabled() );
+
+        update_option( 'permalink_structure', '/%postname%/' );
+        $this->assertTrue( GECX_Admin::is_standard_rest_api_enabled() );
+    }
+
+    public function test_register_settings_enforces_enum_and_resource_name_sanitize_callbacks(): void {
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->register_settings();
+
+        $registered = $GLOBALS['gecx_test_registered_settings'] ?? [];
+        $this->assertSame(
+            [ GECX_Admin::class, 'sanitize_agent_name' ],
+            $registered['gecx_agent_name']['args']['sanitize_callback'] ?? null
+        );
+        $this->assertSame(
+            [ GECX_Storefront::class, 'sanitize_button_placement' ],
+            $registered['gecx_button_placement']['args']['sanitize_callback'] ?? null
+        );
+        $this->assertSame(
+            [ GECX_Storefront::class, 'sanitize_button_display_style' ],
+            $registered['gecx_button_display_style']['args']['sanitize_callback'] ?? null
+        );
+
+        $valid_agent = 'projects/my-proj/locations/us-central1/agents/agent-123';
+        $this->assertSame( $valid_agent, GECX_Admin::sanitize_agent_name( $valid_agent ) );
+        $this->assertSame( '', GECX_Admin::sanitize_agent_name( 'invalid agent?foo=bar' ) );
+        $this->assertSame( '', GECX_Admin::sanitize_agent_name( [ 'array' ] ) );
+
+        $this->assertSame( 'floating', GECX_Storefront::sanitize_button_placement( 'floating' ) );
+        $this->assertSame( 'nav_menu', GECX_Storefront::sanitize_button_placement( 'arbitrary' ) );
+        $this->assertSame( 'icon-only', GECX_Storefront::sanitize_button_display_style( 'icon-only' ) );
+        $this->assertSame( 'responsive', GECX_Storefront::sanitize_button_display_style( 'arbitrary' ) );
     }
 
     public function test_render_settings_page_disables_authorize_and_connect_when_rest_api_non_standard(): void {

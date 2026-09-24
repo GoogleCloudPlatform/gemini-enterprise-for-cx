@@ -36,6 +36,26 @@ class GECX_Storefront {
     protected bool $pdp_prompts_injected = false;
 
     /**
+     * Allowed button placements.
+     */
+    public const ALLOWED_BUTTON_PLACEMENTS = [ 'nav_menu', 'floating' ];
+
+    /**
+     * Default button placement.
+     */
+    public const DEFAULT_BUTTON_PLACEMENT = 'nav_menu';
+
+    /**
+     * Allowed button display styles.
+     */
+    public const ALLOWED_DISPLAY_STYLES = [ 'responsive', 'icon-and-label', 'icon-only', 'label-only' ];
+
+    /**
+     * Default button display style.
+     */
+    public const DEFAULT_DISPLAY_STYLE = 'responsive';
+
+    /**
      * Allowed floating positions.
      */
     public const ALLOWED_FLOATING_POSITIONS = [ 'bottom_center', 'bottom_left', 'bottom_right', 'center_left', 'center_right' ];
@@ -44,6 +64,32 @@ class GECX_Storefront {
      * Default floating position.
      */
     public const DEFAULT_FLOATING_POSITION = 'bottom_center';
+
+    /**
+     * Sanitize button placement to an allowed key.
+     *
+     * @param mixed $placement Button placement input.
+     * @return string Sanitized placement key.
+     */
+    public static function sanitize_button_placement( $placement ): string {
+        if ( is_string( $placement ) && in_array( $placement, self::ALLOWED_BUTTON_PLACEMENTS, true ) ) {
+            return $placement;
+        }
+        return self::DEFAULT_BUTTON_PLACEMENT;
+    }
+
+    /**
+     * Sanitize button display style to an allowed key.
+     *
+     * @param mixed $style Button display style input.
+     * @return string Sanitized display style key.
+     */
+    public static function sanitize_button_display_style( $style ): string {
+        if ( is_string( $style ) && in_array( $style, self::ALLOWED_DISPLAY_STYLES, true ) ) {
+            return $style;
+        }
+        return self::DEFAULT_DISPLAY_STYLE;
+    }
 
     /**
      * Sanitize floating position to an allowed key.
@@ -621,7 +667,7 @@ class GECX_Storefront {
      * @return string HTML output.
      */
     public function get_agent_button_html( array $overrides = [] ): string {
-        $display_style       = (string) get_option( 'gecx_button_display_style', 'responsive' );
+        $display_style       = self::sanitize_button_display_style( get_option( 'gecx_button_display_style', self::DEFAULT_DISPLAY_STYLE ) );
         $label               = (string) get_option( 'gecx_button_label', '' );
         $default_short_label = __( 'Shop', 'gemini-enterprise-for-cx' );
         $short_label         = (string) get_option( 'gecx_button_short_label', $default_short_label );

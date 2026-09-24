@@ -59,7 +59,10 @@ if ( ! function_exists( 'wc_setcookie' ) ) {
  * the others.
  */
 function gecx_reset_test_globals(): void {
-    $GLOBALS['gecx_test_options']              = [];
+    $GLOBALS['gecx_test_options']              = [
+        'permalink_structure' => '/%postname%/',
+    ];
+    $GLOBALS['gecx_test_registered_settings']  = [];
     $GLOBALS['gecx_test_option_autoload']      = [];
     $GLOBALS['gecx_test_current_user']         = null;
     $GLOBALS['gecx_test_cookie_user_id']       = 0;
@@ -1596,7 +1599,12 @@ if ( ! function_exists( 'wp_redirect' ) ) {
 }
 
 if ( ! function_exists( 'register_setting' ) ) {
-    function register_setting( string $option_group, string $option_name, array $args = [] ): void {}
+    function register_setting( string $option_group, string $option_name, array $args = [] ): void {
+        $GLOBALS['gecx_test_registered_settings'][ $option_name ] = [
+            'group' => $option_group,
+            'args'  => $args,
+        ];
+    }
 }
 
 if ( ! function_exists( 'check_ajax_referer' ) ) {
