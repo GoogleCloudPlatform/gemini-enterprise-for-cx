@@ -65,7 +65,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
 
     try {
         $gecx_agent_name  = get_option( 'gecx_agent_name', '' );
-        $gecx_console_url = get_option( 'gecx_console_base_url', 'https://gecx.cloud.google.com' );
+        // Same allowlist as every other outbound call; '' means do not notify.
+        $gecx_console_url = class_exists( 'GECX_Auth' ) ? GECX_Auth::get_console_base_url() : '';
         $gecx_store_url   = function_exists( 'home_url' ) ? home_url() : '';
 
         // 1. Delete the order.created webhook if present.
@@ -152,23 +153,27 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
 
         // 2. Notify Google Backend via RS256 Bearer JWT.
         //
-        // Only notify Google if this site was actually connected and holds a
-        // valid RSA keypair. Calling generate_admin_jwt() unconditionally would
-        // generate a fresh 2048-bit RSA keypair on every unconnected site (and
-        // every Multisite subsite) whose public key is unknown to the backend.
+        // Only notify Google if the merchant actually connected this site:
+        // it completed authorization, linked an agent, or holds the order
+        // webhook that only a completed authorization creates (the last two
+        // also cover stores that authorized before gecx_auth_complete
+        // existed). Holding a keypair is not evidence of that, because
+        // activation generates one on every site, so a store that was
+        // activated and never connected would otherwise send its URL and the
+        // administrator's email to Google on the way out. An explicit
+        // Disconnect clears gecx_auth_complete and the agent, so only the
+        // retained webhook would still trigger a notification there, which is
+        // correct: the backend may still hold a record for the store.
         $gecx_was_connected = ! empty( $gecx_agent_name )
-            || ! empty( get_option( 'gecx_keypair' ) )
-            // Pre-0.3.15 layout, for a store uninstalled before anything read
-            // the keypair and migrated it.
-            || ! empty( get_option( 'gecx_private_key' ) )
+            || ! empty( $gecx_webhook_id )
             || ! empty( get_option( 'gecx_auth_complete', 0 ) );
 
         $gecx_jwt = '';
-        if ( $gecx_was_connected && class_exists( 'GECX_Auth' ) ) {
+        if ( $gecx_was_connected && '' !== $gecx_console_url && class_exists( 'GECX_Auth' ) ) {
             $gecx_jwt = (string) GECX_Auth::generate_existing_rs256_admin_jwt();
         }
 
-        if ( $gecx_was_connected && ! empty( $gecx_jwt ) && ! empty( $gecx_store_url ) ) {
+        if ( $gecx_was_connected && '' !== $gecx_console_url && ! empty( $gecx_jwt ) && ! empty( $gecx_store_url ) ) {
             $gecx_payload_data = [ 'event' => 'uninstall' ];
             if ( ! empty( $gecx_agent_name ) ) {
                 $gecx_payload_data['agent_name'] = $gecx_agent_name;
@@ -216,6 +221,17 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         }
 
         // 3. Clear all plugin options and scheduled hooks from the local WordPress database.
+        //
+        // Revoke the WooCommerce API keys issued to Google through wc-auth.
+        // They live in this site's woocommerce_api_keys table and would keep
+        // full REST access to orders and customers after the plugin is gone.
+        // Done after the notification above, which the backend may verify by
+        // fetching /wp-json/gecx/v1/public-key with those keys.
+        if ( class_exists( 'GECX_Auth' ) ) {
+            GECX_Auth::revoke_woocommerce_api_keys();
+        }
+        delete_option( 'gecx_merchant_unlinked' );
+        delete_option( 'gecx_merchant_disabled' );
         if ( function_exists( 'wp_clear_scheduled_hook' ) ) {
             wp_clear_scheduled_hook( 'gecx_scheduled_version_sync' );
         }

@@ -653,7 +653,7 @@ class AdminTest extends GECX_TestCase {
         $this->assertSame( '', $output );
     }
 
-    public function test_unlink_agent_returns_user_to_step_2_connect_store(): void {
+    public function test_unlink_agent_keeps_keys_and_returns_user_to_step_2(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $_POST = [
             'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
@@ -672,12 +672,25 @@ class AdminTest extends GECX_TestCase {
         update_option( 'gecx_token_broker_name', 'broker-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
+        $GLOBALS['gecx_test_wc_api_keys'] = [
+            1 => [ 'description' => 'Gemini Enterprise For CX - API (2026-09-01 10:00:00)' ],
+            2 => [ 'description' => 'Gemini Enterprise For CX - API (2026-09-20 12:30:00)' ],
+            3 => [ 'description' => 'Merchant ERP integration' ],
+        ];
+
         // 1. Response for ajax_unlink_agent (/woocommerce/unlink-agent)
         $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 200, '' );
-        // 2. Response for maybe_sync_with_backend during render_settings_page (/woocommerce/sync)
+        // 2. Would be consumed by a SyncState call during render_settings_page;
+        // none may be made while the merchant is disconnected.
         $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response(
             200,
-            wp_json_encode( [ 'status' => 'WOOCOMMERCE_SYNC_STATUS_LINK_REQUIRED' ] )
+            wp_json_encode(
+                [
+                    'syncStatus'          => 'WOOCOMMERCE_SYNC_STATUS_LINK_REQUIRED',
+                    'actualLinkedAgentId' => 'projects/123/locations/global/agents/agent-1',
+                    'shopDomain'          => 'example.com',
+                ]
+            )
         );
 
         $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
@@ -687,6 +700,9 @@ class AdminTest extends GECX_TestCase {
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertSame( $webhook_id, get_option( 'gecx_webhook_id' ) );
         $this->assertSame( 1, get_option( 'gecx_auth_complete' ) );
+        $this->assertSame( 1, get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
+        // Unlinking is not disconnecting: the WooCommerce API keys stay.
+        $this->assertSame( [ 1, 2, 3 ], array_keys( $GLOBALS['gecx_test_wc_api_keys'] ) );
 
         ob_start();
         try {
@@ -699,6 +715,85 @@ class AdminTest extends GECX_TestCase {
         $this->assertStringContainsString( 'id="gecx-connect-btn"', $html );
         $this->assertStringContainsString( 'Store Authorization Complete', $html );
         $this->assertStringNotContainsString( 'id="gecx-authorize-btn"', $html );
+
+        // Only the unlink call went out; the settings page did not sync.
+        $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertFalse( get_option( 'gecx_agent_name' ) );
+        $this->assertSame( 0, (int) get_option( 'gecx_agent_enabled' ) );
+    }
+
+    public function test_failed_remote_unlink_changes_nothing(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+        update_option( 'gecx_auth_complete', 1 );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 500, '' );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->ajax_unlink_agent();
+
+        $this->assertFalse( $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 'projects/123/locations/global/agents/agent-1', get_option( 'gecx_agent_name' ) );
+        $this->assertFalse( get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
+    }
+
+    public function test_revoke_woocommerce_api_keys_tolerates_missing_table(): void {
+        $GLOBALS['gecx_test_wc_api_keys_table_missing'] = true;
+        $GLOBALS['gecx_test_wc_api_keys']               = [
+            1 => [ 'description' => 'Gemini Enterprise For CX - API (2026-09-01 10:00:00)' ],
+        ];
+        try {
+            $this->assertSame( 0, GECX_Auth::revoke_woocommerce_api_keys() );
+            $this->assertCount( 1, $GLOBALS['gecx_test_wc_api_keys'] );
+        } finally {
+            unset( $GLOBALS['gecx_test_wc_api_keys_table_missing'] );
+        }
+    }
+
+    public function test_connect_redirect_refuses_disallowed_console_host(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        update_option( 'gecx_auth_complete', 1 );
+        update_option( 'permalink_structure', '/%postname%/' );
+        update_option( 'gecx_console_base_url', 'https://attacker.example' );
+        $_POST = [ 'gecx_connect_nonce' => wp_create_nonce( 'gecx_connect_agent_action' ) ];
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $this->assertSame( '', $admin->build_connect_agent_url() );
+        $this->assertSame( [], (array) get_option( 'gecx_pending_oauth_states', [] ) );
+
+        $admin->handle_connect_agent_redirect();
+        $this->assertStringNotContainsString( 'attacker.example', (string) $GLOBALS['gecx_test_last_redirect'] );
+    }
+
+    public function test_settings_page_disables_authorize_for_disallowed_console_host(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        update_option( 'permalink_structure', '/%postname%/' );
+        update_option( 'gecx_console_base_url', 'https://attacker.example' );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        ob_start();
+        try {
+            $admin->render_settings_page();
+        } finally {
+            $html = ob_get_clean();
+        }
+
+        $this->assertStringNotContainsString( 'attacker.example', $html );
+        $this->assertStringNotContainsString( 'wc-auth', $html );
+        $this->assertStringContainsString( 'disabled="disabled"', $html );
+    }
+
+    public function test_toggle_app_embed_records_merchant_intent(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ), 'enabled' => '0' ];
+        $admin->ajax_toggle_app_embed();
+        $this->assertSame( 1, get_option( GECX_Admin::MERCHANT_DISABLED_OPTION ) );
+
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ), 'enabled' => '1' ];
+        $admin->ajax_toggle_app_embed();
+        $this->assertFalse( get_option( GECX_Admin::MERCHANT_DISABLED_OPTION ) );
     }
 
     public function test_ajax_handlers_reject_invalid_nonce_and_unauthorized_subscriber(): void {

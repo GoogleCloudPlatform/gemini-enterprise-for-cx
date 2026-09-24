@@ -1700,6 +1700,45 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 1, WC()->session->save_data_calls );
     }
 
+    public function test_save_session_handler_writes_no_row_for_uncookied_guest(): void {
+        global $wpdb;
+        WC()->cart = new WC_Cart_Mock();
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', 'projects/123/locations/global/commerceSessions/sess-flood' );
+        $res = ( new GECX_Rest_API() )->save_session_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertArrayNotHasKey( 't_guest_session_123', $wpdb->wc_sessions );
+    }
+
+    public function test_save_session_handler_writes_no_row_for_forged_session_cookie(): void {
+        global $wpdb;
+        WC()->cart                              = new WC_Cart_Mock();
+        $_COOKIE['wp_woocommerce_session_test'] = 't_guest_session_123||12345||12345||forged';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', 'projects/123/locations/global/commerceSessions/sess-forged' );
+        ( new GECX_Rest_API() )->save_session_handler( $request );
+
+        $this->assertArrayNotHasKey( 't_guest_session_123', $wpdb->wc_sessions );
+    }
+
+    public function test_save_session_handler_writes_row_for_verified_session_cookie(): void {
+        global $wpdb;
+        WC()->cart                              = new WC_Cart_Mock();
+        $_COOKIE['wp_woocommerce_session_test'] = 't_guest_session_123||12345||12345||hash';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', 'projects/123/locations/global/commerceSessions/sess-cookie' );
+        ( new GECX_Rest_API() )->save_session_handler( $request );
+
+        $this->assertArrayHasKey( 't_guest_session_123', $wpdb->wc_sessions );
+        $stored = maybe_unserialize( $wpdb->wc_sessions['t_guest_session_123'] );
+        $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-cookie', $stored['gecx_session_id'] );
+    }
+
     public function test_save_session_handler_persists_cart_token_session_id_to_database(): void {
         global $wpdb;
         WC()->cart = new WC_Cart_Mock();

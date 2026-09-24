@@ -54,13 +54,34 @@ class GECX_Admin {
      * Option set when Google reports that it can no longer use this store's
      * credentials.
      *
-     * The WooCommerce API keys live on the Google side, so there is nothing
-     * local to revoke. This flag makes the settings page offer the authorize
-     * step again and is cleared once the store is authorized. The order
-     * webhook is left alone so re-authorizing reuses it instead of creating a
-     * duplicate.
+     * The keys themselves are left in place here: Google is reporting that it
+     * cannot use them, not that the merchant withdrew them, and re-authorizing
+     * issues fresh ones. They are revoked locally only on uninstall. This flag
+     * makes the settings page offer the authorize step again and is cleared
+     * once the store is authorized. The order webhook is left alone so
+     * re-authorizing reuses it instead of creating a duplicate.
      */
     public const STORE_AUTH_INVALID_OPTION = 'gecx_store_auth_invalid';
+
+    /**
+     * Option set when the merchant explicitly unlinks the agent.
+     *
+     * While set, no SyncState reconciliation runs, so nothing the backend
+     * reports can re-link an agent, re-enable the storefront widget or
+     * reactivate the order webhook. It is cleared when the merchant completes
+     * the connect flow or an agent is linked through link-agent.
+     */
+    public const MERCHANT_UNLINKED_OPTION = 'gecx_merchant_unlinked';
+
+    /**
+     * Option set when the merchant switches the storefront widget off.
+     *
+     * Adopting a binding reported by SyncState or by link-agent updates the
+     * agent name but leaves the widget and the order webhook off while this
+     * is set. It is cleared when the merchant switches the widget back on, and
+     * by an explicit unlink.
+     */
+    public const MERCHANT_DISABLED_OPTION = 'gecx_merchant_disabled';
 
     /**
      * Option set once the merchant has authorized or connected the store.
@@ -217,10 +238,11 @@ class GECX_Admin {
 
         $current_agent = (string) get_option( 'gecx_agent_name', '' );
         $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
-        if ( ! $auth_complete && ! $this->has_existing_state( $current_agent ) ) {
-            // There is nothing to reconcile yet. Record the version anyway so
-            // the store's first authorization is not also treated as an
-            // upgrade.
+        if ( self::is_merchant_unlinked() || ( ! $auth_complete && ! $this->has_existing_state( $current_agent ) ) ) {
+            // There is nothing to reconcile yet, or the merchant unlinked
+            // and nothing may be reconciled until they reconnect. Record the
+            // version anyway so the store's first authorization is not also
+            // treated as an upgrade.
             update_option( self::PLUGIN_VERSION_OPTION, $current_version, false );
             return;
         }
@@ -285,7 +307,7 @@ class GECX_Admin {
 
         $current_agent = (string) get_option( 'gecx_agent_name', '' );
         $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
-        if ( ! $auth_complete && ! $this->has_existing_state( $current_agent ) ) {
+        if ( self::is_merchant_unlinked() || ( ! $auth_complete && ! $this->has_existing_state( $current_agent ) ) ) {
             update_option( self::PLUGIN_VERSION_OPTION, $current_version, false );
             delete_option( self::VERSION_SYNC_USER_OPTION );
             return;
@@ -325,6 +347,13 @@ class GECX_Admin {
     private function has_existing_state( string $current_agent ): bool {
         return '' !== $current_agent
             || ! empty( get_option( 'gecx_webhook_id' ) );
+    }
+
+    /**
+     * Whether the merchant explicitly unlinked the agent and has not re-linked.
+     */
+    public static function is_merchant_unlinked(): bool {
+        return (bool) get_option( self::MERCHANT_UNLINKED_OPTION, false );
     }
 
     /**
@@ -494,6 +523,9 @@ class GECX_Admin {
         );
         update_option( 'gecx_pending_oauth_states', $states, 'no' );
         update_option( self::AUTH_COMPLETE_OPTION, 1, 'no' );
+        // The merchant just completed the connect flow, so reconciling with
+        // Google is what they asked for.
+        delete_option( self::MERCHANT_UNLINKED_OPTION );
 
         // Release the sync throttle window so the landing page reconciles
         // immediately with Cloud if the direct webhook has not arrived yet.
@@ -689,10 +721,12 @@ class GECX_Admin {
 
     /**
      * Get console base URL.
+     *
+     * @return string Allowlisted https origin, or '' when the configured value
+     *                is refused. See GECX_Auth::get_console_base_url().
      */
     private function get_console_base_url(): string {
-        $console_base_option = get_option( 'gecx_console_base_url', 'https://gecx.cloud.google.com' );
-        return (string) apply_filters( 'gecx_console_base_url', (string) $console_base_option );
+        return GECX_Auth::get_console_base_url();
     }
 
     /**
@@ -702,9 +736,16 @@ class GECX_Admin {
      * Keeping this out of `render_settings_page()` prevents every GET load of
      * the settings screen from writing transients/options and prevents the
      * short-lived `admin_jwt` from sitting in the rendered DOM `<a href>`.
+     *
+     * @return string Connect URL, or '' when the console base URL is refused.
      */
     public function build_connect_agent_url(): string {
-        $console_base = untrailingslashit( $this->get_console_base_url() );
+        $console_base = $this->get_console_base_url();
+        if ( '' === $console_base ) {
+            // Nothing is minted: neither the OAuth state nor the admin JWT may
+            // be handed to a destination that is not an allowed console host.
+            return '';
+        }
 
         $oauth_state = wp_generate_password( 32, false );
         set_transient( 'gecx_oauth_state_' . $oauth_state, 1, 15 * MINUTE_IN_SECONDS );
@@ -800,7 +841,19 @@ class GECX_Admin {
         }
 
         $connect_url = $this->build_connect_agent_url();
-        // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect -- Redirecting to the external Google Cloud Console URL built from get_console_base_url().
+        if ( '' === $connect_url ) {
+            set_transient(
+                'gecx_admin_notice_error',
+                __( 'The configured Google Cloud console address is not allowed. Remove the gecx_console_base_url override and try again.', 'gemini-enterprise-for-cx' ),
+                60
+            );
+            wp_safe_redirect( admin_url( 'admin.php?page=gemini-enterprise-for-cx' ) );
+            if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
+                exit;
+            }
+            return;
+        }
+        // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect -- Redirecting to the external Google Cloud Console URL on an allowlisted host (GECX_Auth::get_console_base_url()).
         wp_redirect( $connect_url, 302 );
         if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
             exit;
@@ -873,32 +926,39 @@ class GECX_Admin {
         $button_short_label    = (string) get_option( 'gecx_button_short_label', '' );
         $button_enable_shimmer = (bool) get_option( 'gecx_button_enable_shimmer', 1 );
 
-        $console_base = $this->get_console_base_url();
-        $console_base = untrailingslashit( $console_base );
+        $console_base  = $this->get_console_base_url();
+        $console_ready = '' !== $console_base;
 
         // SyncState can report that Google can no longer use this store's
         // credentials. Treat that as unauthorized so the merchant is offered
         // the authorize step again instead of a dead end.
         $is_authorized  = (bool) get_option( self::AUTH_COMPLETE_OPTION, false ) && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
         $rest_api_ready = self::is_standard_rest_api_enabled();
+        // The wc-auth callback_url receives the consumer key and secret, so the
+        // authorize and connect buttons stay disabled unless the console base
+        // URL is on the allowlist.
+        $connect_ready = $rest_api_ready && $console_ready;
 
-        $oauth_return_url = add_query_arg(
-            [
-                'authorized' => '1',
-            ],
-            admin_url( 'admin.php?page=gemini-enterprise-for-cx' )
-        );
-        $oauth_callback_url = $console_base . self::CONSOLE_WOO_AUTH_WEBHOOK_PATH;
-        $oauth_url = add_query_arg(
-            [
-                'app_name'     => rawurlencode( 'Gemini Enterprise For CX' ),
-                'scope'        => 'read_write',
-                'user_id'      => rawurlencode( home_url() ),
-                'return_url'   => rawurlencode( $oauth_return_url ),
-                'callback_url' => rawurlencode( $oauth_callback_url ),
-            ],
-            home_url( '/wc-auth/v1/authorize' )
-        );
+        $oauth_url = '';
+        if ( $console_ready ) {
+            $oauth_return_url = add_query_arg(
+                [
+                    'authorized' => '1',
+                ],
+                admin_url( 'admin.php?page=gemini-enterprise-for-cx' )
+            );
+            $oauth_callback_url = $console_base . self::CONSOLE_WOO_AUTH_WEBHOOK_PATH;
+            $oauth_url = add_query_arg(
+                [
+                    'app_name'     => rawurlencode( GECX_Auth::WC_AUTH_APP_NAME ),
+                    'scope'        => 'read_write',
+                    'user_id'      => rawurlencode( home_url() ),
+                    'return_url'   => rawurlencode( $oauth_return_url ),
+                    'callback_url' => rawurlencode( $oauth_callback_url ),
+                ],
+                home_url( '/wc-auth/v1/authorize' )
+            );
+        }
         ?>
         <div class="wrap gecx-admin-wrap">
             <h1><?php esc_html_e( 'Gemini Enterprise for CX', 'gemini-enterprise-for-cx' ); ?></h1>
@@ -906,6 +966,14 @@ class GECX_Admin {
             <div id="gecx-admin-notices"></div>
 
             <?php settings_errors( 'gecx_messages' ); ?>
+
+            <?php if ( ! $console_ready ) : ?>
+                <div class="notice notice-error">
+                    <p>
+                        <?php esc_html_e( 'The configured Google Cloud console address is not allowed, so this store cannot be authorized or connected. Remove the gecx_console_base_url override.', 'gemini-enterprise-for-cx' ); ?>
+                    </p>
+                </div>
+            <?php endif; ?>
 
             <?php if ( ! $rest_api_ready ) : ?>
                 <div class="notice notice-error">
@@ -957,7 +1025,7 @@ class GECX_Admin {
                         </p>
 
                         <div style="margin: 24px 0;">
-                            <?php if ( $rest_api_ready ) : ?>
+                            <?php if ( $connect_ready ) : ?>
                                 <a href="<?php echo esc_url( $oauth_url ); ?>"
                                     id="gecx-authorize-btn"
                                     class="button button-primary button-hero"
@@ -992,7 +1060,7 @@ class GECX_Admin {
                         </p>
 
                         <div style="margin: 24px 0; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-                            <?php if ( $rest_api_ready ) : ?>
+                            <?php if ( $connect_ready ) : ?>
                                 <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin: 0; display: inline-flex;">
                                     <input type="hidden" name="action" value="gecx_connect_agent" />
                                     <?php wp_nonce_field( 'gecx_connect_agent_action', 'gecx_connect_nonce' ); ?>
@@ -1041,7 +1109,7 @@ class GECX_Admin {
                                 <?php echo $embed_enabled ? esc_html__( 'Connection Status: Active', 'gemini-enterprise-for-cx' ) : esc_html__( 'Connection Status: Inactive', 'gemini-enterprise-for-cx' ); ?>
                             </span>
                         </h2>
-                        <a href="<?php echo esc_url( $console_base ); ?>" target="_blank" class="button button-secondary">
+                        <a href="<?php echo esc_url( $console_ready ? $console_base : GECX_Auth::DEFAULT_CONSOLE_BASE_URL ); ?>" target="_blank" class="button button-secondary">
                             <?php esc_html_e( 'Open Google Cloud Console', 'gemini-enterprise-for-cx' ); ?>
                         </a>
                     </div>
@@ -1243,6 +1311,11 @@ class GECX_Admin {
 
         $enabled = isset( $_POST['enabled'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enabled'] ) ) ? 1 : 0;
         update_option( 'gecx_agent_enabled', $enabled );
+        if ( 1 === $enabled ) {
+            delete_option( self::MERCHANT_DISABLED_OPTION );
+        } else {
+            update_option( self::MERCHANT_DISABLED_OPTION, 1, false );
+        }
         if ( class_exists( 'GECX_Rest_API' ) ) {
             GECX_Rest_API::set_order_webhook_status( 1 === $enabled ? 'active' : 'paused' );
         }
@@ -1391,6 +1464,14 @@ class GECX_Admin {
      *                response was obtained.
      */
     private function sync_agent_state( string $current_agent, bool $force = false, ?int $user_id = null ): string {
+        // Checked before the legacy backfill below: an unlinked store keeps
+        // its paused order webhook, which has_existing_state() would otherwise
+        // read as grounds to mark authorization complete again.
+        if ( self::is_merchant_unlinked() ) {
+            $this->log_sync( 'skipped, merchant unlinked the agent' );
+            return '';
+        }
+
         $auth_complete = (bool) get_option( self::AUTH_COMPLETE_OPTION, false );
         if ( ! $auth_complete && $this->has_existing_state( $current_agent ) ) {
             update_option( self::AUTH_COMPLETE_OPTION, 1, 'no' );
@@ -1571,9 +1652,11 @@ class GECX_Admin {
         // The backend reports the agent it actually holds, so adopt it when
         // there is one.
         if ( '' !== $actual ) {
-            $current_broker  = (string) get_option( 'gecx_token_broker_name', '' );
-            $current_enabled = (int) get_option( 'gecx_agent_enabled', 0 );
-            if ( $actual === $current_agent && $actual_broker === $current_broker && 1 === $current_enabled ) {
+            $current_broker    = (string) get_option( 'gecx_token_broker_name', '' );
+            $current_enabled   = (int) get_option( 'gecx_agent_enabled', 0 );
+            $merchant_disabled = (bool) get_option( self::MERCHANT_DISABLED_OPTION, false );
+            if ( $actual === $current_agent && $actual_broker === $current_broker
+                && ( 1 === $current_enabled || $merchant_disabled ) ) {
                 return;
             }
 
@@ -1583,9 +1666,14 @@ class GECX_Admin {
             // order webhook. Adopting a link the backend still holds has to
             // re-enable both, or the store looks connected in wp-admin while
             // the storefront stays dark and order attribution stops firing.
-            update_option( 'gecx_agent_enabled', 1 );
-            if ( class_exists( 'GECX_Rest_API' ) ) {
-                GECX_Rest_API::set_order_webhook_status( 'active' );
+            // A merchant who switched the widget off keeps it off: the
+            // backend's view of the binding is not consent to resume sending
+            // orders.
+            if ( ! $merchant_disabled ) {
+                update_option( 'gecx_agent_enabled', 1 );
+                if ( class_exists( 'GECX_Rest_API' ) ) {
+                    GECX_Rest_API::set_order_webhook_status( 'active' );
+                }
             }
             delete_option( 'gecx_dismiss_activation_notice' );
 
@@ -1719,6 +1807,12 @@ class GECX_Admin {
 
     /**
      * AJAX handler to unlink the agent and reset store status.
+     *
+     * Store authorization and the WooCommerce API keys are kept, so the
+     * merchant returns to Step 2 and can link an agent again without
+     * re-authorizing. Unlike the automatic unlink in apply_sync_status(), this
+     * records the merchant's intent so no later SyncState response can quietly
+     * re-link the store.
      */
     public function ajax_unlink_agent(): void {
         if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
@@ -1745,6 +1839,9 @@ class GECX_Admin {
         }
 
         $this->unlink_agent_internal();
+        delete_option( self::MERCHANT_DISABLED_OPTION );
+        update_option( self::MERCHANT_UNLINKED_OPTION, 1, false );
+
         // Re-linking right after an unlink must reconcile immediately.
         $this->clear_sync_window();
         wp_send_json_success();

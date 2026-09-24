@@ -1067,6 +1067,91 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
         $this->assertSame( GECX_VERSION, get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
     }
+
+    public function test_sync_is_skipped_after_merchant_disconnect(): void {
+        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+
+        $this->assertSame( '', $this->sync( '' ) );
+
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertFalse( get_option( 'gecx_agent_name' ) );
+    }
+
+    public function test_version_change_records_version_without_sync_after_merchant_disconnect(): void {
+        $this->seed_upgraded_store();
+        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+
+        $this->run_version_check();
+
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertEquals( GECX_VERSION, get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+    }
+
+    public function test_link_required_adopt_respects_merchant_disable(): void {
+        $webhook = new WC_Webhook();
+        $webhook->set_name( 'GECX Agent Order Created' );
+        $webhook->set_topic( 'order.created' );
+        $webhook->set_delivery_url( 'https://gecx.cloud.google.com/woocommerce/webhook' );
+        $webhook->set_status( 'paused' );
+        $wh_id = $webhook->save();
+        update_option( 'gecx_webhook_id', $wh_id );
+        update_option( 'gecx_auth_complete', 1 );
+        update_option( 'gecx_agent_enabled', 0 );
+        update_option( GECX_Admin::MERCHANT_DISABLED_OPTION, 1 );
+
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus'          => self::LINK_REQUIRED,
+                        'actualLinkedAgentId' => 'agents/agent_recovered',
+                        'tokenBrokerName'     => 'brokers/broker_recovered',
+                        'shopDomain'          => 'example.com',
+                    ]
+                )
+            )
+        );
+
+        require_once dirname( __DIR__ ) . '/includes/class-gecx-rest-api.php';
+        $this->sync( '' );
+
+        $this->assertSame( 'agents/agent_recovered', get_option( 'gecx_agent_name' ) );
+        $this->assertSame( 0, (int) get_option( 'gecx_agent_enabled' ) );
+        $this->assertSame( 'paused', ( new WC_Webhook( $wh_id ) )->get_status() );
+    }
+
+    public function test_sync_refuses_disallowed_console_host(): void {
+        $this->seed_linked_store();
+        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( 'gecx_console_base_url', 'https://attacker.example' );
+
+        $this->sync( 'agents/agent_a' );
+
+        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertSame( 'agents/agent_a', get_option( 'gecx_agent_name' ) );
+    }
+
+    public function test_console_base_url_allowlist(): void {
+        $cases = [
+            'https://gecx.cloud.google.com'                    => true,
+            'https://gecx.cloud.google.com/'                   => true,
+            'https://GECX.cloud.google.com'                    => true,
+            'http://gecx.cloud.google.com'                     => false,
+            'https://gecx.cloud.google.com:8443'               => false,
+            'https://user:pass@gecx.cloud.google.com'          => false,
+            'https://gecx.cloud.google.com/path'               => false,
+            'https://gecx.cloud.google.com?x=1'                => false,
+            'https://gecx.cloud.google.com#frag'               => false,
+            'https://gecx.cloud.google.com.attacker.example'   => false,
+            'https://127.0.0.1'                                => false,
+            ''                                                 => false,
+        ];
+        foreach ( $cases as $url => $expected ) {
+            $this->assertSame( $expected, GECX_Auth::is_allowed_console_base_url( (string) $url ), 'URL: ' . $url );
+        }
+    }
 }
 
 if ( php_sapi_name() === 'cli' && isset( $argv[0] ) && basename( $argv[0] ) === basename( __FILE__ ) ) {
