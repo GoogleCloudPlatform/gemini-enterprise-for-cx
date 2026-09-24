@@ -891,16 +891,16 @@ class GECX_Rest_API {
      * Register API Route to fetch fresh, dynamic auth context (nonce and customer JWT)
      * without caching.
      *
-     * POST is the method the widget uses. Response headers say no-store, but a
-     * CDN configured to "cache everything" can still serve a GET response from
-     * the edge and hand one shopper's nonce and JWT to another; POST is not
-     * cached by such rules. GET remains registered only so widget bundles that
-     * predate the switch keep working, and should be dropped once those are no
-     * longer deployed.
+     * POST only. Response headers say no-store, but a CDN configured to "cache
+     * everything" can still serve a GET response from the edge and hand one
+     * shopper's nonce and JWT to another; POST is not cached by such rules. GET
+     * was previously registered as well, solely so widget bundles predating the
+     * switch to POST kept working. Those are no longer deployed, so the
+     * cacheable method is gone.
      */
     public function register_auth_context_rest_route(): void {
         register_rest_route( 'gecx/v1', '/auth-context', [
-            'methods'             => [ 'GET', 'POST' ],
+            'methods'             => 'POST',
             'callback'            => [ $this, 'auth_context_handler' ],
             'permission_callback' => [ $this, 'check_auth_context_permissions' ],
         ] );
@@ -939,8 +939,13 @@ class GECX_Rest_API {
         }
 
         if ( '' !== $fetch_site ) {
-            $lower_site = strtolower( trim( $fetch_site ) );
-            if ( 'same-origin' !== $lower_site && 'none' !== $lower_site ) {
+            // Only same-origin is accepted. "none" means a user-initiated load
+            // with no initiator document (address bar, bookmark); a browser
+            // cannot produce one for a POST, so the sole remaining sender of
+            // "none" here is a non-browser client setting the header itself
+            // around a stolen cookie. It was accepted while GET was still
+            // registered and is not accepted now.
+            if ( 'same-origin' !== strtolower( trim( $fetch_site ) ) ) {
                 return new \WP_Error( 'rest_forbidden', __( 'Cross-site requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
             }
         }

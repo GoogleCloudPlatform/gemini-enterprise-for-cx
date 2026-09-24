@@ -18,6 +18,21 @@ class RestApiTest extends GECX_TestCase {
     use GECX_CartTokenMinting;
 
     /**
+     * Puts WordPress in the state it reaches once WP::parse_request() has
+     * resolved a REST route.
+     *
+     * Both permalink styles arrive here: the rewrite rule and a ?rest_route=
+     * parameter both end up in query_vars, because rest_route is a registered
+     * public query var. Nothing else names a route the plugin will act on.
+     *
+     * @param mixed $route Route as WordPress resolved it.
+     */
+    private function given_wordpress_resolved_route( $route ): void {
+        $GLOBALS['wp']             = new stdClass();
+        $GLOBALS['wp']->query_vars = [ 'rest_route' => $route ];
+    }
+
+    /**
      * The link endpoint is how the authoritative record in Google Cloud reaches
      * WordPress, and it is the only writer of gecx_agent_name.
      */
@@ -108,10 +123,14 @@ class RestApiTest extends GECX_TestCase {
     /**
      * Without this the backend's Basic Auth call would not be recognised as a
      * WooCommerce API request and the endpoint would reject it.
+     *
+     * Both permalink styles are accepted because the widening reads the route
+     * WordPress resolved, and both styles produce the same one.
      */
     public function test_link_route_accepts_woocommerce_key_auth_pretty_permalink(): void {
         $rest_api               = new GECX_Rest_API();
         $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/link-agent';
+        $this->given_wordpress_resolved_route( '/gecx/v1/link-agent' );
 
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
@@ -119,6 +138,7 @@ class RestApiTest extends GECX_TestCase {
     public function test_link_route_accepts_woocommerce_key_auth_plain_permalink(): void {
         $rest_api               = new GECX_Rest_API();
         $_SERVER['REQUEST_URI'] = '/index.php?rest_route=%2Fgecx%2Fv1%2Flink-agent';
+        $this->given_wordpress_resolved_route( '/gecx/v1/link-agent' );
 
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
@@ -626,57 +646,82 @@ class RestApiTest extends GECX_TestCase {
         $this->assertEquals( 400, $response->get_error_data()['status'] );
     }
 
-    public function test_enable_wc_auth_for_custom_endpoints_returns_true_for_custom_paths(): void {
+    public function test_enable_wc_auth_for_custom_endpoints_returns_true_for_resolved_custom_routes(): void {
         $rest_api = new GECX_Rest_API();
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/webhooks/order-created';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/webhooks/order-created/';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
+        $routes = [
+            '/gecx/v1/webhooks/order-created',
+            '/gecx/v1/webhooks/order-created/',
+            '/gecx/v1/public-key',
+            '/gecx/v1/public-key/',
+            // WordPress hands the route over with whatever leading slashes the
+            // request carried, so the match has to normalise them.
+            '///gecx/v1/public-key',
+            'gecx/v1/public-key',
+        ];
+
+        foreach ( $routes as $route ) {
+            $this->given_wordpress_resolved_route( $route );
+            $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ), $route );
+        }
+    }
+
+    /**
+     * The widening runs on 'determine_current_user'. WP::init() resolves the
+     * current user immediately before WP::parse_request(), so on a front
+     * controller request it always runs before WordPress has resolved a route,
+     * and the only thing available to match is what the request says about
+     * itself.
+     *
+     * Matching that is what allowed a key admitted for a plugin route to be
+     * spent on a core one, so it must decline instead. WooCommerce re-offers
+     * the key after parse_request() via
+     * WC_REST_Authentication::authentication_fallback(), which is where the
+     * routes above are matched.
+     */
+    public function test_enable_wc_auth_declines_before_wordpress_resolves_a_route(): void {
+        $rest_api = new GECX_Rest_API();
 
         $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/public-key';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
-
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/public-key/';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
-
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=%2Fgecx%2Fv1%2Fwebhooks%2Forder-created';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
-
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=/gecx/v1/webhooks/order-created/';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
+        $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
         $_SERVER['REQUEST_URI'] = '/index.php?rest_route=%2Fgecx%2Fv1%2Fpublic-key';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
+        $_GET['rest_route']     = '/gecx/v1/public-key';
+        $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=/gecx/v1/public-key/';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
+        $_GET                = [];
+        $_POST['rest_route'] = '/gecx/v1/public-key';
+        $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=///gecx/v1/public-key';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
+        // WooCommerce's own answer still passes through untouched.
+        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( true ) );
+    }
 
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=gecx/v1/public-key';
-        $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
+    /**
+     * An array cannot name a route, whether it arrives resolved or not.
+     */
+    public function test_enable_wc_auth_refuses_a_resolved_route_that_is_not_a_string(): void {
+        $rest_api = new GECX_Rest_API();
+
+        $this->given_wordpress_resolved_route( [ '/gecx/v1/public-key' ] );
+        $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
 
     public function test_enable_wc_auth_for_custom_endpoints_returns_original_for_other_paths(): void {
         $rest_api = new GECX_Rest_API();
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/session';
+        $this->given_wordpress_resolved_route( '/gecx/v1/session' );
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( true ) );
 
-        $_SERVER['REQUEST_URI'] = '/wp-json/wp/v2/posts';
-        $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
-
-        // False positives: query parameter on unrelated endpoint.
-        $_SERVER['REQUEST_URI'] = '/wp-json/wp/v2/posts?x=gecx/v1/public-key';
+        $this->given_wordpress_resolved_route( '/wp/v2/posts' );
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
         // False positives: hypothetical subpath.
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/public-key-rotate';
+        $this->given_wordpress_resolved_route( '/gecx/v1/public-key-rotate' );
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=%2Fgecx%2Fv1%2Fpublic-key-rotate';
+        // WordPress resolved no route at all, so nothing is dispatched.
+        $this->given_wordpress_resolved_route( '' );
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
 
@@ -786,21 +831,27 @@ class RestApiTest extends GECX_TestCase {
         $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
 
-    public function test_enable_wc_auth_handles_subdirectory_install_and_renamed_prefix(): void {
+    /**
+     * Install layout used to decide this, because the widening parsed the
+     * request path and had to find the home path and the REST prefix in it. It
+     * reads the route WordPress resolved now, which is already relative to
+     * both, so neither a subdirectory install nor a renamed prefix changes the
+     * answer, and a path alone never produces one.
+     */
+    public function test_enable_wc_auth_is_independent_of_install_layout(): void {
         $rest_api = new GECX_Rest_API();
 
         $GLOBALS['gecx_test_home_url'] = 'https://example.com/shop';
         $_SERVER['REQUEST_URI']        = '/shop/wp-json/gecx/v1/public-key';
+        $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
+
+        $this->given_wordpress_resolved_route( '/gecx/v1/public-key' );
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
 
         $GLOBALS['gecx_test_home_url']        = 'https://example.com';
         $GLOBALS['gecx_test_rest_url_prefix'] = 'api';
         $_SERVER['REQUEST_URI']               = '/api/gecx/v1/public-key';
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
-
-        // The old prefix is no longer a REST prefix on this site.
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/public-key';
-        $this->assertFalse( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
     }
 
     public function test_refresh_token_handler_success(): void {
@@ -1375,6 +1426,22 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 403, $perm->get_error_data()['status'] );
     }
 
+    public function test_auth_context_permissions_rejects_sec_fetch_site_none(): void {
+        // "none" is what a browser sends for a user-initiated load with no
+        // initiator document, which a POST-only route cannot receive from a
+        // browser at all. What is left is a client setting the header itself,
+        // so it is refused even when the Origin looks right.
+        $rest_api = new GECX_Rest_API();
+        $request  = new WP_REST_Request();
+        $request->set_header( 'Sec-Fetch-Site', 'none' );
+        $request->set_header( 'Origin', 'https://example.com' );
+
+        $perm = $rest_api->check_auth_context_permissions( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
+    }
+
     public function test_auth_context_permissions_accepts_a_same_origin_referer_without_origin(): void {
         $rest_api = new GECX_Rest_API();
         $request  = new WP_REST_Request();
@@ -1494,17 +1561,18 @@ class RestApiTest extends GECX_TestCase {
         $this->assertNull( $data['customer_jwt'] );
     }
 
-    public function test_auth_context_route_accepts_post_and_get(): void {
+    public function test_auth_context_route_accepts_post_only(): void {
         // The widget posts, so that a CDN told to "cache everything" cannot
-        // serve one shopper's nonce and JWT to the next. GET has to keep
-        // working for bundles deployed before that switch.
+        // serve one shopper's nonce and JWT to the next. GET was registered
+        // alongside POST only for bundles deployed before that switch, and
+        // must not come back.
         $rest_api = new GECX_Rest_API();
 
         $rest_api->register_auth_context_rest_route();
 
         $route = $GLOBALS['gecx_test_rest_routes']['gecx/v1/auth-context'] ?? null;
         $this->assertNotEmpty( $route );
-        $this->assertSame( [ 'GET', 'POST' ], $route['methods'] );
+        $this->assertSame( 'POST', $route['methods'] );
     }
 
     public function test_sync_cart_session_ignores_unrelated_rest_routes(): void {
@@ -1928,6 +1996,7 @@ class RestApiTest extends GECX_TestCase {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $other_admin                       = new WP_User( 2, 'other-admin@example.com', [ 'administrator' ] );
         $_SERVER['REQUEST_URI']            = '/wp-json/gecx/v1/webhooks/order-created';
+        $this->given_wordpress_resolved_route( '/gecx/v1/webhooks/order-created' );
 
         $rest_api = new GECX_Rest_API();
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
@@ -1953,6 +2022,7 @@ class RestApiTest extends GECX_TestCase {
     public function test_widened_wc_auth_rejects_a_route_mismatch_with_403_and_keeps_capabilities_withheld(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ], [ 'read' => true ] );
         $_SERVER['REQUEST_URI']            = '/wp-json/gecx/v1/public-key';
+        $this->given_wordpress_resolved_route( '/gecx/v1/public-key' );
 
         $rest_api = new GECX_Rest_API();
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );
@@ -1987,6 +2057,7 @@ class RestApiTest extends GECX_TestCase {
     public function test_widened_wc_auth_state_is_cleared_when_woocommerce_claims_the_request_itself(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ], [ 'read' => true ] );
         $_SERVER['REQUEST_URI']            = '/wp-json/gecx/v1/link-agent';
+        $this->given_wordpress_resolved_route( '/gecx/v1/link-agent' );
 
         $rest_api = new GECX_Rest_API();
         $this->assertTrue( $rest_api->enable_wc_auth_for_custom_endpoints( false ) );

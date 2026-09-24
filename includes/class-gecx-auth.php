@@ -713,14 +713,21 @@ class GECX_Auth {
      * resolved no REST route, and rest_api_loaded() bails on it, so nothing is
      * dispatched.
      *
-     * It is not always available. Both callers run from
-     * 'determine_current_user', which can fire before WP::parse_request() has,
-     * for instance when another plugin calls wp_get_current_user() during
-     * 'plugins_loaded'. The fallback therefore mirrors the precedence
-     * WP::parse_request() applies to a public query var, which is
-     * WP::$extra_query_vars, then $_POST, then $_GET, then the rewritten path.
-     * Checking the path first, or skipping a tier, would let a request name one
-     * route in the place this reads and have WordPress dispatch another.
+     * It is not always available. Its one caller, is_store_api_request(), runs
+     * from 'determine_current_user', which fires before WP::parse_request()
+     * has: WP::init() resolves the current user immediately before
+     * WP::parse_request() on every front controller request, and another plugin
+     * calling wp_get_current_user() during 'plugins_loaded' moves it earlier
+     * still. The fallback therefore mirrors the precedence WP::parse_request()
+     * applies to a public query var, which is WP::$extra_query_vars, then
+     * $_POST, then $_GET, then the rewritten path. Checking the path first, or
+     * skipping a tier, would let a request name one route in the place this
+     * reads and have WordPress dispatch another.
+     *
+     * The tiers exist because cart-token authentication has to answer while the
+     * request is still being determined and has no second chance: unlike the
+     * WooCommerce key path, nothing re-offers it after parse_request(). That is
+     * why is_request_to_route() does not share them.
      *
      * The fallback tiers additionally require the request to have entered
      * through the front controller. See is_front_controller_request().
@@ -758,16 +765,15 @@ class GECX_Auth {
 
         foreach ( $sources as $source ) {
             if ( isset( $source['rest_route'] ) ) {
-                // Returned raw. Both consumers, is_store_api_route() and
-                // is_request_to_route(), match it against anchored allowlists
-                // and nothing echoes or stores it. sanitize_text_field() only
-                // removes characters, so running it here would leave the plugin
-                // matching against a different string from the one WordPress
-                // dispatches. That divergence is the bug already removed from
-                // the REQUEST_URI tier below.
+                // Returned raw. The consumer, is_store_api_route(), matches it
+                // against an anchored allowlist and nothing echoes or stores
+                // it. sanitize_text_field() only removes characters, so running
+                // it here would leave the plugin matching against a different
+                // string from the one WordPress dispatches. That divergence is
+                // the bug already removed from the REQUEST_URI tier below.
                 //
                 // Non-string values (rest_route[]=x yields an array) are passed
-                // through untouched; both consumers reject anything that is not
+                // through untouched; the consumer rejects anything that is not
                 // a string.
                 return wp_unslash( $source['rest_route'] );
             }
@@ -806,15 +812,43 @@ class GECX_Auth {
     }
 
     /**
-     * Whether the route WordPress is going to dispatch is one of $routes.
+     * Whether the route WordPress has resolved for this request is one of
+     * $routes.
      *
      * For callers that need to scope themselves to a fixed set of the plugin's
      * own routes, rather than to a namespace as is_store_api_route() does.
      *
+     * Only a route WordPress has already resolved counts, so this deliberately
+     * does not use resolve_rest_route(): that infers a route from $_POST, $_GET
+     * or the request path when WP::parse_request() has not run, and for this
+     * caller it never has. WP::init() resolves the current user immediately
+     * before WP::parse_request(), so on a front controller request
+     * 'determine_current_user' always fires first, with no route resolved and
+     * nothing to compare against but the request's own unparsed claims.
+     *
+     * The sole caller widens WooCommerce API key authentication to the routes
+     * in GECX_Rest_API::WC_AUTHENTICATED_ROUTES. Answering from an inferred
+     * route is what lets the route matched here differ from the route
+     * WordPress goes on to dispatch, and a key admitted for the wrong route
+     * carries the key owner's full WordPress capabilities into it.
+     *
+     * Declining to answer early costs nothing. WooCommerce's
+     * WC_REST_Authentication::authentication_fallback() runs on
+     * 'rest_authentication_errors', inside WP_REST_Server::serve_request(), and
+     * opens by calling get_current_user_id(). With no user resolved yet that
+     * re-runs 'determine_current_user', this time after parse_request(), so the
+     * key is offered again against the route WordPress actually resolved and
+     * authenticates there. Confirmed end to end on WP 6.2/WC 7.1.0,
+     * WP 7.1/WC 9.9.0 and WP 7.1/WC 11.1.0, under both permalink styles.
+     *
      * @param string[] $routes Routes to match, without a leading slash.
      */
     public static function is_request_to_route( array $routes ): bool {
-        $route = self::resolve_rest_route();
+        if ( ! isset( $GLOBALS['wp']->query_vars['rest_route'] ) ) {
+            return false;
+        }
+
+        $route = $GLOBALS['wp']->query_vars['rest_route'];
         if ( ! is_string( $route ) ) {
             return false;
         }
@@ -897,7 +931,7 @@ class GECX_Auth {
      *
      * The token always asserts is_admin: false, whatever the shopper can do in
      * WordPress. It is handed to the chat widget over
-     * GET /gecx/v1/auth-context and held in the DOM as a property of the
+     * POST /gecx/v1/auth-context and held in the DOM as a property of the
      * widget element, where any script on the page can read it, so it must not
      * carry a claim that grants anything. An operator who needs one calls
      * generate_admin_jwt(), which gates on capability and lives for 300

@@ -24,7 +24,7 @@ Once we receive your signed CLA, we'll be able to review and accept pull request
 ```bash
 composer install     # installs PHPUnit, PHPCS, WPCS and PHPCompatibility
 composer test        # PHPUnit, the same suite CI runs
-composer lint        # PHPCS, error severity only; this is what CI gates on
+composer lint        # PHPCS, errors and warnings; this is what CI gates on
 composer lint:all    # PHPCS including warnings
 composer lint:fix    # PHPCBF, auto-fixes what it can
 ```
@@ -34,6 +34,11 @@ which enforces the WordPress.org plugin directory requirements, and a check that
 the version in `gecx-agent.php`, `GECX_VERSION`, the `Stable tag` in `readme.txt`
 and the newest `changelog.txt` entry all name the same release.
 
+Plugin Check runs in strict mode, so one of its warnings fails the build exactly
+as an error does. That is deliberate: its warnings are directory review findings,
+and the cheapest time to deal with one is before submission rather than after a
+reviewer rejects the release.
+
 `readme.txt` is the only supported place to declare `Tested up to`. Do not add it
 back to the plugin headers.
 
@@ -42,6 +47,18 @@ chat widget SDK on `gstatic.com`, or the console on `gecx.cloud.google.com` —
 update the "3rd Party Services" and FAQ disclosures in `readme.txt` in the same
 pull request. The WordPress.org directory requires every remote request to be
 disclosed, and an out-of-date disclosure is grounds for removal.
+
+## Assets and Stylesheets
+
+`assets/css/theme.css` provides the default storefront theme and layout for the `<chat-messenger>` custom element so that no stylesheet is loaded from an external origin at runtime.
+
+* **Upstream Provenance:** Built from the Google Customer Engagement Suite chat-messenger bundle, concatenated from `chat-messenger-layout.css` and `chat-messenger-default.css` (published to `https://www.gstatic.com/gecx/chat-widget/theme.css`). The SHA-256 of the reconciled upstream asset is recorded in the `Upstream-SHA256:` header of `assets/css/theme.css`.
+* **Automated Sync:** `.github/workflows/sync-theme-css.yml` runs `.github/scripts/sync-theme-css.py` daily to compare the upstream SHA-256 against `Upstream-SHA256:`. When the digest changes, it regenerates `assets/css/theme.css` (preserving the GPL-3.0 header, unminified formatting, stripped `sourceMappingURL` directives, and local WordPress rules) and opens a pull request.
+* **Manual Refresh:** To check for or apply upstream changes manually:
+  ```bash
+  python3 .github/scripts/sync-theme-css.py --check   # exit 0 if up to date, 1 if drifted
+  python3 .github/scripts/sync-theme-css.py           # regenerate assets/css/theme.css
+  ```
 
 ## Releases
 

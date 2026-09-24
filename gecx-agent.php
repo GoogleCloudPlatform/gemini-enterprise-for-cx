@@ -14,7 +14,7 @@
  * Requires Plugins: woocommerce
  * Requires at least: 6.2
  * Requires PHP:     7.4
- * Version:          0.3.18
+ * Version:          0.3.19
  * Author:           Google LLC
  * Author URI:       https://cloud.google.com/gemini
  * License:          GPLv3
@@ -32,7 +32,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 if ( ! defined( 'GECX_VERSION' ) ) {
-    define( 'GECX_VERSION', '0.3.18' );
+    define( 'GECX_VERSION', '0.3.19' );
 }
 
 
@@ -47,19 +47,19 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-gecx-storefront.php';
 register_activation_hook( __FILE__, [ 'GECX_Admin', 'activate_plugin' ] );
 register_deactivation_hook( __FILE__, [ 'GECX_Admin', 'deactivate_plugin' ] );
 
-/**
- * Loads the plugin text domain for translations.
+/*
+ * There is deliberately no load_plugin_textdomain() call here.
+ *
+ * Since WordPress 4.6 a plugin hosted on WordPress.org has its translations
+ * loaded automatically, keyed on the plugin slug, and Plugin Check flags the
+ * manual call as discouraged. It would also load nothing: the only thing this
+ * plugin ships under /languages is the .pot template, which is a source for
+ * translators rather than a catalogue WordPress can read.
+ *
+ * The 'Text Domain' and 'Domain Path' headers above are still required. They
+ * are what WordPress.org keys translations on, and what wp_set_script_translations()
+ * resolves JSON catalogues against for the admin and storefront bundles.
  */
-function gecx_load_textdomain(): void {
-    if ( function_exists( 'load_plugin_textdomain' ) ) {
-        load_plugin_textdomain(
-            'gemini-enterprise-for-cx',
-            false,
-            dirname( plugin_basename( __FILE__ ) ) . '/languages'
-        );
-    }
-}
-add_action( 'init', 'gecx_load_textdomain' );
 
 /**
  * Initializes the plugin's components if WooCommerce is active.

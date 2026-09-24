@@ -1,0 +1,92 @@
+name: WordPress & WooCommerce Runtime Matrix
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  wp-env:
+    name: WP ${{ matrix.wp-version }} / WC ${{ matrix.wc-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Spelled out rather than crossed, because most of the cross product
+        # is not a supported pair: WooCommerce 11 declares "Requires at
+        # least: WordPress 7.0", so booting it on 6.2 tests nothing except
+        # WooCommerce's own version guard. The pairs below are the floor the
+        # plugin claims in its headers, and the current release of each.
+        include:
+          # The oldest pair the plugin supports: WP 6.2 / WC 7.1.
+          - wp-version: '6.2'
+            wc-version: '7.1.0'
+          - wp-version: '7.1'
+            wc-version: '9.9.0'
+          - wp-version: '7.1'
+            wc-version: '11.1.0'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure wp-env
+        # WooCommerce is listed before "." deliberately. wp-env activates
+        # pluginSources in array order, chained with &&, and gecx-agent.php
+        # carries "Requires Plugins: woocommerce". On WordPress 6.5 and later
+        # the core Plugin Dependencies check refuses to activate this plugin
+        # while WooCommerce is still inactive, which aborts the chain and
+        # fails `wp-env start` outright.
+        #
+        # "testsEnvironment": false is load-bearing. Left unset, wp-env builds
+        # and boots a second, complete WordPress + MySQL stack that nothing
+        # here ever addresses, roughly doubling the job. The option is also
+        # what silences wp-env's deprecation warning about that default.
+        run: |
+          cat << 'EOF' > .wp-env.json
+          {
+            "core": "https://wordpress.org/wordpress-WP_VERSION.zip",
+            "plugins": [
+              "https://downloads.wordpress.org/plugin/woocommerce.WC_VERSION.zip",
+              "."
+            ],
+            "testsEnvironment": false,
+            "config": {
+              "WP_DEBUG": true,
+              "WP_DEBUG_LOG": true,
+              "WP_DEBUG_DISPLAY": false,
+              "SCRIPT_DEBUG": true
+            }
+          }
+          EOF
+          sed -i "s/WP_VERSION/${{ matrix.wp-version }}/; s/WC_VERSION/${{ matrix.wc-version }}/" .wp-env.json
+          cat .wp-env.json
+
+      - name: Start wp-env
+        run: npx --yes @wordpress/env start
+
+      - name: Run runtime integration tests
+        run: bash .github/scripts/test-wp-env.sh
+
+      - name: Print debug.log
+        # WP_DEBUG_DISPLAY is off so notices never reach a response body;
+        # this is the only place they surface.
+        if: always()
+        run: |
+          npx --yes @wordpress/env run cli \
+            bash -c 'if [ -f wp-content/debug.log ]; then cat wp-content/debug.log; else echo "debug.log was not written."; fi'
+
+      - name: Stop wp-env
+        if: always()
+        run: npx --yes @wordpress/env stop
