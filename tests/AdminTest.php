@@ -107,7 +107,8 @@ class AdminTest extends GECX_TestCase {
         $this->assertEquals( 'https://gecx.cloud.google.com/woocommerce/unlink-agent', $request['url'] );
         $body = json_decode( (string) $request['args']['body'], true );
         $this->assertEquals( 'projects/123/locations/global/agents/agent-1', $body['agent_id'] );
-        $this->assertTrue( ! empty( $body['admin_jwt'] ) );
+        $this->assertArrayNotHasKey( 'admin_jwt', $body );
+        $this->assertMatchesRegularExpression( '/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/', (string) ( $request['args']['headers']['Authorization'] ?? '' ) );
 
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertFalse( get_option( 'gecx_token_broker_name' ) );

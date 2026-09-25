@@ -1509,27 +1509,25 @@ class GECX_Admin {
             return '';
         }
 
-        // NOTE: admin_jwt is intentionally sent in the JSON body rather than an
-        // Authorization header. The endpoint deserializes the body directly into
-        // the SyncWooCommerceStateRequest proto, whose admin_jwt field is
-        // required; it does not read Authorization. That header is also reserved
-        // for Google account auth on this route, so sending a store-signed JWT
-        // there would be rejected before reaching the handler.
+        // admin_jwt is sent as `Authorization: Bearer <token>` rather than in
+        // the JSON body, so it is not captured by anything that logs or
+        // persists request bodies. WooCommerceSyncStateAction reads the header
+        // only when the body carries no admin_jwt.
         // wp_safe_remote_post() rather than wp_remote_post(): the destination
         // comes from an option and a filter, so it validates the resolved host
         // against the private and loopback ranges. redirection 0 because the
-        // body carries a store-signed admin JWT and a 30x would hand it to
+        // request carries a store-signed admin JWT and a 30x would hand it to
         // whatever host the redirect names, unvalidated.
         $response = wp_safe_remote_post(
             $console_base . self::CONSOLE_SYNC_STATE_PATH,
             [
                 'headers'     => [
-                    'Content-Type' => 'application/json',
-                    'Accept'       => 'application/json',
+                    'Content-Type'  => 'application/json',
+                    'Accept'        => 'application/json',
+                    'Authorization' => 'Bearer ' . $admin_jwt,
                 ],
                 'body'        => wp_json_encode(
                     [
-                        'admin_jwt'         => $admin_jwt,
                         'expected_agent_id' => $current_agent,
                     ]
                 ),
@@ -1793,13 +1791,13 @@ class GECX_Admin {
             $console_base . self::CONSOLE_UNLINK_AGENT_PATH,
             [
                 'headers'     => [
-                    'Content-Type' => 'application/json',
-                    'Accept'       => 'application/json',
+                    'Content-Type'  => 'application/json',
+                    'Accept'        => 'application/json',
+                    'Authorization' => 'Bearer ' . $admin_jwt,
                 ],
                 'body'        => wp_json_encode(
                     [
-                        'agent_id'  => $agent_id,
-                        'admin_jwt' => $admin_jwt,
+                        'agent_id' => $agent_id,
                     ]
                 ),
                 // Allow enough headroom for VerifyAdminJwtWithSelfHealing to

@@ -708,13 +708,13 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertEquals( 3, $request['args']['timeout'] );
         $this->assertEquals( 'application/json', $request['args']['headers']['Content-Type'] );
         $this->assertEquals( 'application/json', $request['args']['headers']['Accept'] );
+        $this->assertMatchesRegularExpression( '/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/', (string) ( $request['args']['headers']['Authorization'] ?? '' ) );
         // Certificate verification must stay at the WordPress default.
         $this->assertArrayNotHasKey( 'sslverify', $request['args'] );
 
         $body = json_decode( (string) $request['args']['body'], true );
         $this->assertEquals( 'agents/agent_a', $body['expected_agent_id'] );
-        $this->assertArrayHasKey( 'admin_jwt', $body );
-        $this->assertTrue( '' !== (string) $body['admin_jwt'] );
+        $this->assertArrayNotHasKey( 'admin_jwt', $body );
     }
 
     public function test_automatic_unlink_preserves_appearance_but_rearms_the_notice(): void {
@@ -774,7 +774,8 @@ class SyncStateTest extends GECX_TestCase {
 
         $body = json_decode( (string) $request['args']['body'], true );
         $this->assertEquals( 'agents/agent_a', $body['agent_id'] );
-        $this->assertTrue( '' !== $body['admin_jwt'] );
+        $this->assertArrayNotHasKey( 'admin_jwt', $body );
+        $this->assertMatchesRegularExpression( '/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/', (string) ( $request['args']['headers']['Authorization'] ?? '' ) );
 
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
     }

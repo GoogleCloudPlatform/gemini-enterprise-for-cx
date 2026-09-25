@@ -92,6 +92,7 @@ The complete release history is kept in changelog.txt at the plugin root.
 
 = 0.3.22 =
 * Pass `admin_jwt` in the URL fragment (`#admin_jwt=`) instead of the query string when redirecting to the Google Cloud onboarding console, so the token is not sent to the console server, written to its access logs, or leaked via `Referer`.
+* Send `admin_jwt` to the SyncState and UnlinkAgent console endpoints in an `Authorization: Bearer` header instead of the JSON request body, so the token is not captured by anything that logs or persists request bodies.
 
 = 0.3.21 =
 * Revoke the WooCommerce REST API keys issued through `/wc-auth/v1/authorize` on uninstall. Keys are matched on the plugin's wc-auth description and `read_write` permission. Unlinking an agent keeps the keys and store authorization, so the merchant returns to Step 2.
