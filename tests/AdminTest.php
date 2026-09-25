@@ -108,8 +108,7 @@ class AdminTest extends GECX_TestCase {
         $body = json_decode( (string) $request['args']['body'], true );
         $this->assertEquals( 'projects/123/locations/global/agents/agent-1', $body['agent_id'] );
         $this->assertArrayNotHasKey( 'admin_jwt', $body );
-        $this->assertStringStartsWith( 'Bearer ', $request['args']['headers']['Authorization'] ?? '' );
-        $this->assertTrue( ! empty( substr( (string) ( $request['args']['headers']['Authorization'] ?? '' ), 7 ) ) );
+        $this->assertMatchesRegularExpression( '/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/', (string) ( $request['args']['headers']['Authorization'] ?? '' ) );
 
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertFalse( get_option( 'gecx_token_broker_name' ) );

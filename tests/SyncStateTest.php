@@ -708,8 +708,7 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertEquals( 3, $request['args']['timeout'] );
         $this->assertEquals( 'application/json', $request['args']['headers']['Content-Type'] );
         $this->assertEquals( 'application/json', $request['args']['headers']['Accept'] );
-        $this->assertStringStartsWith( 'Bearer ', $request['args']['headers']['Authorization'] ?? '' );
-        $this->assertTrue( '' !== substr( (string) ( $request['args']['headers']['Authorization'] ?? '' ), 7 ) );
+        $this->assertMatchesRegularExpression( '/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/', (string) ( $request['args']['headers']['Authorization'] ?? '' ) );
         // Certificate verification must stay at the WordPress default.
         $this->assertArrayNotHasKey( 'sslverify', $request['args'] );
 
@@ -776,8 +775,7 @@ class SyncStateTest extends GECX_TestCase {
         $body = json_decode( (string) $request['args']['body'], true );
         $this->assertEquals( 'agents/agent_a', $body['agent_id'] );
         $this->assertArrayNotHasKey( 'admin_jwt', $body );
-        $this->assertStringStartsWith( 'Bearer ', $request['args']['headers']['Authorization'] ?? '' );
-        $this->assertTrue( '' !== substr( (string) ( $request['args']['headers']['Authorization'] ?? '' ), 7 ) );
+        $this->assertMatchesRegularExpression( '/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/', (string) ( $request['args']['headers']['Authorization'] ?? '' ) );
 
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
     }
