@@ -432,7 +432,8 @@ class AdminTest extends GECX_TestCase {
             'return_url=https%3A%2F%2Fexample.com%2Fwp-admin%2Fadmin.php%3Fpage%3Dgemini-enterprise-for-cx%26gecx_action%3Dlinked',
             $connect_url
         );
-        $this->assertStringContainsString( '#admin_jwt=', $connect_url );
+        $this->assertMatchesRegularExpression( '/^[^#]*\?[^#]*return_url=[^#]+#admin_jwt=[^&#]+$/', $connect_url );
+        $this->assertStringNotContainsString( '?admin_jwt=', $connect_url );
         $this->assertStringNotContainsString( '&admin_jwt=', $connect_url );
     }
 
@@ -549,7 +550,7 @@ class AdminTest extends GECX_TestCase {
         $this->assertSame( 1, get_transient( 'gecx_oauth_state_' . $state ) );
         $this->assertNotNull( $GLOBALS['gecx_test_last_redirect'] );
         $this->assertStringContainsString( $state, $GLOBALS['gecx_test_last_redirect'] );
-        $this->assertStringContainsString( '#admin_jwt=', $GLOBALS['gecx_test_last_redirect'] );
+        $this->assertMatchesRegularExpression( '/^[^#]*\?[^#]*return_url=[^#]+#admin_jwt=[^&#]+$/', $GLOBALS['gecx_test_last_redirect'] );
         $this->assertStringNotContainsString( '?admin_jwt=', $GLOBALS['gecx_test_last_redirect'] );
         $this->assertStringNotContainsString( '&admin_jwt=', $GLOBALS['gecx_test_last_redirect'] );
     }

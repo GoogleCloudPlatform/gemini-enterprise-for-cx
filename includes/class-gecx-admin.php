@@ -793,6 +793,11 @@ class GECX_Admin {
             $connect_params,
             $console_base . self::CONSOLE_APP_PATH
         );
+        // admin_jwt goes in the fragment so browsers never send it to the
+        // console server, write it to access logs, or leak it via Referer.
+        // Appending '#...' is safe only while $connect_url has no fragment:
+        // GECX_Auth::is_allowed_console_base_url() rejects bases with one,
+        // CONSOLE_APP_PATH must not contain '#', and return_url is encoded.
         if ( ! empty( $admin_jwt ) ) {
             $connect_url .= '#admin_jwt=' . rawurlencode( $admin_jwt );
         }
