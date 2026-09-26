@@ -561,7 +561,7 @@ class WebhookLifecycleTest extends TestCase {
 
         // Raw UUID (non-resource name format)
         $order1 = new WC_Order( 601 );
-        $order1->update_meta_data( '_gecx_session_id', '8HKwcSo3FGLhndGcdue72VapwOt6iVW4up9c1ma7e1Y' );
+        $order1->update_meta_data( '_gecx_session_id', 'TestSessionToken0123456789abcdefghijklmnopq' );
         $order1->save();
         $this->assertFalse( $this->rest_api->gate_order_webhook_delivery( true, $webhook, 601 ) );
 
@@ -573,7 +573,7 @@ class WebhookLifecycleTest extends TestCase {
 
         // Numeric project number (canonical resource name format) succeeds
         $order3 = new WC_Order( 603 );
-        $order3->update_meta_data( '_gecx_session_id', 'projects/380470877508/locations/global/commerceSessions/sess-123' );
+        $order3->update_meta_data( '_gecx_session_id', 'projects/123456789012/locations/global/commerceSessions/sess-123' );
         $order3->save();
         $this->assertTrue( $this->rest_api->gate_order_webhook_delivery( true, $webhook, 603 ) );
     }
