@@ -1004,7 +1004,7 @@ const vm = require('vm');
 const code = fs.readFileSync(process.argv[2], 'utf8');
 const scenario = JSON.parse(process.argv[3]);
 
-const log = { fetches: [], jquery: [], events: [], received: [], reloads: 0, badges: {} };
+const log = { fetches: [], jquery: [], events: [], received: [], reloads: 0, badges: {}, sequence: [] };
 const listeners = { window: {}, document: {} };
 const on = (target) => (name, cb) => { (listeners[target][name] = listeners[target][name] || []).push(cb); };
 
@@ -1015,6 +1015,7 @@ function fakeFetch(url, init) {
     const nonce = 'nonce-' + log.fetches.filter(f => f.url.indexOf('auth-context') !== -1).length;
     return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve({ nonce: nonce }) });
   }
+  log.sequence.push('cart read');
   const next = cartResponses.shift() || { status: 200, body: {} };
   return Promise.resolve({
     ok: next.status >= 200 && next.status < 300,
@@ -1046,7 +1047,7 @@ const window = {
 };
 
 if (scenario.jquery) {
-  window.jQuery = () => ({ trigger: (name) => { log.jquery.push(name); } });
+  window.jQuery = () => ({ trigger: (name) => { log.jquery.push(name); log.sequence.push(name); } });
 }
 if (scenario.store) {
   const storeState = { itemsCount: scenario.store.itemsCount };
@@ -1150,6 +1151,9 @@ JS;
         // Handled once although the event reached both document and window.
         $this->assertCount( 1, self::cart_fetch_urls( $log ) );
         $this->assertSame( [ 'wc_fragment_refresh' ], $log['jquery'] );
+        // After the cart read, which is what bridges the agent's cart
+        // session to a browser that had no WooCommerce session cookie.
+        $this->assertSame( [ 'cart read', 'wc_fragment_refresh' ], $log['sequence'] );
         $this->assertSame( '2', $log['badges']['.wc-block-mini-cart__badge'] );
         $this->assertSame( [ 'wc-blocks_added_to_cart', 'gecx:cart-updated' ], self::event_types( $log ) );
         $this->assertSame( [ 'preserveCartData' => false ], $log['events'][0]['detail'] );
