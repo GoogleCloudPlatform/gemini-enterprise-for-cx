@@ -61,7 +61,7 @@ jobs:
         run: |
           version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
           if unzip -l "build/gemini-enterprise-for-cx-${version}.zip" \
-            | grep -E 'tests/|\.github/|phpunit\.xml|phpcs\.xml|composer\.(json|lock)'; then
+            | grep -E 'tests/|\.github/|phpunit\.xml|phpcs\.xml|composer\.(json|lock)|package(-lock)?\.json|playwright\.config'; then
             echo "Development files leaked into the release archive." >&2
             exit 1
           fi
