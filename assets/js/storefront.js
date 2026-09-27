@@ -759,12 +759,6 @@ function handleCartUpdate(e) {
     }
   }
 
-  // Classic headers and mini-carts render from cart fragments. This is a
-  // no-op on pages without wc-cart-fragments.
-  if (window.jQuery && window.jQuery(document.body).trigger) {
-    window.jQuery(document.body).trigger('wc_fragment_refresh');
-  }
-
   const finish = function(cart) {
     let storeUpdated = false;
     if (store && cart) {
@@ -794,6 +788,14 @@ function handleCartUpdate(e) {
 
     if (!storeUpdated) {
       gecxUpdateCartBadges(count);
+    }
+    // Classic headers and mini-carts render from cart fragments. Refreshed
+    // only now, after the cart read: for a shopper who had no WooCommerce
+    // session cookie, that read is what hands the agent's cart session to
+    // the browser, and fragments requested before it describe an empty
+    // cart. A no-op on pages without wc-cart-fragments.
+    if (window.jQuery && window.jQuery(document.body).trigger) {
+      window.jQuery(document.body).trigger('wc_fragment_refresh');
     }
     gecxRefreshCartOrCheckoutSurface(storeUpdated);
     gecxAnnounceCartChange(
