@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.22
+Stable tag: 0.3.23
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -77,6 +77,16 @@ Yes, one: `https://www.gstatic.com/gecx/chat-widget/woocommerce-chat-widget.js`,
 = What data is sent to Google? =
 During merchant setup, store URL and WooCommerce API credentials are authenticated. During storefront usage, customer chat queries and viewed product context are processed to return relevant answers. Standard request headers (such as IP address) are processed by Google's infrastructure in accordance with the Google Privacy Policy.
 
+= How do I keep my theme's cart in step with the agent? =
+After the agent changes the cart, the plugin refreshes WooCommerce cart fragments, updates the WooCommerce Blocks cart data store, and dispatches `wc-blocks_added_to_cart` or `wc-blocks_removed_from_cart`. Themes and side-cart plugins that need more can listen for the `gecx:cart-updated` event on `document.body`. Its `detail` carries `change` (`added`, `removed` or `updated`), `itemsCount`, `previousItemsCount` and the Store API `cart`.
+
+These filters adjust the behavior:
+
+* `gecx_enqueue_cart_fragments`: whether to load `wc-cart-fragments`. Defaults to true on classic themes and false on block themes.
+* `gecx_cart_badge_selectors`: CSS selectors of cart badges to write the item count into when the Blocks cart data store is not on the page. Only list elements whose whole text is the number.
+* `gecx_cart_refresh_native_events`: whether to dispatch the WooCommerce Blocks events. Default true.
+* `gecx_cart_refresh_legacy_events`: whether to trigger the jQuery `added_to_cart` and `removed_from_cart` events in place of the native ones. Default false, because many themes open a side cart on them.
+
 = Do I need an account to use this plugin? =
 Yes. You need a Google account with access to Gemini Enterprise for CX to configure and activate the agent on your store.
 
@@ -89,6 +99,15 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.23 =
+* Refresh every cart surface once when the agent changes the cart. `chat-messenger-update-cart` is handled a single time even when it reaches both `document` and `window`, the cart is read from the Store API on every theme, and a stale nonce is replaced and the read retried once after a 401 or 403.
+* Dispatch the WooCommerce Blocks `wc-blocks_added_to_cart` or `wc-blocks_removed_from_cart` event, chosen by whether the item count went up or down, so the block mini-cart refreshes its cart. The jQuery `added_to_cart` event, which many themes answer by opening a side cart, is no longer triggered unless the `gecx_cart_refresh_legacy_events` filter returns true. When it does, `added_to_cart` or `removed_from_cart` is triggered in place of the native event, which the block mini-cart derives from it.
+* Always trigger `wc_fragment_refresh`, and enqueue `wc-cart-fragments` on classic themes (filterable with `gecx_enqueue_cart_fragments`), so classic header cart counts update without a reload.
+* Refresh the browser's `woocommerce_items_in_cart` and `woocommerce_cart_hash` cookies when it reads its own cart, so full-page caches stop serving cached pages with an empty cart and cart fragments stop reusing a stale header.
+* Write the item count into cart badges only when the WooCommerce Blocks cart data store is not on the page, using selectors from the new `gecx_cart_badge_selectors` filter.
+* Refresh classic cart and checkout forms only when they are on the page, and never reload the checkout page.
+* Dispatch a documented `gecx:cart-updated` event on `document.body` after each agent cart change.
 
 = 0.3.22 =
 * Pass `admin_jwt` in the URL fragment (`#admin_jwt=`) instead of the query string when redirecting to the Google Cloud onboarding console, so the token is not sent to the console server, written to its access logs, or leaked via `Referer`.

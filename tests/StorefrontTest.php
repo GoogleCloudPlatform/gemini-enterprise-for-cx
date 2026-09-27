@@ -908,6 +908,367 @@ JS;
 
         $this->assertSame( 0, $status, 'Storefront.js config freeze / safe element test failed: ' . implode( "\n", $output ) );
     }
+
+    public function test_cart_fragments_are_enqueued_on_classic_themes(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+
+        ( new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' ) )->enqueue_cart_fragments();
+
+        $this->assertContains( 'wc-cart-fragments', $GLOBALS['gecx_test_enqueued_scripts'] );
+    }
+
+    public function test_cart_fragments_are_not_enqueued_on_block_themes(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+        $GLOBALS['gecx_test_is_block_theme'] = true;
+
+        ( new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' ) )->enqueue_cart_fragments();
+
+        $this->assertNotContains( 'wc-cart-fragments', $GLOBALS['gecx_test_enqueued_scripts'] );
+    }
+
+    public function test_cart_fragments_enqueue_is_filterable(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+        add_filter( 'gecx_enqueue_cart_fragments', static function (): bool { return false; } );
+
+        ( new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' ) )->enqueue_cart_fragments();
+
+        $this->assertNotContains( 'wc-cart-fragments', $GLOBALS['gecx_test_enqueued_scripts'] );
+    }
+
+    public function test_cart_fragments_are_not_enqueued_without_a_linked_agent_or_when_unregistered(): void {
+        update_option( 'gecx_agent_enabled', 1 );
+        $storefront = new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront->enqueue_cart_fragments();
+        $this->assertNotContains( 'wc-cart-fragments', $GLOBALS['gecx_test_enqueued_scripts'] );
+
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        $GLOBALS['gecx_test_registered_scripts'] = [];
+        $storefront->enqueue_cart_fragments();
+        $this->assertNotContains( 'wc-cart-fragments', $GLOBALS['gecx_test_enqueued_scripts'] );
+    }
+
+    public function test_storefront_config_carries_typed_cart_refresh_settings(): void {
+        $config = $this->localized_storefront_config();
+
+        $this->assertSame(
+            [
+                'nativeEvents'   => true,
+                'legacyEvents'   => false,
+                'badgeSelectors' => GECX_Storefront::DEFAULT_CART_BADGE_SELECTORS,
+            ],
+            $config['cartRefresh']
+        );
+    }
+
+    public function test_cart_refresh_settings_are_filterable_and_badge_selectors_are_cleaned(): void {
+        add_filter( 'gecx_cart_refresh_native_events', static function (): bool { return false; } );
+        add_filter( 'gecx_cart_refresh_legacy_events', static function (): bool { return true; } );
+        add_filter(
+            'gecx_cart_badge_selectors',
+            static function (): array {
+                return [ ' .theme-cart-count ', '', 42, '.wc-block-mini-cart__badge' ];
+            }
+        );
+
+        $this->assertSame(
+            [
+                'nativeEvents'   => false,
+                'legacyEvents'   => true,
+                'badgeSelectors' => [ '.theme-cart-count', '.wc-block-mini-cart__badge' ],
+            ],
+            GECX_Storefront::get_cart_refresh_config()
+        );
+    }
+
+    /**
+     * Runs storefront.js in a sandbox, fires chat-messenger-update-cart and
+     * returns what the page observed, as decoded by the runner.
+     *
+     * @param array $scenario Options read by the runner; see the JS below.
+     * @return array<string, mixed>
+     */
+    private function run_cart_update_scenario( array $scenario ): array {
+        $node = exec( 'which node' );
+        if ( empty( $node ) ) {
+            $this->markTestSkipped( 'Node.js is not available to test storefront.js runtime.' );
+        }
+
+        $test_runner = <<<'JS'
+const fs = require('fs');
+const vm = require('vm');
+const code = fs.readFileSync(process.argv[2], 'utf8');
+const scenario = JSON.parse(process.argv[3]);
+
+const log = { fetches: [], jquery: [], events: [], received: [], reloads: 0, badges: {} };
+const listeners = { window: {}, document: {} };
+const on = (target) => (name, cb) => { (listeners[target][name] = listeners[target][name] || []).push(cb); };
+
+let cartResponses = scenario.cartResponses.slice();
+function fakeFetch(url, init) {
+  log.fetches.push({ url: url, method: (init && init.method) || 'GET', headers: (init && init.headers) || {} });
+  if (url.indexOf('auth-context') !== -1) {
+    const nonce = 'nonce-' + log.fetches.filter(f => f.url.indexOf('auth-context') !== -1).length;
+    return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve({ nonce: nonce }) });
+  }
+  const next = cartResponses.shift() || { status: 200, body: {} };
+  return Promise.resolve({
+    ok: next.status >= 200 && next.status < 300,
+    status: next.status,
+    headers: { get: () => null },
+    json: () => Promise.resolve(next.body)
+  });
+}
+
+const badgeEls = {};
+(scenario.badges || []).forEach((sel) => {
+  badgeEls[sel] = { textContent: '', style: {}, attrs: {}, setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; } };
+});
+
+class FakeCustomEvent { constructor(type, init) { this.type = type; this.detail = init && init.detail; } }
+
+const window = {
+  location: { origin: 'https://example.com', pathname: scenario.pathname || '/', reload: () => { log.reloads++; } },
+  innerWidth: 1024,
+  addEventListener: on('window'),
+  gecxStorefrontConfig: Object.assign({
+    isWidgetEnabled: true,
+    placement: 'floating',
+    cartRestUrl: 'https://example.com/wp-json/wc/store/v1/cart',
+    authContextUrl: 'https://example.com/wp-json/gecx/v1/auth-context',
+    sessionUrl: 'https://example.com/wp-json/gecx/v1/session'
+  }, scenario.config || {}),
+  fetch: fakeFetch
+};
+
+if (scenario.jquery) {
+  window.jQuery = () => ({ trigger: (name) => { log.jquery.push(name); } });
+}
+if (scenario.store) {
+  const storeState = { itemsCount: scenario.store.itemsCount };
+  window.wp = { data: {
+    select: (name) => name === 'wc/store/cart' ? { getCartData: () => ({ itemsCount: storeState.itemsCount }) } : undefined,
+    dispatch: (name) => {
+      if (name === 'wc/store/cart') {
+        return { setIsCartDataStale: () => {}, receiveCart: (cart) => { log.received.push(cart); storeState.itemsCount = cart.items_count; } };
+      }
+      if (name === 'core/data') {
+        return { invalidateResolution: () => {} };
+      }
+      return undefined;
+    }
+  } };
+}
+
+const document = {
+  readyState: 'complete',
+  addEventListener: on('document'),
+  body: { classList: { contains: () => false }, dispatchEvent: (evt) => { log.events.push({ type: evt.type, detail: evt.detail }); } },
+  documentElement: { style: { removeProperty: () => {}, setProperty: () => {} } },
+  createElement: () => ({ style: {}, setAttribute() {}, appendChild() {} }),
+  querySelector: (sel) => (scenario.presentSelectors || []).indexOf(sel) !== -1 ? {} : null,
+  querySelectorAll: (sel) => badgeEls[sel] ? [badgeEls[sel]] : []
+};
+
+const sandbox = {
+  window: window, document: document, fetch: fakeFetch, CustomEvent: FakeCustomEvent,
+  MutationObserver: class { observe() {} }, URL: URL, console: { warn: () => {}, error: console.error },
+  setTimeout: setTimeout, clearTimeout: clearTimeout
+};
+sandbox.window.getComputedStyle = () => ({ display: 'block', visibility: 'visible', paddingRight: '0' });
+vm.createContext(sandbox);
+vm.runInContext(code, sandbox);
+
+const evt = { type: 'chat-messenger-update-cart', detail: scenario.detail || {} };
+// A bubbling event reaches the document listener and then the window one.
+(listeners.document['chat-messenger-update-cart'] || []).forEach((cb) => cb(evt));
+(listeners.window['chat-messenger-update-cart'] || []).forEach((cb) => cb(evt));
+
+setTimeout(() => {
+  Object.keys(badgeEls).forEach((sel) => { log.badges[sel] = badgeEls[sel].textContent; });
+  process.stdout.write(JSON.stringify(log));
+}, 50);
+JS;
+
+        $temp_runner = (string) tempnam( sys_get_temp_dir(), 'gecx_js_cart_' );
+        file_put_contents( $temp_runner, $test_runner );
+
+        $cmd = sprintf(
+            '%s %s %s %s',
+            escapeshellcmd( $node ),
+            escapeshellarg( $temp_runner ),
+            escapeshellarg( dirname( __DIR__ ) . '/assets/js/storefront.js' ),
+            escapeshellarg( (string) wp_json_encode( $scenario ) )
+        );
+        $output = [];
+        $status = 0;
+        exec( $cmd . ' 2>&1', $output, $status );
+        unlink( $temp_runner );
+
+        $this->assertSame( 0, $status, implode( "\n", $output ) );
+        $log = json_decode( implode( "\n", $output ), true );
+        $this->assertIsArray( $log, implode( "\n", $output ) );
+        return $log;
+    }
+
+    /**
+     * @param array<string, mixed> $log
+     * @return string[]
+     */
+    private static function cart_fetch_urls( array $log ): array {
+        return array_values(
+            array_filter(
+                array_column( $log['fetches'], 'url' ),
+                static function ( string $url ): bool {
+                    return false !== strpos( $url, 'wc/store/v1/cart' );
+                }
+            )
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $log
+     * @return string[]
+     */
+    private static function event_types( array $log ): array {
+        return array_column( $log['events'], 'type' );
+    }
+
+    public function test_cart_update_on_a_classic_theme_refreshes_fragments_and_badges_once(): void {
+        $log = $this->run_cart_update_scenario(
+            [
+                'jquery'        => true,
+                'badges'        => [ '.wc-block-mini-cart__badge' ],
+                'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 2 ] ] ],
+            ]
+        );
+
+        // Handled once although the event reached both document and window.
+        $this->assertCount( 1, self::cart_fetch_urls( $log ) );
+        $this->assertSame( [ 'wc_fragment_refresh' ], $log['jquery'] );
+        $this->assertSame( '2', $log['badges']['.wc-block-mini-cart__badge'] );
+        $this->assertSame( [ 'wc-blocks_added_to_cart', 'gecx:cart-updated' ], self::event_types( $log ) );
+        $this->assertSame( [ 'preserveCartData' => false ], $log['events'][0]['detail'] );
+        $this->assertSame( 'added', $log['events'][1]['detail']['change'] );
+        $this->assertSame( 2, $log['events'][1]['detail']['itemsCount'] );
+    }
+
+    public function test_cart_update_with_the_blocks_store_receives_the_cart_and_reports_a_removal(): void {
+        $log = $this->run_cart_update_scenario(
+            [
+                'store'         => [ 'itemsCount' => 3 ],
+                'badges'        => [ '.wc-block-mini-cart__badge' ],
+                'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ] ],
+            ]
+        );
+
+        $this->assertSame( [ [ 'items_count' => 1 ] ], $log['received'] );
+        // The data store redraws the mini-cart, so the badge is left alone.
+        $this->assertSame( '', $log['badges']['.wc-block-mini-cart__badge'] );
+        $this->assertSame( 'wc-blocks_removed_from_cart', $log['events'][0]['type'] );
+        $this->assertSame( [ 'preserveCartData' => true ], $log['events'][0]['detail'] );
+        $this->assertSame( 3, $log['events'][1]['detail']['previousItemsCount'] );
+        $this->assertSame( 'removed', $log['events'][1]['detail']['change'] );
+    }
+
+    public function test_cart_update_legacy_jquery_events_are_opt_in(): void {
+        $default = $this->run_cart_update_scenario(
+            [
+                'jquery'        => true,
+                'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ] ],
+            ]
+        );
+        $this->assertNotContains( 'added_to_cart', $default['jquery'] );
+
+        $opted_in = $this->run_cart_update_scenario(
+            [
+                'jquery'        => true,
+                'config'        => [ 'cartRefresh' => [ 'legacyEvents' => true ] ],
+                'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ] ],
+            ]
+        );
+        $this->assertContains( 'added_to_cart', $opted_in['jquery'] );
+        // The block mini-cart turns the jQuery event into the native one
+        // itself, so sending both would refresh it twice.
+        $this->assertSame( [ 'gecx:cart-updated' ], self::event_types( $opted_in ) );
+    }
+
+    public function test_cart_update_retries_once_with_a_fresh_nonce_after_a_403(): void {
+        $log = $this->run_cart_update_scenario(
+            [
+                'cartResponses' => [
+                    [ 'status' => 403, 'body' => [] ],
+                    [ 'status' => 200, 'body' => [ 'items_count' => 4 ] ],
+                ],
+            ]
+        );
+
+        $cart_fetches = array_values(
+            array_filter(
+                $log['fetches'],
+                static function ( array $fetch ): bool {
+                    return false !== strpos( $fetch['url'], 'wc/store/v1/cart' );
+                }
+            )
+        );
+        $this->assertCount( 2, $cart_fetches );
+        $this->assertSame( 'nonce-1', $cart_fetches[0]['headers']['X-WP-Nonce'] );
+        $this->assertSame( 'nonce-2', $cart_fetches[1]['headers']['X-WP-Nonce'] );
+        $this->assertSame( 4, $log['events'][1]['detail']['itemsCount'] );
+    }
+
+    public function test_cart_update_sends_the_widget_cart_token_with_the_cart_read(): void {
+        $token = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidF8xIn0.sig';
+        $log   = $this->run_cart_update_scenario(
+            [
+                'detail'        => [ 'cartId' => $token ],
+                'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ] ],
+            ]
+        );
+
+        $this->assertSame( $token, $log['fetches'][1]['headers']['Cart-Token'] );
+    }
+
+    public function test_cart_update_never_reloads_checkout(): void {
+        $checkout = $this->run_cart_update_scenario(
+            [
+                'config'        => [ 'isCart' => false, 'isCheckout' => true, 'isCartOrCheckout' => true ],
+                'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ] ],
+            ]
+        );
+        $this->assertSame( 0, $checkout['reloads'] );
+
+        $cart = $this->run_cart_update_scenario(
+            [
+                'config'        => [ 'isCart' => true, 'isCheckout' => false, 'isCartOrCheckout' => true ],
+                'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ] ],
+            ]
+        );
+        $this->assertSame( 1, $cart['reloads'] );
+    }
+
+    public function test_cart_update_only_refreshes_classic_forms_that_are_on_the_page(): void {
+        $block_checkout = $this->run_cart_update_scenario(
+            [
+                'jquery'        => true,
+                'config'        => [ 'isCart' => false, 'isCheckout' => true, 'isCartOrCheckout' => true ],
+                'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ] ],
+            ]
+        );
+        $this->assertNotContains( 'update_checkout', $block_checkout['jquery'] );
+
+        $classic_checkout = $this->run_cart_update_scenario(
+            [
+                'jquery'           => true,
+                'presentSelectors' => [ 'form.checkout' ],
+                'config'           => [ 'isCart' => false, 'isCheckout' => true, 'isCartOrCheckout' => true ],
+                'cartResponses'    => [ [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ] ],
+            ]
+        );
+        $this->assertContains( 'update_checkout', $classic_checkout['jquery'] );
+    }
 }
 
 /**

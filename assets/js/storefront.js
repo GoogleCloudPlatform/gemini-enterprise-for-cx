@@ -295,31 +295,34 @@ function gecxIsCart() {
 }
 
 /**
- * Refreshes classic or block cart/checkout surfaces without a full page reload
- * when jQuery or WooCommerce Blocks is available, falling back to a page
- * reload on classic cart/checkout pages that lack jQuery event handlers.
- * @param {boolean=} hasBlockStore Whether WooCommerce Blocks wp.data store handled the refresh.
- * @return {boolean} True when wc_fragment_refresh was already triggered.
+ * Refreshes the server-rendered cart and checkout forms of classic themes.
+ *
+ * Only forms that are actually on the page are refreshed. `update_checkout`
+ * and `wc_update_cart` mean nothing to block checkout and block cart, which
+ * are refreshed through the wc/store/cart data store instead.
+ *
+ * A classic cart page without jQuery is reloaded as a last resort. Checkout
+ * never is: a reload throws away everything the shopper has typed into it.
+ * @param {boolean} hasBlockStore Whether the wc/store/cart data store received the new cart.
  */
 function gecxRefreshCartOrCheckoutSurface(hasBlockStore) {
   if (!gecxIsCartOrCheckout()) {
-    return false;
+    return;
   }
   if (window.jQuery && window.jQuery(document.body).trigger) {
     const body = window.jQuery(document.body);
-    if (gecxIsCheckout()) {
+    if (gecxIsCheckout() && document.querySelector('form.checkout')) {
       body.trigger('update_checkout');
     }
-    if (gecxIsCart()) {
+    if (gecxIsCart() && document.querySelector('.woocommerce-cart-form')) {
       body.trigger('wc_update_cart');
     }
-    body.trigger('wc_fragment_refresh');
-    return true;
+    return;
   }
-  if (!hasBlockStore && window.location && typeof window.location.reload === 'function') {
+  if (!hasBlockStore && gecxIsCart() && !gecxIsCheckout() &&
+      window.location && typeof window.location.reload === 'function') {
     window.location.reload();
   }
-  return false;
 }
 
 /**
@@ -427,133 +430,381 @@ function gecxResolveRestNonce() {
   return gecxRestNoncePromise;
 }
 
+/** @const {!Array<string>} Badge selectors used when the config names none. */
+const GECX_DEFAULT_BADGE_SELECTORS = [
+  '.wc-block-mini-cart__badge',
+  '.wc-block-components-mini-cart__badge'
+];
+
+/**
+ * Cart refresh settings from the localized config.
+ *
+ * They are nested under `cartRefresh` rather than set at the top level
+ * because wp_localize_script() casts top-level scalars to strings, which
+ * turns `false` into `""`. Nested values reach the page with their types.
+ * @return {{nativeEvents: boolean, legacyEvents: boolean, badgeSelectors: !Array<string>}}
+ */
+function gecxCartRefreshConfig() {
+  const config = gecxGetStorefrontConfig();
+  const raw = (config && config.cartRefresh && typeof config.cartRefresh === 'object') ?
+      config.cartRefresh :
+      {};
+  const selectors = Array.isArray(raw.badgeSelectors) ?
+      raw.badgeSelectors.filter(function(selector) {
+        return typeof selector === 'string' && selector !== '';
+      }) :
+      GECX_DEFAULT_BADGE_SELECTORS;
+  return {
+    nativeEvents: raw.nativeEvents !== false,
+    legacyEvents: raw.legacyEvents === true,
+    badgeSelectors: selectors
+  };
+}
+
+/**
+ * The wc/store/cart data store, when WooCommerce Blocks has registered it on
+ * this page.
+ *
+ * wp.data being present says nothing about this store: classic themes load
+ * wp.data for unrelated blocks, and the block mini-cart registers the cart
+ * store lazily, on first interaction.
+ * @return {?{select: !Object, dispatch: !Object}}
+ */
+function gecxGetCartDataStore() {
+  const data = window.wp && window.wp.data;
+  if (!data || typeof data.select !== 'function' || typeof data.dispatch !== 'function') {
+    return null;
+  }
+  try {
+    const select = data.select('wc/store/cart');
+    const dispatch = data.dispatch('wc/store/cart');
+    if (!select || !dispatch || typeof dispatch.receiveCart !== 'function') {
+      return null;
+    }
+    return {select: select, dispatch: dispatch};
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Number of items in a Store API cart response or data store cart.
+ * @param {*} cart
+ * @return {?number}
+ */
+function gecxCartItemsCount(cart) {
+  if (!cart || typeof cart !== 'object') {
+    return null;
+  }
+  const raw = (cart.items_count !== undefined) ? cart.items_count : cart.itemsCount;
+  if (raw === undefined || raw === null || raw === '') {
+    return null;
+  }
+  const count = Number(raw);
+  return isNaN(count) ? null : count;
+}
+
+/** @type {?number} Items count after the last cart update this page handled. */
+let gecxLastItemsCount = null;
+
+/**
+ * Items count before the update being handled, or null when unknown.
+ * @param {?{select: !Object, dispatch: !Object}} store
+ * @return {?number}
+ */
+function gecxPreviousItemsCount(store) {
+  if (store && typeof store.select.getCartData === 'function') {
+    try {
+      const count = gecxCartItemsCount(store.select.getCartData());
+      if (count !== null) {
+        return count;
+      }
+    } catch (err) {
+      // Fall through to the count this page last saw.
+    }
+  }
+  return gecxLastItemsCount;
+}
+
+/**
+ * Whether a cart update added items, removed them, or neither.
+ * @param {?number} previous
+ * @param {?number} current
+ * @return {string} 'added', 'removed' or 'updated'.
+ */
+function gecxClassifyCartChange(previous, current) {
+  if (current === null) {
+    return 'updated';
+  }
+  if (previous === null) {
+    return current > 0 ? 'added' : 'removed';
+  }
+  if (current > previous) {
+    return 'added';
+  }
+  if (current < previous) {
+    return 'removed';
+  }
+  return 'updated';
+}
+
+/**
+ * Fetches the shopper's cart from the Store API.
+ *
+ * The request comes from the browser, with its WooCommerce session cookie,
+ * which is what lets the server refresh the woocommerce_items_in_cart and
+ * woocommerce_cart_hash cookies after the agent changed the cart from
+ * elsewhere. A 401 or 403 usually means the nonce went stale during a long
+ * chat, so a fresh one is fetched and the request retried once.
+ * @param {string} cartToken Cart-Token supplied by the widget, or ''.
+ * @return {!Promise<!Object>}
+ */
+function gecxFetchCart(cartToken) {
+  const attempt = function(isRetry) {
+    return gecxResolveRestNonce()
+        .then(function(nonce) {
+          // wp.apiFetch.nonceMiddleware is seeded with whatever nonce was
+          // baked into cached storefront HTML. WooCommerce Blocks reads the
+          // cart through it, so it has to carry the fresh nonce too.
+          if (nonce && window.wp && window.wp.apiFetch &&
+              window.wp.apiFetch.nonceMiddleware) {
+            window.wp.apiFetch.nonceMiddleware.nonce = nonce;
+          }
+          const headers = {'Accept': 'application/json'};
+          if (cartToken) {
+            headers['Cart-Token'] = cartToken;
+          }
+          if (nonce) {
+            headers['X-WP-Nonce'] = nonce;
+          }
+          return fetch(gecxCartRestUrl(), {
+            method: 'GET',
+            headers: headers,
+            credentials: 'include'
+          });
+        })
+        .then(function(res) {
+          if (!isRetry && (res.status === 401 || res.status === 403)) {
+            gecxRestNoncePromise = null;
+            return attempt(true);
+          }
+          if (!res.ok) {
+            throw new Error('cart responded ' + res.status);
+          }
+          return res.json();
+        });
+  };
+  return attempt(false);
+}
+
+/**
+ * Writes the items count into cart badges directly.
+ *
+ * Only used when the wc/store/cart data store is not on the page to do it.
+ * Classic theme headers are refreshed through cart fragments instead, since
+ * their count markup (such as "3 items") is not a bare number. Themes whose
+ * badge is a bare number can add it with the gecx_cart_badge_selectors filter.
+ * @param {?number} count
+ */
+function gecxUpdateCartBadges(count) {
+  if (count === null) {
+    return;
+  }
+  const badges = [];
+  const selectors = gecxCartRefreshConfig().badgeSelectors;
+  for (let i = 0; i < selectors.length; i++) {
+    let matches = [];
+    try {
+      matches = document.querySelectorAll(selectors[i]);
+    } catch (err) {
+      continue;
+    }
+    for (let j = 0; j < matches.length; j++) {
+      if (badges.indexOf(matches[j]) === -1) {
+        badges.push(matches[j]);
+      }
+    }
+  }
+
+  if (!badges.length && count > 0) {
+    // The block mini-cart omits its badge while the cart is empty.
+    const wrapper = document.querySelector(
+        '.wc-block-mini-cart__quantity-badge, .wc-block-mini-cart__button, .wc-block-components-mini-cart__button, .wc-block-mini-cart button');
+    if (wrapper) {
+      const badge = document.createElement('span');
+      badge.className = 'wc-block-mini-cart__badge';
+      wrapper.appendChild(badge);
+      badges.push(badge);
+    }
+  }
+
+  for (let i = 0; i < badges.length; i++) {
+    badges[i].textContent = String(count);
+    if (count > 0) {
+      badges[i].removeAttribute('hidden');
+      badges[i].style.display = '';
+    } else {
+      badges[i].setAttribute('hidden', '');
+      badges[i].style.display = 'none';
+    }
+  }
+}
+
+/**
+ * Dispatches a DOM event on document.body.
+ * @param {string} name
+ * @param {!Object} detail
+ */
+function gecxDispatchBodyEvent(name, detail) {
+  if (typeof CustomEvent !== 'function' || !document.body) {
+    return;
+  }
+  document.body.dispatchEvent(new CustomEvent(name, {
+    bubbles: true,
+    cancelable: true,
+    detail: detail
+  }));
+}
+
+/**
+ * Tells the rest of the page the cart changed.
+ *
+ * The block mini-cart listens on document for wc-blocks_added_to_cart and
+ * wc-blocks_removed_from_cart and refreshes its cart on either one. Only the
+ * added event opens its drawer, and only when the merchant chose "Open
+ * drawer" as its add-to-cart behavior. WooCommerce has no neutral "cart
+ * changed" event, so a change that leaves the count where it was is
+ * announced as a removal, which refreshes without opening anything.
+ *
+ * The jQuery added_to_cart and removed_from_cart events are opt-in through
+ * the gecx_cart_refresh_legacy_events filter. Many themes open a side cart
+ * on them, and their handlers expect the fragments, cart hash and button a
+ * real add-to-cart click passes, none of which exist here. When they are
+ * sent, the native events are not: the block mini-cart translates the jQuery
+ * events into the native ones itself, and sending both would refresh twice.
+ * @param {string} change 'added', 'removed' or 'updated'.
+ * @param {boolean} preserveCartData Whether the data store already holds the new cart.
+ * @param {?Object} cart
+ * @param {?number} itemsCount
+ * @param {?number} previousItemsCount
+ */
+function gecxAnnounceCartChange(change, preserveCartData, cart, itemsCount, previousItemsCount) {
+  const settings = gecxCartRefreshConfig();
+  const sendLegacy = settings.legacyEvents && window.jQuery &&
+      window.jQuery(document.body).trigger;
+
+  if (sendLegacy) {
+    window.jQuery(document.body).trigger(change === 'added' ? 'added_to_cart' : 'removed_from_cart');
+  } else if (settings.nativeEvents) {
+    gecxDispatchBodyEvent(
+        change === 'added' ? 'wc-blocks_added_to_cart' : 'wc-blocks_removed_from_cart',
+        {preserveCartData: preserveCartData});
+  }
+
+  gecxDispatchBodyEvent('gecx:cart-updated', {
+    change: change,
+    itemsCount: itemsCount,
+    previousItemsCount: previousItemsCount,
+    cart: cart
+  });
+}
+
+/**
+ * Events already handled, so one event reaching both document and window
+ * refreshes the cart once.
+ * @type {?WeakSet<!Event>}
+ */
+const gecxHandledCartEvents = (typeof WeakSet === 'function') ? new WeakSet() : null;
+
+/**
+ * Brings every cart surface on the page up to date after the agent changed
+ * the cart.
+ * @param {!Event} e chat-messenger-update-cart event from the chat widget.
+ */
 function handleCartUpdate(e) {
-  const rawCartId = (e.detail && (e.detail.cartId || e.detail.cart_id)) ?
-      (e.detail.cartId || e.detail.cart_id) :
-      '';
+  if (gecxHandledCartEvents) {
+    if (gecxHandledCartEvents.has(e)) {
+      return;
+    }
+    gecxHandledCartEvents.add(e);
+  }
+
+  const detail = e.detail || {};
+  const rawCartId = detail.cartId || detail.cart_id || '';
   const cartId = gecxIsValidCartTokenFormat(rawCartId) ? rawCartId : '';
   if (cartId) {
     gecxLatestCartToken = cartId;
   }
-  const totalQuantity = (e.detail && e.detail.totalQuantity !== undefined) ?
-      e.detail.totalQuantity :
+  const directCart = (detail.cart && typeof detail.cart === 'object') ? detail.cart : null;
+  const eventCount = (detail.totalQuantity !== undefined && detail.totalQuantity !== null &&
+                      !isNaN(Number(detail.totalQuantity))) ?
+      Number(detail.totalQuantity) :
       null;
-  const directCart = (e.detail && e.detail.cart) ? e.detail.cart : null;
-  let refreshedFragmentsSync = false;
 
   gecxRebindSessionOnCartUpdate();
 
-  // 1. React/Gutenberg Block Cart Refresh (WooCommerce Blocks)
-  if (window.wp && window.wp.data && window.wp.data.dispatch) {
+  const store = gecxGetCartDataStore();
+  const previousCount = gecxPreviousItemsCount(store);
+
+  if (store) {
     try {
-      const coreStore = window.wp.data.dispatch('core/data');
-      const cartStore = window.wp.data.dispatch('wc/store/cart');
-      if (cartStore && cartStore.setIsCartDataStale) {
-        cartStore.setIsCartDataStale(true);
+      if (typeof store.dispatch.setIsCartDataStale === 'function') {
+        store.dispatch.setIsCartDataStale(true);
       }
-      if (directCart && cartStore && cartStore.receiveCart) {
-        cartStore.receiveCart(directCart);
+      if (directCart) {
+        store.dispatch.receiveCart(directCart);
       }
-
-      const headers = {};
-      if (cartId) {
-        headers['Cart-Token'] = cartId;
-      }
-
-      // Resolve a fresh REST nonce before both invalidateResolution() and
-      // wp.apiFetch(). On cached storefront HTML, wp.apiFetch.nonceMiddleware
-      // is seeded with whatever guest or expired nonce was baked into the
-      // page at cache time, and wp-api-fetch is always loaded alongside
-      // wc-blocks-data-store, so updating nonceMiddleware.nonce is required
-      // to keep logged-in cart reads from failing with 403.
-      gecxResolveRestNonce()
-          .then(function(nonce) {
-            if (nonce && window.wp.apiFetch &&
-                window.wp.apiFetch.nonceMiddleware) {
-              window.wp.apiFetch.nonceMiddleware.nonce = nonce;
-            }
-
-            const requestHeaders = Object.assign({}, headers);
-            if (nonce) {
-              requestHeaders['X-WP-Nonce'] = nonce;
-            }
-
-            if (window.wp.apiFetch) {
-              return window.wp.apiFetch({
-                path: '/wc/store/v1/cart',
-                headers: requestHeaders,
-                credentials: 'include'
-              });
-            }
-
-            requestHeaders['Content-Type'] = 'application/json';
-            return fetch(gecxCartRestUrl(), {
-                     method: 'GET',
-                     headers: requestHeaders,
-                     credentials: 'include'
-                   })
-                .then(function(res) {
-                  if (!res.ok) {
-                    throw new Error('cart responded ' + res.status);
-                  }
-                  return res.json();
-                });
-          })
-          .then(function(cart) {
-            if (coreStore && coreStore.invalidateResolution) {
-              coreStore.invalidateResolution(
-                  'wc/store/cart', 'getCartData', []);
-            }
-            if (cartStore && cartStore.receiveCart) {
-              cartStore.receiveCart(cart);
-            }
-            gecxRefreshCartOrCheckoutSurface(true);
-          })
-          .catch(function(err) {
-            gecxReportError('cart refresh', err);
-          });
     } catch (err) {
       gecxReportError('cart store update', err);
     }
-  } else if (gecxIsCartOrCheckout()) {
-    refreshedFragmentsSync = gecxRefreshCartOrCheckoutSurface(false);
   }
 
-  // 2. Fallback to trigger jQuery fragments in case traditional theme fallback exists.
+  // Classic headers and mini-carts render from cart fragments. This is a
+  // no-op on pages without wc-cart-fragments.
   if (window.jQuery && window.jQuery(document.body).trigger) {
-    if (!refreshedFragmentsSync) {
-      window.jQuery(document.body).trigger('wc_fragment_refresh');
-    }
-    window.jQuery(document.body).trigger('added_to_cart');
+    window.jQuery(document.body).trigger('wc_fragment_refresh');
   }
 
-  // 3. Fallback to update DOM badge count directly for classic/non-Gutenberg themes.
-  if ((!window.wp || !window.wp.data) && totalQuantity !== null) {
-    let badge = document.querySelector(
-        '.wc-block-mini-cart__badge, .wc-block-components-mini-cart__badge');
-    if (badge) {
-      badge.textContent = totalQuantity;
-      if (totalQuantity > 0) {
-        badge.removeAttribute('hidden');
-        badge.style.display = '';
-      } else {
-        badge.setAttribute('hidden', '');
-        badge.style.display = 'none';
+  const finish = function(cart) {
+    let storeUpdated = false;
+    if (store && cart) {
+      try {
+        if (window.wp.data.dispatch('core/data') &&
+            window.wp.data.dispatch('core/data').invalidateResolution) {
+          window.wp.data.dispatch('core/data').invalidateResolution(
+              'wc/store/cart', 'getCartData', []);
+        }
+        store.dispatch.receiveCart(cart);
+        storeUpdated = true;
+      } catch (err) {
+        gecxReportError('cart store update', err);
       }
-    } else if (totalQuantity > 0) {
-      const wrapper = document.querySelector(
-          '.wc-block-mini-cart__quantity-badge, .wc-block-mini-cart__button, .wc-block-components-mini-cart__button, .wc-block-mini-cart button');
-      if (wrapper) {
-        badge = document.createElement('span');
-        badge.className = 'wc-block-mini-cart__badge';
-        badge.textContent = totalQuantity;
-        wrapper.appendChild(badge);
-      }
-    } else if (badge && totalQuantity === 0) {
-      badge.setAttribute('hidden', '');
-      badge.style.display = 'none';
     }
-  }
+
+    let count = gecxCartItemsCount(cart);
+    if (count === null) {
+      count = gecxCartItemsCount(directCart);
+    }
+    if (count === null) {
+      count = eventCount;
+    }
+    if (count !== null) {
+      gecxLastItemsCount = count;
+    }
+
+    if (!storeUpdated) {
+      gecxUpdateCartBadges(count);
+    }
+    gecxRefreshCartOrCheckoutSurface(storeUpdated);
+    gecxAnnounceCartChange(
+        gecxClassifyCartChange(previousCount, count), storeUpdated, cart || directCart,
+        count, previousCount);
+  };
+
+  gecxFetchCart(cartId).then(finish, function(err) {
+    gecxReportError('cart refresh', err);
+    finish(null);
+  });
 }
 
 // Helper to check if an element is visible in the viewport layout.
@@ -952,6 +1203,8 @@ window.addEventListener('resize', function() {
   }, 150);
 });
 
+// Both targets, because the widget's event may or may not bubble. A bubbling
+// event reaches both, and handleCartUpdate() handles it only once.
 window.addEventListener('chat-messenger-update-cart', handleCartUpdate);
 document.addEventListener('chat-messenger-update-cart', handleCartUpdate);
 
