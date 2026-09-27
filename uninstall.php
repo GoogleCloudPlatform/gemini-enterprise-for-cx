@@ -258,6 +258,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         delete_option( 'gecx_button_short_label' );
         delete_option( 'gecx_button_enable_shimmer' );
         delete_option( 'gecx_defer_widget_until_interaction' );
+        delete_option( 'gecx_nav_menu_target' );
+        delete_option( 'gecx_match_theme_styles' );
         delete_option( 'gecx_do_activation_redirect' );
         delete_option( 'gecx_dismiss_activation_notice' );
         delete_option( 'gecx_console_base_url' );

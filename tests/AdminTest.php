@@ -18,6 +18,30 @@ class AdminTest extends GECX_TestCase {
         parent::setUp();
     }
 
+    public function test_admin_ajax_save_button_config_saves_manual_placement_menu_target_and_theme_styles(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $_POST = [
+            'nonce'              => wp_create_nonce( 'gecx_save_agent_nonce' ),
+            'placement'          => 'manual',
+            'nav_menu_target'    => 'location:primary_navigation',
+            'match_theme_styles' => '1',
+        ];
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->ajax_save_button_config();
+
+        $this->assertSame( 'manual', get_option( 'gecx_button_placement' ) );
+        $this->assertSame( 'location:primary_navigation', get_option( 'gecx_nav_menu_target' ) );
+        $this->assertSame( 1, get_option( 'gecx_match_theme_styles' ) );
+
+        $_POST['nav_menu_target']    = 'menu:abc';
+        $_POST['match_theme_styles'] = '0';
+        $admin->ajax_save_button_config();
+
+        $this->assertSame( '', get_option( 'gecx_nav_menu_target' ) );
+        $this->assertSame( 0, get_option( 'gecx_match_theme_styles' ) );
+    }
+
     public function test_admin_ajax_save_button_config(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $_POST = [

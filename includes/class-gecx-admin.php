@@ -689,6 +689,12 @@ class GECX_Admin {
         register_setting( 'gecx_agent_group', 'gecx_button_placement', [
             'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_button_placement' ],
         ] );
+        register_setting( 'gecx_agent_group', 'gecx_match_theme_styles', [
+            'sanitize_callback' => 'absint',
+        ] );
+        register_setting( 'gecx_agent_group', 'gecx_nav_menu_target', [
+            'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_nav_menu_target' ],
+        ] );
         register_setting( 'gecx_agent_group', 'gecx_floating_position', [
             'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_floating_position' ],
         ] );
@@ -934,6 +940,10 @@ class GECX_Admin {
         $embed_enabled         = (bool) get_option( 'gecx_agent_enabled', 0 );
         $pdp_prompts_enabled   = (bool) get_option( 'gecx_pdp_prompts_enabled', 1 );
         $button_placement      = (string) get_option( 'gecx_button_placement', 'nav_menu' );
+        $nav_menu_target       = GECX_Storefront::sanitize_nav_menu_target( get_option( 'gecx_nav_menu_target', '' ) );
+        $match_theme_styles    = (bool) get_option( 'gecx_match_theme_styles', 0 );
+        $nav_menu_locations    = function_exists( 'get_registered_nav_menus' ) ? (array) get_registered_nav_menus() : [];
+        $nav_menus             = function_exists( 'wp_get_nav_menus' ) ? (array) wp_get_nav_menus() : [];
         $floating_position     = (string) get_option( 'gecx_floating_position', 'bottom_center' );
         $display_style         = (string) get_option( 'gecx_button_display_style', 'responsive' );
         $button_label          = (string) get_option( 'gecx_button_label', '' );
@@ -1189,7 +1199,7 @@ class GECX_Admin {
                                         <strong><?php esc_html_e( 'Top navigation menu (Recommended)', 'gemini-enterprise-for-cx' ); ?></strong>
                                         <br><span class="description" style="margin-left: 20px;"><?php esc_html_e( 'Part of your primary header navigation bar.', 'gemini-enterprise-for-cx' ); ?></span>
                                     </label>
-                                    <label style="display: block;">
+                                    <label style="display: block; margin-bottom: 10px;">
                                         <input type="radio"
                                                name="gecx_button_placement"
                                                value="floating"
@@ -1197,7 +1207,51 @@ class GECX_Admin {
                                         <strong><?php esc_html_e( 'Floating bubble', 'gemini-enterprise-for-cx' ); ?></strong>
                                         <br><span class="description" style="margin-left: 20px;"><?php esc_html_e( 'Fixed position floating over pages.', 'gemini-enterprise-for-cx' ); ?></span>
                                     </label>
+                                    <label style="display: block;">
+                                        <input type="radio"
+                                               name="gecx_button_placement"
+                                               value="manual"
+                                               <?php checked( $button_placement, 'manual' ); ?> />
+                                        <strong><?php esc_html_e( 'Manual', 'gemini-enterprise-for-cx' ); ?></strong>
+                                        <br><span class="description" style="margin-left: 20px;">
+                                            <?php
+                                            printf(
+                                                /* translators: 1: shortcode, 2: block name. */
+                                                esc_html__( 'Place the launcher yourself with the %1$s shortcode or the %2$s block, for example in a page builder header.', 'gemini-enterprise-for-cx' ),
+                                                '<code>[gecx_agent_button]</code>',
+                                                '<code>' . esc_html__( 'Gemini Enterprise for CX Launcher', 'gemini-enterprise-for-cx' ) . '</code>'
+                                            );
+                                            ?>
+                                        </span>
+                                    </label>
                                 </fieldset>
+                            </td>
+                        </tr>
+                        <tr id="gecx_nav_menu_target_row" style="<?php echo 'nav_menu' === $button_placement ? '' : 'display: none;'; ?>">
+                            <th scope="row">
+                                <label for="gecx_nav_menu_target"><?php esc_html_e( 'Menu', 'gemini-enterprise-for-cx' ); ?></label>
+                            </th>
+                            <td>
+                                <select id="gecx_nav_menu_target" name="gecx_nav_menu_target">
+                                    <option value="" <?php selected( $nav_menu_target, '' ); ?>><?php esc_html_e( 'Automatic (header and mobile menus)', 'gemini-enterprise-for-cx' ); ?></option>
+                                    <?php if ( ! empty( $nav_menu_locations ) ) : ?>
+                                        <optgroup label="<?php esc_attr_e( 'Theme menu locations', 'gemini-enterprise-for-cx' ); ?>">
+                                            <?php foreach ( $nav_menu_locations as $location_slug => $location_label ) : ?>
+                                                <option value="<?php echo esc_attr( 'location:' . $location_slug ); ?>" <?php selected( $nav_menu_target, 'location:' . $location_slug ); ?>><?php echo esc_html( (string) $location_label ); ?></option>
+                                            <?php endforeach; ?>
+                                        </optgroup>
+                                    <?php endif; ?>
+                                    <?php if ( ! empty( $nav_menus ) ) : ?>
+                                        <optgroup label="<?php esc_attr_e( 'Menus (including page builder menus)', 'gemini-enterprise-for-cx' ); ?>">
+                                            <?php foreach ( $nav_menus as $nav_menu ) : ?>
+                                                <?php if ( is_object( $nav_menu ) && isset( $nav_menu->term_id, $nav_menu->name ) ) : ?>
+                                                    <option value="<?php echo esc_attr( 'menu:' . (int) $nav_menu->term_id ); ?>" <?php selected( $nav_menu_target, 'menu:' . (int) $nav_menu->term_id ); ?>><?php echo esc_html( (string) $nav_menu->name ); ?></option>
+                                                <?php endif; ?>
+                                            <?php endforeach; ?>
+                                        </optgroup>
+                                    <?php endif; ?>
+                                </select>
+                                <p class="description"><?php esc_html_e( 'Choose a menu if the launcher does not appear in your header automatically.', 'gemini-enterprise-for-cx' ); ?></p>
                             </td>
                         </tr>
                         <tr id="gecx_floating_position_row" style="<?php echo 'floating' === $button_placement ? '' : 'display: none;'; ?>">
@@ -1267,6 +1321,19 @@ class GECX_Admin {
                                 </label>
                             </td>
                         </tr>
+                        <tr>
+                            <th scope="row"><?php esc_html_e( 'Theme Styles', 'gemini-enterprise-for-cx' ); ?></th>
+                            <td>
+                                <label for="gecx_match_theme_styles">
+                                    <input type="checkbox"
+                                           id="gecx_match_theme_styles"
+                                           name="gecx_match_theme_styles"
+                                           value="1"
+                                           <?php checked( $match_theme_styles ); ?> />
+                                    <?php esc_html_e( 'Match the chat widget to your theme\'s button color, font and dark mode', 'gemini-enterprise-for-cx' ); ?>
+                                </label>
+                            </td>
+                        </tr>
                     </table>
 
                     <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #dcdcde; display: flex; justify-content: flex-end;">
@@ -1299,6 +1366,8 @@ class GECX_Admin {
         $label          = isset( $_POST['label'] ) ? sanitize_text_field( wp_unslash( $_POST['label'] ) ) : '';
         $short_label    = isset( $_POST['short_label'] ) ? sanitize_text_field( wp_unslash( $_POST['short_label'] ) ) : '';
         $enable_shimmer = isset( $_POST['enable_shimmer'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enable_shimmer'] ) ) ? 1 : 0;
+        $menu_target    = GECX_Storefront::sanitize_nav_menu_target( isset( $_POST['nav_menu_target'] ) ? sanitize_text_field( wp_unslash( $_POST['nav_menu_target'] ) ) : '' );
+        $match_theme    = isset( $_POST['match_theme_styles'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['match_theme_styles'] ) ) ? 1 : 0;
 
         update_option( 'gecx_button_placement', $placement );
         update_option( 'gecx_floating_position', $floating_pos );
@@ -1306,6 +1375,8 @@ class GECX_Admin {
         update_option( 'gecx_button_label', $label );
         update_option( 'gecx_button_short_label', $short_label );
         update_option( 'gecx_button_enable_shimmer', $enable_shimmer );
+        update_option( 'gecx_nav_menu_target', $menu_target );
+        update_option( 'gecx_match_theme_styles', $match_theme );
 
         wp_send_json_success();
     }
