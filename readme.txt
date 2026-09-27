@@ -10,13 +10,47 @@ Stable tag: 0.3.24
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
-Drive sales with an AI agent that's already an expert on your brand and products. Go live instantly on your WooCommerce storefront.
+Empower your site with agentic AI—from instant product discovery to customer support, with zero-code setup and continuous customer context.
 
 == Description ==
 
 Gemini Enterprise for CX integrates your WooCommerce store with Google's Gemini Enterprise for CX (GECX). It embeds a chat widget on your storefront, allowing customers to interact with an AI agent that can answer questions about products, store policies, and assist with adding items to the cart.
 
 This plugin relies on the Gemini Enterprise for CX Software as a Service (SaaS) provided by Google Cloud. Connecting to this service requires a Google account.
+
+= Get Started in Minutes: Zero-Code, Zero-Prompt AI =
+
+Transitioning from onboarding to a live, personalized shopping and support agent for your shoppers takes less than five minutes. Essentials eliminates traditional AI deployment friction through an automated, server-side setup that requires no complex manual configuration or dedicated engineering resources.
+
+= Overcome the Enterprise AI Bottleneck =
+
+Legacy AI projects often suffer from high failure rates and can take 6–9 months to demonstrate business value. Essentials is built to deliver immediate return on investment:
+
+* **Overcome Resource Barriers:** Eliminate heavy engineering involvement with instant, zero-code onboarding.
+* **Close the ROI Gap:** Drive rapid conversion lift instead of waiting quarters for custom implementations.
+* **Remove the Expertise Hurdle:** Bypass complex prompt engineering with automated agentic workflows ready out of the box.
+
+= Engage Shoppers Across Every Touchpoint =
+
+Reach high-intent shoppers wherever they interact with your brand:
+
+* **Flexible Agent Placement:** Deploy the agent seamlessly across your site or via page-aware prompts directly on Product Detail Pages (PDPs).
+* **Persistent Session History:** Retain context across interactions so the agent remembers previous product views, user preferences, and sizing details.
+* **Full-Funnel Assistance:** Handle product discovery, direct-in-chat sales, and "Where Is My Order?" (WISMO) support queries from a single engine.
+
+= Merchant Console & Optimization =
+
+Take full control over brand alignment, safety, and business outcomes:
+
+* **Brand Customization:** Configure greeting, conversational tone, and safety guardrails through a dedicated merchant console.
+* **Transparent Value:** Evaluate agent impact directly against your storefront traffic to measure real conversion lift.
+* **Agentic Intelligence & Insights:** Extract key business trends from customer dialogue data to guide strategy, boost conversions, and improve retention.
+
+= Step-by-Step Onboarding =
+
+1. **Build Your Agent** by simply using your URL in the GECX landing page.
+2. **Use your Merchant Console** to customize guardrails and test the personalized agent.
+3. **Go Live** to begin serving customers across your website.
 
 == 3rd Party Services, External Assets, Privacy & Terms of Service ==
 
@@ -63,6 +97,21 @@ Log in to your WordPress dashboard, navigate to the Plugins menu and click Add N
 Upload the plugin folder to the `/wp-content/plugins/` directory, then activate the plugin through the 'Plugins' screen in WordPress.
 
 == FAQ ==
+
+= Does the agent check real-time stock? =
+Yes. The agent fetches inventory data via APIs to confirm item availability before adding products to the cart.
+
+= Can the agent manage the user's cart? =
+The agent supports partial cart management: it can directly add and update items, though promotional and discount code applications are currently restricted.
+
+= Can it compare products and provide sizing advice? =
+Yes. The agent features an Expert Guidance system that recommends products based on conversational input (such as fit or pitch type) and compares materials and product attributes in natural dialogue.
+
+= Are back-in-stock alerts available? =
+Back-in-stock alert workflows are planned for Wave 2.
+
+= Who is eligible for the current rollout? =
+Early access is currently limited to invite-only customers.
 
 = Does this plugin rely on an external SaaS service? =
 Yes. The plugin connects your WooCommerce store to Google's Gemini Enterprise for CX platform to power the AI storefront agent.

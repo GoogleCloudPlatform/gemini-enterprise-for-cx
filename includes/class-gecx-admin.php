@@ -1889,7 +1889,7 @@ class GECX_Admin {
         $code = (int) wp_remote_retrieve_response_code( $response );
 
         // 404 (NotFound: installation absent), 403 (PermissionDenied: store is
-        // already linked to a different agent or unlinked in Spanner), and 400
+        // already linked to a different agent or already unlinked), and 400
         // (InvalidArgument: local gecx_agent_name references a stale project)
         // all confirm Google does not link this store to $agent_id. Treat them
         // as unlinked rather than stranding the merchant on a 502 error.
