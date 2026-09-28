@@ -255,30 +255,6 @@ test('narrows fixed headers while the chat panel pushes the page', async ({ page
   await expect.poll(() => page.locator('header.sticky').evaluate((el) => el.style.right)).toBe('');
 });
 
-test('matches theme button color, font and dark mode when enabled', async ({ page }) => {
-  await openFixture(page, {
-    config: { appearance: { matchThemeStyles: true } },
-    themeCss: 'body{background:#111;color:#eee;font-family:Georgia,serif} .single_add_to_cart_button{background:rgb(200,0,0);color:rgb(255,255,255)}',
-    body: `<header><nav><ul>${navItem}</ul></nav></header><button class="single_add_to_cart_button">Add to cart</button><chat-messenger class="slide-over messenger-hidden"></chat-messenger>`,
-  });
-  const vars = await page.evaluate(() => ({
-    primary: document.documentElement.style.getPropertyValue('--chat-messenger-color--primary'),
-    font: document.documentElement.style.getPropertyValue('--chat-messenger-font-family'),
-    scheme: document.querySelector('chat-messenger').getAttribute('color-scheme'),
-  }));
-  expect(vars.primary).toBe('rgb(200, 0, 0)');
-  expect(vars.font).toContain('Georgia');
-  expect(vars.scheme).toBe('dark');
-});
-
-test('leaves theme styles alone by default', async ({ page }) => {
-  await openFixture(page, {
-    themeCss: '.single_add_to_cart_button{background:rgb(200,0,0)}',
-    body: `<header><nav><ul>${navItem}</ul></nav></header><button class="single_add_to_cart_button">Add</button>`,
-  });
-  expect(await page.evaluate(() => document.documentElement.style.getPropertyValue('--chat-messenger-color--primary'))).toBe('');
-});
-
 test('deferred loading waits for interaction even though WordPress localizes false as ""', async ({ page }) => {
   let widgetRequests = 0;
   page.on('request', (request) => {

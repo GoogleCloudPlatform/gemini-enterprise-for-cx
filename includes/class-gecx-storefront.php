@@ -163,7 +163,7 @@ class GECX_Storefront {
         add_filter( 'script_loader_tag', [ $this, 'exclude_script_from_optimizers' ], 10, 2 );
         add_filter( 'wp_inline_script_attributes', [ $this, 'exclude_inline_config_from_optimizers' ] );
         add_filter( 'rocket_delay_js_exclusions', [ $this, 'add_wp_rocket_delay_exclusions' ] );
-        add_action( 'init', [ $this, 'register_agent_button_block' ] );
+        add_action( 'init', [ $this, 'register_blocks' ] );
     }
 
     /**
@@ -273,27 +273,27 @@ class GECX_Storefront {
     }
 
     /**
-     * Registers the gecx/agent-button block, the block editor counterpart of
-     * the [gecx_agent_button] shortcode.
+     * Registers the plugin's blocks, the block editor counterparts of the
+     * [gecx_agent_button] and [gecx_suggested_prompts] shortcodes.
      *
-     * It is rendered on the server. In the editor it shows a placeholder: the
-     * launcher is a custom element defined by the Google-hosted widget bundle,
-     * which the editor does not load.
+     * Both are rendered on the server. In the editor they show placeholders:
+     * the launcher and prompts are custom elements defined by the
+     * Google-hosted widget bundle, which the editor does not load.
      */
-    public function register_agent_button_block(): void {
+    public function register_blocks(): void {
         if ( ! function_exists( 'register_block_type' ) ) {
             return;
         }
         wp_register_script(
-            'gecx-agent-button-block',
-            plugins_url( 'assets/js/agent-button-block.js', $this->plugin_file ),
-            [ 'wp-blocks', 'wp-element', 'wp-i18n', 'wp-block-editor' ],
+            'gecx-editor-blocks',
+            plugins_url( 'assets/js/editor-blocks.js', $this->plugin_file ),
+            [ 'wp-blocks', 'wp-element', 'wp-i18n', 'wp-block-editor', 'wp-components' ],
             defined( 'GECX_VERSION' ) ? GECX_VERSION : null,
             true
         );
         if ( function_exists( 'wp_set_script_translations' ) ) {
             wp_set_script_translations(
-                'gecx-agent-button-block',
+                'gecx-editor-blocks',
                 'gemini-enterprise-for-cx',
                 plugin_dir_path( $this->plugin_file ) . 'languages'
             );
@@ -304,7 +304,7 @@ class GECX_Storefront {
                 'api_version'     => 2,
                 'title'           => __( 'Gemini Enterprise for CX Launcher', 'gemini-enterprise-for-cx' ),
                 'category'        => 'widgets',
-                'editor_script'   => 'gecx-agent-button-block',
+                'editor_script'   => 'gecx-editor-blocks',
                 'render_callback' => [ $this, 'render_agent_button_shortcode' ],
                 'supports'        => [
                     'html'     => false,
@@ -312,6 +312,51 @@ class GECX_Storefront {
                 ],
             ]
         );
+        register_block_type(
+            'gecx/suggested-prompts',
+            [
+                'api_version'     => 2,
+                'title'           => __( 'Gemini Enterprise for CX Suggested Prompts', 'gemini-enterprise-for-cx' ),
+                'category'        => 'widgets',
+                'editor_script'   => 'gecx-editor-blocks',
+                'attributes'      => [
+                    'productId' => [
+                        'type'    => 'number',
+                        'default' => 0,
+                    ],
+                ],
+                'uses_context'    => [ 'postId' ],
+                'render_callback' => [ $this, 'render_suggested_prompts_block' ],
+                'supports'        => [
+                    'html'     => false,
+                    'multiple' => false,
+                ],
+            ]
+        );
+    }
+
+    /**
+     * Renders the gecx/suggested-prompts block.
+     *
+     * Uses the block's Product ID setting when one is set. Otherwise the
+     * product comes from the block context (the Single Product block and
+     * template) or from the product page being viewed.
+     *
+     * @param array $attributes Block attributes.
+     * @param string $content    Block content (unused; the block is dynamic).
+     * @param mixed  $block      WP_Block instance.
+     * @return string Prompts markup, or '' when there is no product.
+     */
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundBeforeLastUsed -- render_callback signature.
+    public function render_suggested_prompts_block( $attributes = [], $content = '', $block = null ): string {
+        $product_id = is_array( $attributes ) && isset( $attributes['productId'] ) ? absint( $attributes['productId'] ) : 0;
+        if ( 0 === $product_id && is_object( $block ) && isset( $block->context['postId'] ) ) {
+            $context_id = absint( $block->context['postId'] );
+            if ( $context_id > 0 && function_exists( 'wc_get_product' ) && wc_get_product( $context_id ) ) {
+                $product_id = $context_id;
+            }
+        }
+        return $this->render_suggested_prompts_shortcode( $product_id > 0 ? [ 'id' => $product_id ] : [] );
     }
 
     /**
@@ -451,9 +496,6 @@ class GECX_Storefront {
             // Nested so the booleans keep their type: wp_localize_script()
             // casts top-level scalars to strings, and false becomes "".
             'cartRefresh'      => self::get_cart_refresh_config(),
-            'appearance'       => [
-                'matchThemeStyles' => (bool) get_option( 'gecx_match_theme_styles', 0 ),
-            ],
         ];
 
         if ( $this->is_pdp_prompts_auto_inject_enabled() ) {

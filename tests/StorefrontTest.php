@@ -1405,12 +1405,42 @@ JS;
 
     public function test_agent_button_block_is_server_rendered(): void {
         $storefront = $this->activate_widget( 'manual' );
-        $storefront->register_agent_button_block();
+        $storefront->register_blocks();
 
         $block = $GLOBALS['gecx_test_block_types']['gecx/agent-button'] ?? null;
         $this->assertIsArray( $block );
-        $this->assertSame( 'gecx-agent-button-block', $block['editor_script'] );
+        $this->assertSame( 'gecx-editor-blocks', $block['editor_script'] );
         $this->assertSame( [ $storefront, 'render_agent_button_shortcode' ], $block['render_callback'] );
+    }
+
+    public function test_suggested_prompts_block_is_server_rendered(): void {
+        $storefront = $this->activate_widget( 'manual' );
+        $storefront->register_blocks();
+
+        $block = $GLOBALS['gecx_test_block_types']['gecx/suggested-prompts'] ?? null;
+        $this->assertIsArray( $block );
+        $this->assertSame( 'gecx-editor-blocks', $block['editor_script'] );
+        $this->assertSame( [ 'postId' ], $block['uses_context'] );
+        $this->assertSame( [ $storefront, 'render_suggested_prompts_block' ], $block['render_callback'] );
+    }
+
+    public function test_suggested_prompts_block_renders_for_the_chosen_or_context_product(): void {
+        $GLOBALS['gecx_test_is_product'] = false;
+        $storefront                      = $this->activate_widget( 'manual' );
+        update_option( 'gecx_pdp_prompts_enabled', 0 );
+
+        // No product ID and no product in context or on the page: nothing.
+        $this->assertSame( '', $storefront->render_suggested_prompts_block( [] ) );
+
+        // A post that isn't a product in the block context is ignored.
+        $this->assertSame( '', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => 55 ] ] ) );
+
+        // The Product ID setting works anywhere, even with auto prompts off.
+        $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->render_suggested_prompts_block( [ 'productId' => 101 ] ) );
+
+        // A product in the block context (Single Product block or template).
+        $GLOBALS['gecx_test_products'][303] = new WC_Product( 303 );
+        $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => 303 ] ] ) );
     }
 
     public function test_nothing_is_output_on_amp_pages(): void {
@@ -1457,12 +1487,6 @@ JS;
 
         $this->assertSame( $tag, $storefront->exclude_script_from_optimizers( $tag, 'gecx-widget-script' ) );
         $this->assertSame( [ 'a' ], $storefront->add_wp_rocket_delay_exclusions( [ 'a' ] ) );
-    }
-
-    public function test_storefront_config_carries_typed_appearance_settings(): void {
-        update_option( 'gecx_match_theme_styles', 1 );
-
-        $this->assertSame( [ 'matchThemeStyles' => true ], $this->localized_storefront_config()['appearance'] );
     }
 
     public function test_prompts_markup_is_localized_off_product_pages_for_dynamically_loaded_products(): void {

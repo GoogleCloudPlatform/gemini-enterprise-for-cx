@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.25
+Stable tag: 0.3.26
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -133,6 +133,9 @@ If it lands in the wrong menu, choose one under Launcher Placement > Menu. Menus
 
 Themes that replace page content without a full page load can call `window.gecxInit()` afterwards. The plugin also watches for content added after the page loads.
 
+= Can the chat widget match my theme's colors? =
+The chat widget's colors, fonts and branding come from your agent's settings in the Gemini Enterprise for CX console, not from your WordPress theme. The widget applies that branding itself.
+
 = The floating button covers part of my theme. =
 The floating button moves up to clear bars your theme fixes to the bottom of the screen. To add more space, set the `--gecx-floating-extra-offset` CSS variable, for example `:root { --gecx-floating-extra-offset: 24px; }`.
 
@@ -165,6 +168,10 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 
 The complete release history is kept in changelog.txt at the plugin root.
 
+= 0.3.26 =
+* Add a Gemini Enterprise for CX Suggested Prompts block, the block editor counterpart of `[gecx_suggested_prompts]`, which uses the product it is placed on (the Single Product block or template) or a Product ID set in the block.
+* On the settings page, show how to place the launcher and prompts yourself in an info tooltip, only when Manual placement is chosen or automatic prompts are turned off.
+
 = 0.3.25 =
 * Don't add the floating fallback launcher while the chat widget is briefly hiding launchers on a shopper's first visit, which left two launchers once the widget showed them again; re-check when the widget shows or hides a launcher; and don't count a launcher clipped inside a collapsed menu as visible.
 
@@ -177,7 +184,6 @@ The complete release history is kept in changelog.txt at the plugin root.
 * Place product prompts after the main add-to-cart form rather than a sticky add-to-cart bar, quick view or related product, add Bricks, Avada and Oxygen targets, and place them on pages that embed a product with `[product_page]` or the Single Product block.
 * Re-run placement when content is added after load (late headers, page transitions, infinite scroll) and expose `window.gecxInit()` for themes that swap content themselves.
 * Lift floating launchers above bars themes fix to the bottom of the screen and clear the device safe area; merchants can add spacing with the `--gecx-floating-extra-offset` CSS variable. Narrow fixed headers while the chat panel pushes the page aside.
-* Add a Match theme styles setting that takes the chat widget's primary color, font and dark mode from the theme.
 * Output nothing on AMP pages, and keep the launcher scripts out of WP Rocket, LiteSpeed Cache and Cloudflare Rocket Loader JavaScript delay (filter: `gecx_exclude_from_js_delay`).
 * Fix the Defer widget until interaction setting, which never deferred because WordPress localizes `false` as an empty string.
 * Add browser tests: placement fixtures modeled on theme markup, and a wp-env theme matrix covering Storefront, Astra, Kadence, OceanWP and Twenty Twenty-Five.

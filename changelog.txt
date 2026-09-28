@@ -1,5 +1,9 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-09-28 - version 0.3.26
+* Add a Gemini Enterprise for CX Suggested Prompts block, the block editor counterpart of `[gecx_suggested_prompts]`, which uses the product it is placed on (the Single Product block or template) or a Product ID set in the block.
+* On the settings page, show how to place the launcher and prompts yourself in an info tooltip, only when Manual placement is chosen or automatic prompts are turned off.
+
 2026-09-28 - version 0.3.25
 * Don't add the floating fallback launcher while the chat widget is briefly hiding launchers on a shopper's first visit, which left two launchers once the widget showed them again; re-check when the widget shows or hides a launcher; and don't count a launcher clipped inside a collapsed menu as visible.
 
@@ -12,7 +16,6 @@
 * Place product prompts after the main add-to-cart form rather than a sticky add-to-cart bar, quick view or related product, add Bricks, Avada and Oxygen targets, and place them on pages that embed a product with `[product_page]` or the Single Product block.
 * Re-run placement when content is added after load (late headers, page transitions, infinite scroll) and expose `window.gecxInit()` for themes that swap content themselves.
 * Lift floating launchers above bars themes fix to the bottom of the screen and clear the device safe area; merchants can add spacing with the `--gecx-floating-extra-offset` CSS variable. Narrow fixed headers while the chat panel pushes the page aside.
-* Add a Match theme styles setting that takes the chat widget's primary color, font and dark mode from the theme.
 * Output nothing on AMP pages, and keep the launcher scripts out of WP Rocket, LiteSpeed Cache and Cloudflare Rocket Loader JavaScript delay (filter: `gecx_exclude_from_js_delay`).
 * Fix the Defer widget until interaction setting, which never deferred because WordPress localizes `false` as an empty string.
 * Add browser tests: placement fixtures modeled on theme markup, and a wp-env theme matrix covering Storefront, Astra, Kadence, OceanWP and Twenty Twenty-Five.

@@ -579,6 +579,13 @@ class GECX_Admin {
         wp_add_inline_style(
             'gecx-admin-css',
             '.gecx-admin-wrap { max-width: 800px; margin: 25px auto; } .gecx-admin-wrap .card { max-width: 100% !important; width: 100% !important; box-sizing: border-box; }'
+            . ' .gecx-info-tip { position: relative; display: inline-block; vertical-align: middle; margin-left: 4px; color: #2271b1; cursor: help; }'
+            . ' .gecx-info-tip .dashicons { font-size: 18px; width: 18px; height: 18px; }'
+            . ' .gecx-info-tip:focus { outline: 2px solid #2271b1; outline-offset: 1px; border-radius: 50%; }'
+            . ' .gecx-info-tip__text { visibility: hidden; opacity: 0; position: absolute; z-index: 100; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%); width: 280px; padding: 8px 10px; background: #1d2327; color: #fff; border-radius: 4px; font-size: 12px; font-weight: normal; line-height: 1.5; text-align: left; transition: opacity 0.15s; }'
+            . ' .gecx-info-tip__text::after { content: ""; position: absolute; top: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-top-color: #1d2327; }'
+            . ' .gecx-info-tip__text code { background: rgba(255, 255, 255, 0.15); color: #fff; }'
+            . ' .gecx-info-tip:hover .gecx-info-tip__text, .gecx-info-tip:focus .gecx-info-tip__text { visibility: visible; opacity: 1; }'
         );
 
         wp_enqueue_script(
@@ -688,9 +695,6 @@ class GECX_Admin {
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_placement', [
             'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_button_placement' ],
-        ] );
-        register_setting( 'gecx_agent_group', 'gecx_match_theme_styles', [
-            'sanitize_callback' => 'absint',
         ] );
         register_setting( 'gecx_agent_group', 'gecx_nav_menu_target', [
             'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_nav_menu_target' ],
@@ -941,7 +945,6 @@ class GECX_Admin {
         $pdp_prompts_enabled   = (bool) get_option( 'gecx_pdp_prompts_enabled', 1 );
         $button_placement      = (string) get_option( 'gecx_button_placement', 'nav_menu' );
         $nav_menu_target       = GECX_Storefront::sanitize_nav_menu_target( get_option( 'gecx_nav_menu_target', '' ) );
-        $match_theme_styles    = (bool) get_option( 'gecx_match_theme_styles', 0 );
         $nav_menu_locations    = function_exists( 'get_registered_nav_menus' ) ? (array) get_registered_nav_menus() : [];
         $nav_menus             = function_exists( 'wp_get_nav_menus' ) ? (array) wp_get_nav_menus() : [];
         $floating_position     = (string) get_option( 'gecx_floating_position', 'bottom_center' );
@@ -1170,6 +1173,24 @@ class GECX_Admin {
                                            <?php disabled( ! $embed_enabled ); ?> />
                                     <?php esc_html_e( 'Show AI-generated suggested questions on product detail pages', 'gemini-enterprise-for-cx' ); ?>
                                 </label>
+                                <span id="gecx-prompts-manual-tip"
+                                      class="gecx-info-tip"
+                                      tabindex="0"
+                                      aria-label="<?php esc_attr_e( 'Adding prompts yourself', 'gemini-enterprise-for-cx' ); ?>"
+                                      aria-describedby="gecx-prompts-manual-tip-text"
+                                      style="<?php echo $pdp_prompts_enabled ? 'display: none;' : ''; ?>">
+                                    <span class="dashicons dashicons-info-outline" aria-hidden="true"></span>
+                                    <span id="gecx-prompts-manual-tip-text" class="gecx-info-tip__text" role="tooltip">
+                                        <?php
+                                        printf(
+                                            /* translators: 1: shortcode, 2: block name. */
+                                            esc_html__( 'You can still show prompts where you want them with the %1$s shortcode or the %2$s block, for example in the Single Product template.', 'gemini-enterprise-for-cx' ),
+                                            '<code>[gecx_suggested_prompts]</code>',
+                                            '<code>' . esc_html__( 'Gemini Enterprise for CX Suggested Prompts', 'gemini-enterprise-for-cx' ) . '</code>'
+                                        );
+                                        ?>
+                                    </span>
+                                </span>
                             </td>
                         </tr>
                     </table>
@@ -1207,13 +1228,21 @@ class GECX_Admin {
                                         <strong><?php esc_html_e( 'Floating bubble', 'gemini-enterprise-for-cx' ); ?></strong>
                                         <br><span class="description" style="margin-left: 20px;"><?php esc_html_e( 'Fixed position floating over pages.', 'gemini-enterprise-for-cx' ); ?></span>
                                     </label>
-                                    <label style="display: block;">
+                                    <label style="display: inline-block;">
                                         <input type="radio"
                                                name="gecx_button_placement"
                                                value="manual"
                                                <?php checked( $button_placement, 'manual' ); ?> />
                                         <strong><?php esc_html_e( 'Manual', 'gemini-enterprise-for-cx' ); ?></strong>
-                                        <br><span class="description" style="margin-left: 20px;">
+                                    </label>
+                                    <span id="gecx-manual-placement-tip"
+                                          class="gecx-info-tip"
+                                          tabindex="0"
+                                          aria-label="<?php esc_attr_e( 'Placing the launcher yourself', 'gemini-enterprise-for-cx' ); ?>"
+                                          aria-describedby="gecx-manual-placement-tip-text"
+                                          style="<?php echo 'manual' === $button_placement ? '' : 'display: none;'; ?>">
+                                        <span class="dashicons dashicons-info-outline" aria-hidden="true"></span>
+                                        <span id="gecx-manual-placement-tip-text" class="gecx-info-tip__text" role="tooltip">
                                             <?php
                                             printf(
                                                 /* translators: 1: shortcode, 2: block name. */
@@ -1223,7 +1252,7 @@ class GECX_Admin {
                                             );
                                             ?>
                                         </span>
-                                    </label>
+                                    </span>
                                 </fieldset>
                             </td>
                         </tr>
@@ -1321,19 +1350,6 @@ class GECX_Admin {
                                 </label>
                             </td>
                         </tr>
-                        <tr>
-                            <th scope="row"><?php esc_html_e( 'Theme Styles', 'gemini-enterprise-for-cx' ); ?></th>
-                            <td>
-                                <label for="gecx_match_theme_styles">
-                                    <input type="checkbox"
-                                           id="gecx_match_theme_styles"
-                                           name="gecx_match_theme_styles"
-                                           value="1"
-                                           <?php checked( $match_theme_styles ); ?> />
-                                    <?php esc_html_e( 'Match the chat widget to your theme\'s button color, font and dark mode', 'gemini-enterprise-for-cx' ); ?>
-                                </label>
-                            </td>
-                        </tr>
                     </table>
 
                     <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #dcdcde; display: flex; justify-content: flex-end;">
@@ -1367,7 +1383,6 @@ class GECX_Admin {
         $short_label    = isset( $_POST['short_label'] ) ? sanitize_text_field( wp_unslash( $_POST['short_label'] ) ) : '';
         $enable_shimmer = isset( $_POST['enable_shimmer'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enable_shimmer'] ) ) ? 1 : 0;
         $menu_target    = GECX_Storefront::sanitize_nav_menu_target( isset( $_POST['nav_menu_target'] ) ? sanitize_text_field( wp_unslash( $_POST['nav_menu_target'] ) ) : '' );
-        $match_theme    = isset( $_POST['match_theme_styles'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['match_theme_styles'] ) ) ? 1 : 0;
 
         update_option( 'gecx_button_placement', $placement );
         update_option( 'gecx_floating_position', $floating_pos );
@@ -1376,7 +1391,6 @@ class GECX_Admin {
         update_option( 'gecx_button_short_label', $short_label );
         update_option( 'gecx_button_enable_shimmer', $enable_shimmer );
         update_option( 'gecx_nav_menu_target', $menu_target );
-        update_option( 'gecx_match_theme_styles', $match_theme );
 
         wp_send_json_success();
     }

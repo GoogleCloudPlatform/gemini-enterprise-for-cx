@@ -1575,6 +1575,16 @@ if ( ! function_exists( 'selected' ) ) {
     }
 }
 
+if ( ! function_exists( 'disabled' ) ) {
+    function disabled( $disabled, $current = true, bool $display = true ): string {
+        $result = ( (string) $disabled === (string) $current ) ? ' disabled="disabled"' : '';
+        if ( $display ) {
+            echo $result;
+        }
+        return $result;
+    }
+}
+
 if ( ! function_exists( 'admin_url' ) ) {
     function admin_url( string $path = '' ): string {
         return 'https://example.com/wp-admin/' . $path;

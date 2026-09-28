@@ -1489,66 +1489,6 @@ function updateFloatingWidgetCentering(isFollowUp) {
   gecxShiftFixedElementsForChat(bodyPadding > 0 && bodyPadding < window.innerWidth ? bodyPadding : 0);
 }
 
-/**
- * Reads the theme's button colors and body font into the chat widget's
- * color and font variables, when the merchant enabled "Match theme styles".
- *
- * Read from the rendered page rather than theme.json so classic themes,
- * which have no theme.json, are covered too. The widget's variables inherit
- * into its shadow DOM from the root element.
- */
-function gecxApplyThemeStyles() {
-  const cfg = gecxGetStorefrontConfig();
-  const appearance = (cfg && cfg.appearance && typeof cfg.appearance === 'object') ? cfg.appearance : {};
-  if (appearance.matchThemeStyles !== true || !document.body || !document.documentElement ||
-      typeof window.getComputedStyle !== 'function') {
-    return;
-  }
-  const root = document.documentElement.style;
-  const isTransparent = function(color) {
-    return !color || color === 'transparent' || /rgba\([^)]*,\s*0\)$/.test(color);
-  };
-
-  let button = null;
-  gecxEach('.single_add_to_cart_button, .wp-element-button, .wp-block-button__link, a.button, button.button, .button',
-      function(el) {
-        if (!button && !gecxIsOwnElement(el) && isElementVisible(el) &&
-            !isTransparent(window.getComputedStyle(el).backgroundColor)) {
-          button = el;
-        }
-      });
-  if (button) {
-    const buttonStyle = window.getComputedStyle(button);
-    root.setProperty('--chat-messenger-color--primary', buttonStyle.backgroundColor);
-    root.setProperty('--chat-messenger-internal-primary-color', buttonStyle.backgroundColor);
-    if (!isTransparent(buttonStyle.color)) {
-      root.setProperty('--chat-messenger-color--on-primary', buttonStyle.color);
-    }
-  }
-
-  const bodyStyle = window.getComputedStyle(document.body);
-  if (bodyStyle.fontFamily) {
-    root.setProperty('--chat-messenger-font-family', bodyStyle.fontFamily);
-  }
-
-  // Dark mode: follow the page background rather than the OS setting, since
-  // a light theme on a dark OS should keep a light widget.
-  let background = bodyStyle.backgroundColor;
-  if (isTransparent(background)) {
-    background = window.getComputedStyle(document.documentElement).backgroundColor;
-  }
-  const rgb = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(background || '');
-  const isDark = !!rgb &&
-      (0.2126 * rgb[1] + 0.7152 * rgb[2] + 0.0722 * rgb[3]) / 255 < 0.4;
-  gecxEach('chat-messenger', function(el) {
-    if (isDark) {
-      el.setAttribute('color-scheme', 'dark');
-    } else if (el.getAttribute('color-scheme') === 'dark') {
-      el.removeAttribute('color-scheme');
-    }
-  });
-}
-
 /** @type {?Promise<void>} In-flight or completed dynamic widget script load. */
 let gecxWidgetScriptPromise = null;
 
@@ -1671,7 +1611,6 @@ function gecxPlaceAll() {
   initPdpPlacement();
   updateFloatingOffset();
   updateFloatingWidgetCentering();
-  gecxApplyThemeStyles();
 }
 
 function initStorefront() {
