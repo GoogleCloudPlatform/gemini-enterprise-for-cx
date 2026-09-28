@@ -1,5 +1,8 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-09-28 - version 0.3.28
+* Load the launcher scripts even when a page request's Accept header mentions `application/json`. WordPress treats such a request as a JSON request, so the page rendered with the launcher markup but without the scripts that define it, and a page cache could then serve that broken copy, with no launcher, to every shopper.
+
 2026-09-28 - version 0.3.27
 * Always show the info tooltip next to the Suggested Prompts setting, so merchants who keep automatic prompts on also see how to place prompts with the shortcode or block.
 * Drop "(Recommended)" from the Top navigation menu placement option.

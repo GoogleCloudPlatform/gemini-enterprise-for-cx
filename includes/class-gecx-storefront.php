@@ -365,7 +365,12 @@ class GECX_Storefront {
     public function enqueue_storefront_assets(): void {
         // wp_enqueue_scripts also fires for requests that render no storefront
         // page, and nothing downstream of this point is meaningful for them.
-        if ( is_admin() || wp_doing_ajax() || wp_is_json_request() || is_feed() || $this->is_amp_request() ) {
+        // wp_is_json_request() is deliberately not checked: it is true for any
+        // page request whose Accept header mentions application/json, such as
+        // some monitors and link previewers. The page still renders with the
+        // launcher markup, and a page cache would then serve that copy, with
+        // no scripts to define the launcher, to every shopper.
+        if ( is_admin() || wp_doing_ajax() || is_feed() || $this->is_amp_request() ) {
             return;
         }
 
@@ -526,7 +531,7 @@ class GECX_Storefront {
      * data store, and the script would pull in jQuery for nothing.
      */
     public function enqueue_cart_fragments(): void {
-        if ( is_admin() || wp_doing_ajax() || wp_is_json_request() || is_feed() || $this->is_amp_request() ) {
+        if ( is_admin() || wp_doing_ajax() || is_feed() || $this->is_amp_request() ) {
             return;
         }
         if ( ! $this->get_active_agent_name() || ! $this->is_widget_enabled() ) {

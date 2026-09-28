@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.27
+Stable tag: 0.3.28
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -167,6 +167,9 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.28 =
+* Load the launcher scripts even when a page request's Accept header mentions `application/json`. WordPress treats such a request as a JSON request, so the page rendered with the launcher markup but without the scripts that define it, and a page cache could then serve that broken copy, with no launcher, to every shopper.
 
 = 0.3.27 =
 * Always show the info tooltip next to the Suggested Prompts setting, so merchants who keep automatic prompts on also see how to place prompts with the shortcode or block.

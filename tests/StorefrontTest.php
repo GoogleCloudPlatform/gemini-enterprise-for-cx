@@ -462,7 +462,6 @@ class StorefrontTest extends GECX_TestCase {
         $contexts = [
             'gecx_test_is_admin',
             'gecx_test_doing_ajax',
-            'gecx_test_is_json_request',
             'gecx_test_is_feed',
         ];
         foreach ( $contexts as $context ) {
@@ -477,6 +476,22 @@ class StorefrontTest extends GECX_TestCase {
             $this->assertEquals( [], $GLOBALS['gecx_test_enqueued_styles'] );
             $this->assertEquals( [], $GLOBALS['gecx_test_enqueued_scripts'] );
         }
+    }
+
+    public function test_storefront_assets_are_enqueued_when_the_page_request_accepts_json(): void {
+        // Some clients send Accept: application/json for an ordinary page,
+        // which makes wp_is_json_request() true. The page still renders the
+        // launcher markup, and a page cache serves that copy to shoppers, so
+        // it must include the scripts that define the launcher.
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+        $GLOBALS['gecx_test_is_json_request'] = true;
+
+        $storefront = new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront->enqueue_storefront_assets();
+
+        $this->assertContains( 'gecx-widget-script', $GLOBALS['gecx_test_enqueued_scripts'] );
+        $this->assertContains( 'gecx-storefront-js', $GLOBALS['gecx_test_enqueued_scripts'] );
     }
 
     public function test_agent_button_short_label_falls_back_to_a_translated_shop(): void {
