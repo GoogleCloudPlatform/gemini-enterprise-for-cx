@@ -87,12 +87,17 @@ $(function() {
      });
   });
 
-  // Toggle floating position dropdown visibility on placement change
+  // Toggle the placement-specific rows on placement change
   $(document).on('change', 'input[name="gecx_button_placement"]', function() {
-    if ($(this).val() === 'floating') {
-      $('#gecx_floating_position_row').show();
-    } else {
-      $('#gecx_floating_position_row').hide();
+    $('#gecx_floating_position_row').toggle($(this).val() === 'floating');
+    $('#gecx_nav_menu_target_row').toggle($(this).val() === 'nav_menu');
+    $('#gecx-manual-placement-tip').toggle($(this).val() === 'manual');
+  });
+
+  // Let keyboard users dismiss an info tooltip with Escape.
+  $(document).on('keydown', '.gecx-info-tip', function(e) {
+    if (e.key === 'Escape') {
+      $(this).trigger('blur');
     }
   });
 
@@ -110,6 +115,7 @@ $(function() {
     const shortLabel = $('#gecx_button_short_label').val() || '';
     const enableShimmer =
         $('#gecx_button_enable_shimmer').is(':checked') ? '1' : '0';
+    const navMenuTarget = $('#gecx_nav_menu_target').val() || '';
 
     const $savedIndicator = $('#gecx-button-config-saved');
     $.post(ajaxurl, {
@@ -120,6 +126,7 @@ $(function() {
        label: label,
        short_label: shortLabel,
        enable_shimmer: enableShimmer,
+       nav_menu_target: navMenuTarget,
        nonce: saveNonce
      }).done(function() {
       if ($savedIndicator.length) {
@@ -137,7 +144,7 @@ $(function() {
 
   $(document).on(
       'change',
-      'input[name="gecx_button_placement"], #gecx_button_floating_position, #gecx_button_display_style, #gecx_button_label, #gecx_button_short_label, #gecx_button_enable_shimmer',
+      'input[name="gecx_button_placement"], #gecx_button_floating_position, #gecx_nav_menu_target, #gecx_button_display_style, #gecx_button_label, #gecx_button_short_label, #gecx_button_enable_shimmer',
       function() {
         clearTimeout(buttonConfigDebounceTimer);
         saveButtonConfig();

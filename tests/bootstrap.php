@@ -106,6 +106,8 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_blog_memberships']     = [];
     $GLOBALS['gecx_test_super_admins']         = [];
     $GLOBALS['gecx_test_products']             = [];
+    $GLOBALS['gecx_test_post_statuses']        = [];
+    $GLOBALS['gecx_test_password_required']    = [];
     $GLOBALS['gecx_test_script_translations']  = [];
 
     // Request context. Every one of these is false for a storefront page
@@ -129,6 +131,12 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_enqueued_scripts'] = [];
     $GLOBALS['gecx_test_registered_scripts'] = [ 'wc-cart-fragments' ];
     $GLOBALS['gecx_test_is_block_theme']   = false;
+    $GLOBALS['gecx_test_did_actions']      = [ 'parse_query' => 1 ];
+    $GLOBALS['gecx_test_is_amp']           = false;
+    $GLOBALS['gecx_test_post']             = null;
+    $GLOBALS['gecx_test_nav_menus']        = [];
+    $GLOBALS['gecx_test_nav_menu_locations'] = [];
+    $GLOBALS['gecx_test_block_types']      = [];
     $GLOBALS['gecx_test_current_screen']   = null;
     unset( $GLOBALS['hook_suffix'] );
 
@@ -913,11 +921,13 @@ if ( ! function_exists( 'user_can' ) ) {
             $allcaps['manage_options']     = true;
             $allcaps['manage_woocommerce'] = true;
             $allcaps['edit_post']          = true;
+            $allcaps['read_post']          = true;
             $allcaps['delete_users']       = true;
         }
         if ( in_array( 'shop_manager', $user->roles, true ) ) {
             $allcaps['manage_woocommerce'] = true;
             $allcaps['edit_post']          = true;
+            $allcaps['read_post']          = true;
         }
         if ( function_exists( 'apply_filters' ) ) {
             $allcaps = (array) apply_filters(
@@ -1569,6 +1579,16 @@ if ( ! function_exists( 'selected' ) ) {
     }
 }
 
+if ( ! function_exists( 'disabled' ) ) {
+    function disabled( $disabled, $current = true, bool $display = true ): string {
+        $result = ( (string) $disabled === (string) $current ) ? ' disabled="disabled"' : '';
+        if ( $display ) {
+            echo $result;
+        }
+        return $result;
+    }
+}
+
 if ( ! function_exists( 'admin_url' ) ) {
     function admin_url( string $path = '' ): string {
         return 'https://example.com/wp-admin/' . $path;
@@ -1912,6 +1932,74 @@ if ( ! function_exists( 'delete_post_meta_by_key' ) ) {
 if ( ! function_exists( 'wp_enqueue_script' ) ) {
     function wp_enqueue_script( ...$args ): void {
         $GLOBALS['gecx_test_enqueued_scripts'][] = (string) ( $args[0] ?? '' );
+    }
+}
+
+if ( ! function_exists( 'did_action' ) ) {
+    function did_action( string $hook_name ): int {
+        return (int) ( $GLOBALS['gecx_test_did_actions'][ $hook_name ] ?? 0 );
+    }
+}
+
+if ( ! function_exists( 'amp_is_request' ) ) {
+    function amp_is_request(): bool {
+        return ! empty( $GLOBALS['gecx_test_is_amp'] );
+    }
+}
+
+if ( ! function_exists( 'is_singular' ) ) {
+    function is_singular(): bool {
+        return null !== ( $GLOBALS['gecx_test_post'] ?? null );
+    }
+}
+
+if ( ! function_exists( 'get_post' ) ) {
+    function get_post() {
+        return $GLOBALS['gecx_test_post'] ?? null;
+    }
+}
+
+if ( ! function_exists( 'has_shortcode' ) ) {
+    function has_shortcode( string $content, string $tag ): bool {
+        return false !== strpos( $content, '[' . $tag );
+    }
+}
+
+if ( ! function_exists( 'has_block' ) ) {
+    function has_block( string $block_name, $post = null ): bool {
+        $content = is_object( $post ) && isset( $post->post_content ) ? (string) $post->post_content : '';
+        return false !== strpos( $content, '<!-- wp:' . preg_replace( '#^core/#', '', $block_name ) );
+    }
+}
+
+if ( ! function_exists( 'wp_get_nav_menu_object' ) ) {
+    function wp_get_nav_menu_object( $menu ) {
+        foreach ( $GLOBALS['gecx_test_nav_menus'] ?? [] as $term ) {
+            if ( $term === $menu || (int) $term->term_id === ( is_numeric( $menu ) ? (int) $menu : -1 ) || $term->slug === $menu || ( is_object( $menu ) && isset( $menu->term_id ) && (int) $menu->term_id === (int) $term->term_id ) ) {
+                return $term;
+            }
+        }
+        return false;
+    }
+}
+
+if ( ! function_exists( 'get_nav_menu_locations' ) ) {
+    function get_nav_menu_locations(): array {
+        return $GLOBALS['gecx_test_nav_menu_locations'] ?? [];
+    }
+}
+
+if ( ! function_exists( 'wp_register_script' ) ) {
+    function wp_register_script( string $handle, ...$args ): bool {
+        $GLOBALS['gecx_test_registered_scripts'][] = $handle;
+        return true;
+    }
+}
+
+if ( ! function_exists( 'register_block_type' ) ) {
+    function register_block_type( string $name, array $args = [] ) {
+        $GLOBALS['gecx_test_block_types'][ $name ] = $args;
+        return true;
     }
 }
 
@@ -2395,4 +2483,16 @@ function gecx_run_test_class( string $className ): array {
         exit( 1 );
     }
     return [ 'passed' => $passed, 'failed' => $failed ];
+}
+
+if ( ! function_exists( 'get_post_status' ) ) {
+    function get_post_status( $post = null ) {
+        return $GLOBALS['gecx_test_post_statuses'][ (int) $post ] ?? 'publish';
+    }
+}
+
+if ( ! function_exists( 'post_password_required' ) ) {
+    function post_password_required( $post = null ): bool {
+        return (bool) ( $GLOBALS['gecx_test_password_required'][ (int) $post ] ?? false );
+    }
 }

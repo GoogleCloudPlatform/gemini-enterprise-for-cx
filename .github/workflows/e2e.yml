@@ -1,0 +1,89 @@
+name: Storefront Browser Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  placement:
+    # storefront.js against static pages modeled on theme markup. PHP prints
+    # the plugin's real CSS and markup for the fixtures.
+    name: Placement fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '8.3'
+          coverage: none
+          tools: none
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run placement tests
+        run: npm run test:e2e
+
+      - name: Upload traces
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: placement-traces
+          path: test-results/
+          retention-days: 7
+
+  themes:
+    # The plugin on real themes in wp-env: exactly one visible launcher,
+    # outside the footer, at 375, 800 and 1280px, and product prompts after
+    # the add-to-cart form.
+    name: Theme ${{ matrix.theme }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        theme: [ storefront, astra, kadence, oceanwp, twentytwentyfive ]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run theme tests
+        env:
+          THEME: ${{ matrix.theme }}
+        run: bash tests/e2e/bin/run-theme-matrix.sh "${THEME}"
+
+      - name: Upload traces
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: theme-traces-${{ matrix.theme }}
+          path: test-results/
+          retention-days: 7
+
+      - name: Stop wp-env
+        if: always()
+        working-directory: tests/e2e/env
+        run: npx wp-env stop || true

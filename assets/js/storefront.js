@@ -811,7 +811,7 @@ function handleCartUpdate(e) {
 
 // Helper to check if an element is visible in the viewport layout.
 function isElementVisible(el) {
-  if (!el) {
+  if (!el || typeof window.getComputedStyle !== 'function') {
     return false;
   }
   const style = window.getComputedStyle(el);
@@ -821,39 +821,156 @@ function isElementVisible(el) {
   return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
 }
 
-// Helper to locate candidate anchor for mobile header button.
-function findMobileHeaderAnchor() {
-  const toggleSelectors = [
-    // Block Themes (FSE)
-    '.wp-block-navigation__responsive-container-open',
-    // Accessible ARIA toggles
-    'header button[aria-label*="menu" i]',
-    'header button[aria-controls*="nav" i]',
-    'header button[aria-controls*="menu" i]',
-    // Frameworks & Popular Themes (Bootstrap, Astra, GeneratePress, Elementor, Divi, Storefront)
-    '.navbar-toggle',
-    '.off-canvas-toggle',
-    '.menu-toggle',
-    '.mobile-menu-toggle',
-    '.site-header .menu-toggle',
-    '.elementor-menu-toggle',
-    '#et_mobile_nav_menu',
-    '[data-toggle="offcanvas"]'
-  ];
+/**
+ * Whether an element is laid out, not visibility:hidden, and at least partly
+ * inside the viewport horizontally. The last condition rules out off-canvas
+ * drawers parked beside the viewport with a transform.
+ * @param {?Element} el
+ * @return {boolean}
+ */
+function gecxIsOnScreen(el) {
+  if (!el || typeof el.getClientRects !== 'function' ||
+      typeof window.getComputedStyle !== 'function') {
+    return false;
+  }
+  const rects = el.getClientRects();
+  if (!rects || !rects.length) {
+    return false;
+  }
+  const style = window.getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden') {
+    return false;
+  }
+  const viewportWidth = window.innerWidth ||
+      (document.documentElement && document.documentElement.clientWidth) || 0;
+  let onScreen = false;
+  for (let i = 0; i < rects.length; i++) {
+    if (rects[i].right > 0 && (!viewportWidth || rects[i].left < viewportWidth)) {
+      onScreen = true;
+      break;
+    }
+  }
+  return onScreen && !gecxIsClippedAway(el);
+}
 
-  // 1. Inspect all matching mobile navigation toggle elements.
-  for (let i = 0; i < toggleSelectors.length; i++) {
-    const elements = document.querySelectorAll(toggleSelectors[i]);
-    for (let j = 0; j < elements.length; j++) {
-      if (isElementVisible(elements[j])) {
-        return elements[j];
+/**
+ * Whether an ancestor that clips its overflow hides the element entirely,
+ * as collapsed menus do (Storefront's handheld menu is `max-height: 0;
+ * overflow: hidden`). Such an element has a size and a position but can't
+ * be seen.
+ * @param {!Element} el
+ * @return {boolean}
+ */
+function gecxIsClippedAway(el) {
+  const box = el.getBoundingClientRect();
+  let ancestor = el.parentElement;
+  for (let depth = 0; ancestor && ancestor !== document.body && depth < 12; depth++) {
+    const style = window.getComputedStyle(ancestor);
+    if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+      const clip = ancestor.getBoundingClientRect();
+      if (box.right <= clip.left || box.left >= clip.right ||
+          box.bottom <= clip.top || box.top >= clip.bottom) {
+        return true;
       }
+    }
+    ancestor = ancestor.parentElement;
+  }
+  return false;
+}
+
+/**
+ * Whether the chat widget itself is hiding a launcher. The widget hides
+ * every launcher on the page while it decides whether to show them, for
+ * example on a first visit before its enablement state is cached, and
+ * shows them again afterwards.
+ * @param {!Element} button
+ * @return {boolean}
+ */
+function gecxIsHiddenByWidget(button) {
+  return button.classList.contains('gecx-hidden') ||
+      button.hasAttribute('data-gecx-mobile-hidden');
+}
+
+/**
+ * Calls fn for each element matching a selector, skipping invalid selectors.
+ * @param {string} selector
+ * @param {function(!Element)} fn
+ * @param {(!Document|!Element)=} root
+ */
+function gecxEach(selector, fn, root) {
+  let matches = [];
+  try {
+    matches = (root || document).querySelectorAll(selector);
+  } catch (err) {
+    return;
+  }
+  for (let i = 0; i < matches.length; i++) {
+    fn(matches[i]);
+  }
+}
+
+/** @const {string} Containers that are site footers. */
+const GECX_FOOTER_SELECTOR =
+    'footer, [role="contentinfo"], .site-footer, #colophon, .elementor-location-footer, [data-elementor-type="footer"]';
+
+/**
+ * Mobile navigation toggles, most specific first. Themes are named where
+ * their toggle is not a <button> inside <header> labeled as a menu.
+ * @const {!Array<string>}
+ */
+const GECX_MOBILE_TOGGLE_SELECTORS = [
+  // Block themes (FSE)
+  '.wp-block-navigation__responsive-container-open',
+  // Accessible toggles
+  'header button[aria-label*="menu" i]',
+  'header button[aria-controls*="nav" i]',
+  'header button[aria-controls*="menu" i]',
+  'header a[aria-label*="menu" i]',
+  'header [role="button"][aria-label*="menu" i]',
+  // Frameworks and popular themes (Bootstrap, Astra, GeneratePress,
+  // Storefront, Kadence, Neve, Elementor, Divi)
+  '.navbar-toggle',
+  '.navbar-toggler',
+  '.off-canvas-toggle',
+  '.menu-toggle',
+  '.menu-toggle-open',
+  '.mobile-menu-toggle',
+  '.elementor-menu-toggle',
+  '#et_mobile_nav_menu',
+  '[data-toggle="offcanvas"]',
+  // Flatsome
+  '[data-open="#main-menu"]',
+  // Avada
+  '.awb-menu__m-toggle',
+  '.fusion-mobile-nav-button',
+  // OceanWP
+  '.oceanwp-mobile-menu-icon a',
+  // Blocksy
+  '.ct-header-trigger',
+  // Woodmart
+  '.wd-header-mobile-nav a'
+];
+
+/**
+ * The theme's mobile navigation toggle, when one is visible.
+ * @return {?Element}
+ */
+function findMobileHeaderAnchor() {
+  for (let i = 0; i < GECX_MOBILE_TOGGLE_SELECTORS.length; i++) {
+    let found = null;
+    gecxEach(GECX_MOBILE_TOGGLE_SELECTORS[i], function(el) {
+      if (!found && !el.closest(GECX_FOOTER_SELECTOR) && isElementVisible(el) &&
+          gecxIsOnScreen(el)) {
+        found = el;
+      }
+    });
+    if (found) {
+      return found;
     }
   }
 
-  // 2. Only consider cart selectors on mobile viewports (< 768px).
-  // On desktop viewports, cart elements are visible in standard themes and
-  // must not be treated as mobile-only anchors.
+  // Cart icons are only an anchor on small screens. On wider ones they sit
+  // beside the desktop menu in every standard theme.
   if (window.innerWidth < 768) {
     const cartSelectors = [
       'header .wc-block-mini-cart',
@@ -861,11 +978,14 @@ function findMobileHeaderAnchor() {
       'header .cart-contents'
     ];
     for (let i = 0; i < cartSelectors.length; i++) {
-      const elements = document.querySelectorAll(cartSelectors[i]);
-      for (let j = 0; j < elements.length; j++) {
-        if (isElementVisible(elements[j])) {
-          return elements[j];
+      let found = null;
+      gecxEach(cartSelectors[i], function(el) {
+        if (!found && isElementVisible(el)) {
+          found = el;
         }
+      });
+      if (found) {
+        return found;
       }
     }
   }
@@ -922,156 +1042,474 @@ function gecxCreateSafeWidgetElement(html, expectedTagName) {
   return safeEl;
 }
 
-// Client-side DOM check for mobile header button placement.
-function initMobileHeaderPlacement() {
+/**
+ * Wraps the launcher in a container element built from the localized markup.
+ * @param {string} tagName
+ * @param {string} className
+ * @return {?Element}
+ */
+function gecxCreateLauncherContainer(tagName, className) {
   const cfg = gecxGetStorefrontConfig();
-  if (!cfg || !cfg.isWidgetEnabled) {
-    return;
+  const btnEl = gecxCreateSafeWidgetElement(cfg && cfg.buttonHtml, 'gecx-agent-button');
+  if (!btnEl) {
+    return null;
   }
-  if (cfg.placement !== 'nav_menu') {
-    return;
-  }
+  const container = document.createElement(tagName);
+  container.className = className;
+  container.appendChild(btnEl);
+  return container;
+}
 
-  const anchor = findMobileHeaderAnchor();
-  const existing = document.querySelector('.gecx-mobile-header-button');
-  const navItems = document.querySelectorAll('.gecx-nav-menu-item');
+/**
+ * Removes launcher menu items that ended up in a site footer, which the
+ * server can only guess at for block and builder footers.
+ */
+function gecxRemoveFooterNavItems() {
+  gecxEach('.gecx-nav-menu-item', function(item) {
+    if (item.closest && item.closest(GECX_FOOTER_SELECTOR) && item.parentNode) {
+      item.parentNode.removeChild(item);
+    }
+  });
+}
 
-  if (anchor && anchor.parentNode) {
-    // Mobile navigation toggle is VISIBLE! Show mobile header button next to toggle.
-    if (existing) {
-      existing.style.display = 'inline-flex';
-      if (existing.classList.contains('gecx-mobile-header-button--floating')) {
-        existing.classList.remove('gecx-mobile-header-button--floating');
-        anchor.parentNode.insertBefore(existing, anchor);
-      }
-    } else {
-      const btnEl = gecxCreateSafeWidgetElement(cfg.buttonHtml, 'gecx-agent-button');
-      if (btnEl) {
-        const container = document.createElement('div');
-        container.className = 'gecx-mobile-header-button';
-        container.appendChild(btnEl);
-        anchor.parentNode.insertBefore(container, anchor);
-      }
-    }
-    // Hide all in-menu items so they do not duplicate inside the opened drawer.
-    for (let i = 0; i < navItems.length; i++) {
-      navItems[i].style.setProperty('display', 'none', 'important');
-    }
-  } else {
-    // Mobile toggle is NOT visible (expanded/desktop/tablet mode, e.g. iPad Mini 768px or desktop).
-    if (existing && !existing.classList.contains('gecx-mobile-header-button--floating')) {
-      existing.style.display = 'none';
-    }
-    // Ensure in-menu items are visible and vertically aligned.
-    for (let i = 0; i < navItems.length; i++) {
-      navItems[i].style.removeProperty('display');
-      navItems[i].style.display = 'inline-flex';
-    }
-    if (window.innerWidth < 600 && !document.querySelector('header nav, nav.main-navigation, .wp-block-navigation')) {
-      // Tier 3: Floating Action Button (FAB) safety net only on small screens without any navigation.
-      if (!existing) {
-        const btnEl = gecxCreateSafeWidgetElement(cfg.buttonHtml, 'gecx-agent-button');
-        if (btnEl) {
-          const container = document.createElement('div');
-          container.className = 'gecx-mobile-header-button gecx-mobile-header-button--floating';
-          container.appendChild(btnEl);
-          document.body.appendChild(container);
+/**
+ * The header menu list most likely to be the main navigation: a top-level
+ * list, on screen if possible, with the most items. The first match in
+ * document order is often a top bar, account or language menu instead.
+ * @return {?Element}
+ */
+function gecxFindHeaderMenuList() {
+  let best = null;
+  let bestScore = -1;
+  gecxEach(
+      'header nav ul, nav.main-navigation ul, nav.primary-navigation ul, #site-navigation ul, header .wp-block-navigation__container, header .nav-menu, header ul.menu',
+      function(list) {
+        if (list.closest('.sub-menu, .children, .dropdown-menu') ||
+            (list.parentElement && list.parentElement.closest('li')) ||
+            list.closest(GECX_FOOTER_SELECTOR)) {
+          return;
         }
-      }
-    }
-  }
+        let items = 0;
+        const children = list.children || [];
+        for (let i = 0; i < children.length; i++) {
+          if (children[i].tagName === 'LI') {
+            items++;
+          }
+        }
+        const score = items + (gecxIsOnScreen(list) ? 1000 : 0);
+        if (score > bestScore) {
+          best = list;
+          bestScore = score;
+        }
+      });
+  return best;
 }
 
 // Client-side DOM check for desktop navigation placement.
 function initNavPlacement() {
   const cfg = gecxGetStorefrontConfig();
-  if (!cfg || !cfg.isWidgetEnabled) {
-    return;
-  }
-  if (cfg.placement !== 'nav_menu') {
+  if (!cfg || !cfg.isWidgetEnabled || cfg.placement !== 'nav_menu' || !cfg.buttonHtml) {
     return;
   }
   if (document.querySelector('.gecx-nav-menu-item')) {
     return;
   }
 
-  // Desktop nav injection
-  const navContainer = document.querySelector(
-    'header nav ul, nav.main-navigation ul, nav.primary-navigation ul, #site-navigation ul, header .wp-block-navigation__container, header .nav-menu'
-  );
-  if (navContainer && cfg.buttonHtml) {
-    const btnEl = gecxCreateSafeWidgetElement(cfg.buttonHtml, 'gecx-agent-button');
-    if (btnEl) {
-      const li = document.createElement('li');
-      li.className = 'menu-item gecx-nav-menu-item wp-block-navigation-item';
-      li.style.display = 'inline-flex';
-      li.style.alignItems = 'center';
-      li.style.justifyContent = 'center';
-      li.style.verticalAlign = 'middle';
-      li.appendChild(btnEl);
+  const navContainer = gecxFindHeaderMenuList();
+  if (navContainer) {
+    const li = gecxCreateLauncherContainer('li', 'menu-item gecx-nav-menu-item wp-block-navigation-item');
+    if (li) {
       navContainer.appendChild(li);
     }
   }
 }
 
+/**
+ * Shows the launcher beside the theme's hamburger while it is visible, and
+ * in the menu otherwise.
+ *
+ * Decided from the hamburger itself rather than a breakpoint: themes switch
+ * to it anywhere between 600px and 1024px, and block navigation can be set
+ * to use it at every width.
+ */
+function initMobileHeaderPlacement() {
+  const cfg = gecxGetStorefrontConfig();
+  if (!cfg || !cfg.isWidgetEnabled || cfg.placement !== 'nav_menu') {
+    return;
+  }
+
+  const anchor = findMobileHeaderAnchor();
+  let mobileButton = document.querySelector(
+      '.gecx-mobile-header-button:not(.gecx-mobile-header-button--floating)');
+  const navItems = document.querySelectorAll('.gecx-nav-menu-item');
+
+  if (anchor && anchor.parentNode) {
+    if (!mobileButton) {
+      mobileButton = gecxCreateLauncherContainer('div', 'gecx-mobile-header-button');
+    }
+    if (mobileButton) {
+      if (mobileButton.nextSibling !== anchor) {
+        anchor.parentNode.insertBefore(mobileButton, anchor);
+      }
+      mobileButton.style.removeProperty('display');
+    }
+    // The in-menu copies would only duplicate it inside the opened drawer.
+    for (let i = 0; i < navItems.length; i++) {
+      navItems[i].style.setProperty('display', 'none', 'important');
+    }
+  } else {
+    if (mobileButton) {
+      mobileButton.style.display = 'none';
+    }
+    for (let i = 0; i < navItems.length; i++) {
+      navItems[i].style.removeProperty('display');
+    }
+  }
+
+  gecxEnsureVisibleLauncher();
+}
+
+/**
+ * Falls back to a floating launcher when no other one is on screen.
+ *
+ * Covers every theme the placement above cannot handle: a hamburger it does
+ * not recognize, a desktop menu the theme hides on mobile, or a header with
+ * no menu the launcher could join. Only for the menu placement; the floating
+ * placement has its own button and the manual one is the merchant's call.
+ */
+function gecxEnsureVisibleLauncher() {
+  const cfg = gecxGetStorefrontConfig();
+  if (!cfg || !cfg.isWidgetEnabled || cfg.placement !== 'nav_menu' || !document.body) {
+    return;
+  }
+  let fallback = document.querySelector('.gecx-launcher-fallback');
+  let visible = false;
+  let hiddenByWidget = false;
+  gecxEach('gecx-agent-button', function(button) {
+    if (fallback && fallback.contains(button)) {
+      return;
+    }
+    if (gecxIsHiddenByWidget(button)) {
+      hiddenByWidget = true;
+    } else if (!visible && gecxIsOnScreen(button)) {
+      visible = true;
+    }
+  });
+
+  // While the widget is hiding launchers it hides a fallback too, and the
+  // launcher it hid comes back on its own. Adding a fallback then would leave
+  // two launchers once the widget shows them again.
+  if (visible || hiddenByWidget) {
+    if (fallback) {
+      fallback.style.display = 'none';
+    }
+    return;
+  }
+  if (!fallback) {
+    fallback = gecxCreateLauncherContainer(
+        'div', 'gecx-mobile-header-button gecx-mobile-header-button--floating gecx-launcher-fallback');
+    if (!fallback) {
+      return;
+    }
+    document.body.appendChild(fallback);
+  }
+  fallback.style.removeProperty('display');
+}
+
+/**
+ * Add-to-cart forms and summaries the prompts are placed after, most
+ * specific first. Page builders are named where they replace the standard
+ * WooCommerce product template.
+ * @const {!Array<string>}
+ */
+const GECX_PDP_TARGET_SELECTORS = [
+  '.summary.entry-summary form.cart',
+  '.single-product-summary form.cart',
+  '.elementor-widget-woocommerce-product-add-to-cart',
+  '.et_pb_wc_add_to_cart',
+  '.wp-block-woocommerce-add-to-cart-form',
+  '.brxe-product-add-to-cart',
+  '.fusion-woo-cart',
+  '.oxy-product-cart-button',
+  'form.cart',
+  '.summary.entry-summary',
+  '.single-product-summary',
+  '.wp-block-woocommerce-product-summary'
+];
+
+/**
+ * Containers whose add-to-cart forms belong to something other than the main
+ * product: sticky add-to-cart bars, quick views, related products, loops and
+ * mini-carts.
+ * @const {string}
+ */
+const GECX_PDP_EXCLUDED_CONTAINERS =
+    '.sticky-add-to-cart, [class*="sticky-add-to-cart"], [class*="sticky_add_to_cart"], [id*="sticky-add-to-cart"], [class*="quick-view"], [class*="quickview"], .related, .upsells, .up-sells, .cross-sells, ul.products, .woocommerce-mini-cart';
+
+/**
+ * The element holding the main product, used to scope the prompt target
+ * search. A selector list cannot express this: `.single-product` is a body
+ * class, so a list containing it always resolves to <body>.
+ * @return {!(Document|Element)}
+ */
+function gecxFindProductScope() {
+  const scopes = ['div.product[id^="product-"]', '.wp-block-woocommerce-single-product', 'main', '#main'];
+  for (let i = 0; i < scopes.length; i++) {
+    let found = null;
+    gecxEach(scopes[i], function(el) {
+      if (!found && !el.closest(GECX_PDP_EXCLUDED_CONTAINERS)) {
+        found = el;
+      }
+    });
+    if (found) {
+      return found;
+    }
+  }
+  return document;
+}
+
+/**
+ * The URL, without its fragment, that the server rendered this page and its
+ * config for.
+ * @const {string}
+ */
+const gecxRenderedUrl = (typeof window !== 'undefined' && window.location) ?
+    String(window.location.href).split('#')[0] : '';
+
+/**
+ * Whether the page is still the one the config was rendered for. Themes that
+ * switch pages without a full page load (swup, barba, PJAX, Turbo) change the
+ * URL but keep the first page's config, so anything in it about that page's
+ * product is stale once this is false.
+ * @return {boolean}
+ */
+function gecxOnRenderedPage() {
+  return String(window.location.href).split('#')[0] === gecxRenderedUrl;
+}
+
+/**
+ * Whether the page shows a single product, including pages loaded without a
+ * full page load and products embedded with [product_page].
+ * @param {!Object} cfg
+ * @return {boolean}
+ */
+function gecxPageShowsProduct(cfg) {
+  if (cfg.isPdp && gecxOnRenderedPage()) {
+    return true;
+  }
+  return !!((document.body && document.body.classList &&
+             document.body.classList.contains('single-product')) ||
+            document.querySelector('.wp-block-woocommerce-single-product'));
+}
+
 // Client-side DOM check for PDP suggested prompts placement (Page builders & non-standard templates fallback).
 function initPdpPlacement() {
   const cfg = gecxGetStorefrontConfig();
-  if (!cfg || !cfg.isWidgetEnabled) {
-    return;
-  }
-  if (!cfg.isPdp || !cfg.pdpPromptsHtml) {
+  if (!cfg || !cfg.isWidgetEnabled || !cfg.pdpPromptsHtml || !gecxPageShowsProduct(cfg)) {
     return;
   }
   if (document.querySelector('gecx-suggested-prompts')) {
     return;
   }
 
-  // Scope search to the main product container to avoid matching carousels, sidebars, or mini-carts.
-  const productScope = document.querySelector('.product, .single-product, main, article') || document;
-  const pdpTarget = productScope.querySelector(
-    '.summary.entry-summary form.cart, .single-product-summary form.cart, form.cart, .elementor-widget-woocommerce-product-add-to-cart, .et_pb_wc_add_to_cart, .wp-block-woocommerce-add-to-cart-form, .summary.entry-summary, .single-product-summary'
-  );
-  if (pdpTarget) {
-    const promptsEl = gecxCreateSafeWidgetElement(cfg.pdpPromptsHtml, 'gecx-suggested-prompts');
-    if (promptsEl) {
-      if (typeof pdpTarget.insertAdjacentElement === 'function') {
-        pdpTarget.insertAdjacentElement('afterend', promptsEl);
-      } else if (pdpTarget.parentNode) {
-        pdpTarget.parentNode.insertBefore(promptsEl, pdpTarget.nextSibling);
+  const scope = gecxFindProductScope();
+  let pdpTarget = null;
+  for (let i = 0; i < GECX_PDP_TARGET_SELECTORS.length && !pdpTarget; i++) {
+    gecxEach(GECX_PDP_TARGET_SELECTORS[i], function(el) {
+      if (!pdpTarget && !el.closest(GECX_PDP_EXCLUDED_CONTAINERS)) {
+        pdpTarget = el;
       }
+    }, scope);
+  }
+  if (!pdpTarget) {
+    return;
+  }
+
+  // The product page's own markup carries that product's prompt overrides,
+  // so it is only right on the page it was rendered for.
+  const promptsHtml = (cfg.pdpProductPromptsHtml && gecxOnRenderedPage()) ?
+      cfg.pdpProductPromptsHtml : cfg.pdpPromptsHtml;
+  const promptsEl = gecxCreateSafeWidgetElement(promptsHtml, 'gecx-suggested-prompts');
+  if (promptsEl) {
+    if (typeof pdpTarget.insertAdjacentElement === 'function') {
+      pdpTarget.insertAdjacentElement('afterend', promptsEl);
+    } else if (pdpTarget.parentNode) {
+      pdpTarget.parentNode.insertBefore(promptsEl, pdpTarget.nextSibling);
     }
   }
 }
 
-// Keep floating button centered relative to remaining page content when chat panel opens.
-function updateFloatingWidgetCentering() {
-  const container = document.querySelector('.gecx-floating-button-container');
-  if (!container) {
+/**
+ * Known bars themes fix to the bottom of the viewport, in addition to the
+ * direct children of <body> checked generically.
+ * @const {string}
+ */
+const GECX_BOTTOM_BAR_SELECTORS =
+    '.storefront-handheld-footer-bar, .ast-sticky-add-to-cart, .sticky-add-to-cart, [class*="sticky-add-to-cart"], .wd-toolbar, .elementor-sticky--active';
+
+/**
+ * Whether an element is ours or the chat widget's.
+ * @param {!Element} el
+ * @return {boolean}
+ */
+function gecxIsOwnElement(el) {
+  const tag = (el.tagName || '').toLowerCase();
+  if (tag === 'chat-messenger' || tag.indexOf('gecx-') === 0) {
+    return true;
+  }
+  const className = typeof el.className === 'string' ? el.className : '';
+  return /(^|\s)gecx-(nav-menu-item|mobile-header-button|floating-button-container|agent-button-slot)(\s|$)/.test(className);
+}
+
+/**
+ * Lifts floating launchers above bars the theme fixes to the bottom of the
+ * viewport: handheld footer bars, sticky add-to-cart bars, mobile toolbars.
+ *
+ * Sets --gecx-floating-offset on the root element, which the floating
+ * positions add to their bottom offset along with the device's safe area.
+ * Merchants can add their own spacing with --gecx-floating-extra-offset.
+ */
+function updateFloatingOffset() {
+  if (!document.body || !document.documentElement ||
+      typeof window.getComputedStyle !== 'function') {
     return;
+  }
+  const viewportHeight = window.innerHeight || 0;
+  const viewportWidth = window.innerWidth || 0;
+  if (!viewportHeight || !viewportWidth) {
+    return;
+  }
+  let offset = 0;
+  const consider = function(el) {
+    if (gecxIsOwnElement(el) || typeof el.getBoundingClientRect !== 'function') {
+      return;
+    }
+    const style = window.getComputedStyle(el);
+    if (style.position !== 'fixed' || style.display === 'none' || style.visibility === 'hidden') {
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    if (rect.height > 0 && rect.height < viewportHeight * 0.4 &&
+        rect.width > viewportWidth * 0.5 && rect.bottom >= viewportHeight - 2 &&
+        rect.top > viewportHeight * 0.5) {
+      offset = Math.max(offset, Math.ceil(viewportHeight - rect.top));
+    }
+  };
+  const children = document.body.children || [];
+  for (let i = 0; i < children.length; i++) {
+    consider(children[i]);
+  }
+  gecxEach(GECX_BOTTOM_BAR_SELECTORS, consider);
+
+  if (offset > 0) {
+    document.documentElement.style.setProperty('--gecx-floating-offset', offset + 'px');
+  } else {
+    document.documentElement.style.removeProperty('--gecx-floating-offset');
+  }
+}
+
+/**
+ * Fixed full-width headers and bars that ignore the body padding the chat
+ * panel adds when it slides in.
+ * @return {!Array<!Element>}
+ */
+function gecxFindFixedFullWidthElements() {
+  const found = [];
+  if (typeof window.getComputedStyle !== 'function') {
+    return found;
+  }
+  const viewportWidth = window.innerWidth || 0;
+  const consider = function(el) {
+    if (found.indexOf(el) !== -1 || gecxIsOwnElement(el) ||
+        typeof el.getBoundingClientRect !== 'function') {
+      return;
+    }
+    if (window.getComputedStyle(el).position !== 'fixed') {
+      return;
+    }
+    if (el.getBoundingClientRect().width >= viewportWidth * 0.9) {
+      found.push(el);
+    }
+  };
+  const children = (document.body && document.body.children) || [];
+  for (let i = 0; i < children.length; i++) {
+    consider(children[i]);
+  }
+  gecxEach('header, .site-header, #masthead, .sticky-header, [class*="sticky-header"], .elementor-sticky--active, ' +
+      GECX_BOTTOM_BAR_SELECTORS, consider);
+  return found;
+}
+
+/**
+ * Narrows fixed full-width headers and bars while the chat panel pushes the
+ * page aside, and restores them when it closes.
+ * @param {number} pushWidth Body padding the panel added, or 0 when closed.
+ */
+function gecxShiftFixedElementsForChat(pushWidth) {
+  gecxEach('.gecx-shifted-for-chat', function(el) {
+    el.style.right = el.getAttribute('data-gecx-right') || '';
+    el.style.maxWidth = el.getAttribute('data-gecx-max-width') || '';
+    el.removeAttribute('data-gecx-right');
+    el.removeAttribute('data-gecx-max-width');
+    el.classList.remove('gecx-shifted-for-chat');
+  });
+  if (pushWidth <= 0) {
+    return;
+  }
+  const elements = gecxFindFixedFullWidthElements();
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    el.setAttribute('data-gecx-right', el.style.right || '');
+    el.setAttribute('data-gecx-max-width', el.style.maxWidth || '');
+    el.classList.add('gecx-shifted-for-chat');
+    el.style.right = pushWidth + 'px';
+    el.style.maxWidth = 'calc(100% - ' + pushWidth + 'px)';
+  }
+}
+
+/** @type {?number} Pending re-measure once the panel's padding transition ends. */
+let gecxCenteringFollowUp = null;
+
+// Keep floating button centered relative to remaining page content when chat panel opens.
+function updateFloatingWidgetCentering(isFollowUp) {
+  if (!document.body || !document.documentElement) {
+    return;
+  }
+  // The widget stylesheet animates the body padding over 0.4s, so what is
+  // measured now is somewhere mid-transition. Measure again once it is done.
+  if (isFollowUp !== true) {
+    clearTimeout(gecxCenteringFollowUp);
+    gecxCenteringFollowUp = setTimeout(function() {
+      gecxCenteringFollowUp = null;
+      updateFloatingWidgetCentering(true);
+    }, 450);
   }
   const isChatOpen = document.body.classList.contains('gecx-chat-open') ||
       !!document.querySelector('chat-messenger:not(.messenger-hidden)');
 
   if (!isChatOpen) {
     document.documentElement.style.removeProperty('--gecx-chat-panel-width');
+    gecxShiftFixedElementsForChat(0);
     return;
   }
 
+  const bodyPadding = (typeof window.getComputedStyle === 'function') ?
+      (parseFloat(window.getComputedStyle(document.body).paddingRight) || 0) :
+      0;
   const chatMessenger = document.querySelector('chat-messenger');
   let panelWidth = 0;
   if (chatMessenger && chatMessenger.offsetWidth) {
     panelWidth = chatMessenger.offsetWidth;
-  } else {
-    const bodyPadding = parseFloat(window.getComputedStyle(document.body).paddingRight) || 0;
-    if (bodyPadding > 0) {
-      panelWidth = bodyPadding;
-    }
+  } else if (bodyPadding > 0) {
+    panelWidth = bodyPadding;
   }
 
   if (panelWidth > 0 && panelWidth < window.innerWidth) {
     document.documentElement.style.setProperty('--gecx-chat-panel-width', panelWidth + 'px');
   }
+  // Only a panel that slides in pads the body; one that slides over the page
+  // leaves the layout alone and needs nothing moved.
+  gecxShiftFixedElementsForChat(bodyPadding > 0 && bodyPadding < window.innerWidth ? bodyPadding : 0);
 }
 
 /** @type {?Promise<void>} In-flight or completed dynamic widget script load. */
@@ -1138,7 +1576,11 @@ document.addEventListener('gecx-load-widget', gecxHandleLoadWidgetEvent);
 
 function initDeferredWidgetListeners() {
   const config = gecxGetStorefrontConfig();
-  if (!config || config.shouldLoadWidget !== false) {
+  // wp_localize_script() casts top-level scalars to strings, so the PHP false
+  // arrives as "". Accept both, and "0", so deferred loading actually defers.
+  const deferred = !!config && (config.shouldLoadWidget === false ||
+      config.shouldLoadWidget === '' || config.shouldLoadWidget === '0');
+  if (!deferred) {
     return;
   }
   const onDeferredInteraction = function(e) {
@@ -1181,13 +1623,30 @@ function initDeferredWidgetListeners() {
   document.addEventListener('keydown', onDeferredInteraction, true);
 }
 
-function initStorefront() {
+/**
+ * Everything that places or adjusts the launcher and prompts. Safe to run
+ * repeatedly: each step only acts on what is missing or out of date.
+ */
+function gecxPlaceAll() {
+  gecxRemoveFooterNavItems();
   initNavPlacement();
   initMobileHeaderPlacement();
   initPdpPlacement();
+  updateFloatingOffset();
   updateFloatingWidgetCentering();
+}
+
+function initStorefront() {
+  gecxPlaceAll();
   initDeferredWidgetListeners();
 }
+
+/**
+ * Re-runs placement for themes that replace page content without a full
+ * page load (swup, barba, PJAX), render their header late, open quick views
+ * or load products by infinite scroll. Themes can also call it directly.
+ */
+window.gecxInit = gecxPlaceAll;
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initStorefront);
@@ -1198,12 +1657,20 @@ if (document.readyState === 'loading') {
 let resizeTimer = null;
 window.addEventListener('resize', function() {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(function() {
-    initNavPlacement();
-    initMobileHeaderPlacement();
-    updateFloatingWidgetCentering();
-  }, 150);
+  resizeTimer = setTimeout(gecxPlaceAll, 150);
 });
+
+let gecxReinitTimer = null;
+function gecxScheduleReinit() {
+  clearTimeout(gecxReinitTimer);
+  gecxReinitTimer = setTimeout(gecxPlaceAll, 250);
+}
+
+// Page transition libraries announce new content with their own events.
+['swup:contentReplaced', 'swup:page:view', 'pjax:complete', 'pjax:end', 'turbo:load', 'turbolinks:load']
+    .forEach(function(name) {
+      document.addEventListener(name, gecxScheduleReinit);
+    });
 
 // Both targets, because the widget's event may or may not bubble. A bubbling
 // event reaches both, and handleCartUpdate() handles it only once.
@@ -1213,7 +1680,7 @@ document.addEventListener('chat-messenger-update-cart', handleCartUpdate);
 window.addEventListener('chat-messenger-visibility-changed', updateFloatingWidgetCentering);
 document.addEventListener('chat-messenger-visibility-changed', updateFloatingWidgetCentering);
 
-if (typeof MutationObserver !== 'undefined') {
+if (typeof MutationObserver !== 'undefined' && document.body) {
   const chatObserver = new MutationObserver(function(mutations) {
     for (let i = 0; i < mutations.length; i++) {
       if (mutations[i].attributeName === 'class') {
@@ -1223,5 +1690,37 @@ if (typeof MutationObserver !== 'undefined') {
     }
   });
   chatObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+
+  // Content added after load: late headers, quick views, infinite scroll and
+  // page transitions that fire no event. Our own insertions are ignored so
+  // placement cannot trigger itself.
+  const contentObserver = new MutationObserver(function(mutations) {
+    for (let i = 0; i < mutations.length; i++) {
+      // The widget showing or hiding a launcher changes whether the page
+      // needs the fallback.
+      if (mutations[i].type === 'attributes') {
+        if (mutations[i].target.tagName === 'GECX-AGENT-BUTTON') {
+          gecxScheduleReinit();
+          return;
+        }
+        continue;
+      }
+      const added = mutations[i].addedNodes || [];
+      for (let j = 0; j < added.length; j++) {
+        const node = added[j];
+        if (node.nodeType === 1 && !gecxIsOwnElement(node) &&
+            !(node.closest && node.closest('.gecx-nav-menu-item, .gecx-mobile-header-button, .gecx-floating-button-container'))) {
+          gecxScheduleReinit();
+          return;
+        }
+      }
+    }
+  });
+  contentObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['hidden', 'class', 'style']
+  });
 }
 })();

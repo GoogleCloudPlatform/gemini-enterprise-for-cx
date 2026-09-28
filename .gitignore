@@ -3,3 +3,7 @@
 clover.xml
 coverage.txt
 vendor/
+node_modules/
+test-results/
+playwright-report/
+tests/e2e/env/

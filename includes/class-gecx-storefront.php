@@ -31,6 +31,14 @@ class GECX_Storefront {
     protected bool $nav_injected = false;
 
     /**
+     * Menus the launcher was placed in during the request, keyed by
+     * nav_menu_injection_key().
+     *
+     * @var array<string, bool>
+     */
+    protected array $nav_injected_menus = [];
+
+    /**
      * Track whether suggested prompts have already been injected for the request.
      */
     protected bool $pdp_prompts_injected = false;
@@ -38,7 +46,7 @@ class GECX_Storefront {
     /**
      * Allowed button placements.
      */
-    public const ALLOWED_BUTTON_PLACEMENTS = [ 'nav_menu', 'floating' ];
+    public const ALLOWED_BUTTON_PLACEMENTS = [ 'nav_menu', 'floating', 'manual' ];
 
     /**
      * Default button placement.
@@ -131,6 +139,7 @@ class GECX_Storefront {
         add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_cart_fragments' ], 20 );
         add_action( 'wp_footer', [ $this, 'inject_chat_widget' ] );
         add_filter( 'wp_nav_menu_items', [ $this, 'inject_nav_menu_agent_button' ], 10, 2 );
+        add_filter( 'wp_page_menu', [ $this, 'inject_page_menu_agent_button' ], 10, 2 );
         add_filter( 'render_block_core/navigation', [ $this, 'inject_block_navigation_agent_button' ], 10, 2 );
 
         $prompts_hook     = apply_filters( 'gecx_suggested_prompts_hook', 'woocommerce_single_product_summary' );
@@ -141,10 +150,213 @@ class GECX_Storefront {
             add_action( 'woocommerce_after_add_to_cart_form', [ $this, 'inject_suggested_prompts' ], 20 );
         }
 
+        // After the add-to-cart form, or the details tabs below it when a
+        // template has no form. Not after the product summary: block themes
+        // such as Twenty Twenty-Five render it above the form, so it would
+        // put the prompts between the price and the add-to-cart button.
         add_filter( 'render_block_woocommerce/add-to-cart-form', [ $this, 'inject_block_suggested_prompts' ], 10, 2 );
         add_filter( 'render_block_woocommerce/single-product-details', [ $this, 'inject_block_suggested_prompts' ], 10, 2 );
-        add_filter( 'render_block_woocommerce/product-summary', [ $this, 'inject_block_suggested_prompts' ], 10, 2 );
         add_shortcode( 'gecx_suggested_prompts', [ $this, 'render_suggested_prompts_shortcode' ] );
+        add_shortcode( 'gecx_agent_button', [ $this, 'render_agent_button_shortcode' ] );
+
+        // Keep "delay JavaScript" optimizers from holding the launcher back.
+        add_filter( 'script_loader_tag', [ $this, 'exclude_script_from_optimizers' ], 10, 2 );
+        add_filter( 'wp_inline_script_attributes', [ $this, 'exclude_inline_config_from_optimizers' ] );
+        add_filter( 'rocket_delay_js_exclusions', [ $this, 'add_wp_rocket_delay_exclusions' ] );
+        add_action( 'init', [ $this, 'register_blocks' ] );
+    }
+
+    /**
+     * Script handles that must run on page load for the launcher to render.
+     */
+    private const UNDELAYED_SCRIPT_HANDLES = [ 'gecx-storefront-js', 'gecx-widget-script' ];
+
+    /**
+     * Attributes that opt a script out of delaying, deferring and combining by
+     * LiteSpeed Cache (data-no-optimize, data-no-defer) and Cloudflare Rocket
+     * Loader (data-cfasync).
+     */
+    private const OPTIMIZER_OPT_OUT_ATTRIBUTES = [
+        'data-cfasync'     => 'false',
+        'data-no-optimize' => '1',
+        'data-no-defer'    => '1',
+    ];
+
+    /**
+     * Whether the launcher scripts are kept out of "delay JavaScript until
+     * interaction" optimizations.
+     *
+     * Delayed, the launcher stays an empty, undefined custom element until
+     * the shopper happens to move the mouse or scroll. A merchant who wants
+     * the widget to load on interaction has the plugin's own setting for it,
+     * which still shows the launcher.
+     */
+    private function should_exclude_from_optimizers(): bool {
+        /**
+         * Filters whether the launcher scripts are excluded from JavaScript
+         * delay, defer and combine optimizations.
+         *
+         * @param bool $exclude Default true.
+         */
+        return (bool) apply_filters( 'gecx_exclude_from_js_delay', true );
+    }
+
+    /**
+     * Adds optimizer opt-out attributes to the launcher script tags.
+     *
+     * @param string $tag    Script tag markup.
+     * @param string $handle Script handle.
+     * @return string Script tag markup.
+     */
+    public function exclude_script_from_optimizers( string $tag, string $handle = '' ): string {
+        if ( ! in_array( $handle, self::UNDELAYED_SCRIPT_HANDLES, true ) || ! $this->should_exclude_from_optimizers() ) {
+            return $tag;
+        }
+        $attributes = '';
+        foreach ( self::OPTIMIZER_OPT_OUT_ATTRIBUTES as $name => $value ) {
+            $attributes .= ' ' . $name . '="' . $value . '"';
+        }
+        return (string) preg_replace( '/<script\b(?![^>]*\bdata-no-optimize=)/i', '<script' . $attributes, $tag );
+    }
+
+    /**
+     * Adds optimizer opt-out attributes to the inline script carrying
+     * gecxStorefrontConfig, without which storefront.js has nothing to place.
+     *
+     * @param array $attributes Inline script tag attributes.
+     * @return array Inline script tag attributes.
+     */
+    public function exclude_inline_config_from_optimizers( $attributes ) {
+        if ( ! is_array( $attributes ) || ! isset( $attributes['id'] ) || 'gecx-storefront-js-js-extra' !== $attributes['id'] ) {
+            return $attributes;
+        }
+        return $this->should_exclude_from_optimizers() ? array_merge( $attributes, self::OPTIMIZER_OPT_OUT_ATTRIBUTES ) : $attributes;
+    }
+
+    /**
+     * Excludes the launcher scripts from WP Rocket's "Delay JavaScript
+     * execution".
+     *
+     * @param array $exclusions Patterns matched against script sources and inline script content.
+     * @return array Patterns.
+     */
+    public function add_wp_rocket_delay_exclusions( $exclusions ) {
+        if ( ! is_array( $exclusions ) || ! $this->should_exclude_from_optimizers() ) {
+            return $exclusions;
+        }
+        $storefront_path = (string) wp_parse_url( plugins_url( 'assets/js/storefront.js', $this->plugin_file ), PHP_URL_PATH );
+        $widget_host     = (string) wp_parse_url( (string) $this->resolve_widget_urls()['script'], PHP_URL_HOST );
+        $widget_path     = (string) wp_parse_url( (string) $this->resolve_widget_urls()['script'], PHP_URL_PATH );
+        foreach ( [ $storefront_path, $widget_host . $widget_path, 'gecxStorefrontConfig' ] as $pattern ) {
+            if ( '' !== $pattern && ! in_array( $pattern, $exclusions, true ) ) {
+                $exclusions[] = $pattern;
+            }
+        }
+        return $exclusions;
+    }
+
+    /**
+     * Renders the launcher wherever a merchant places it: in a page builder
+     * header, a block theme's header template part, or a widget area.
+     *
+     * This is how themes and builders the automatic placement cannot reach
+     * are served, and it pairs with the "manual" placement setting, which
+     * turns the automatic placement off.
+     *
+     * @return string Launcher markup, or '' when the widget is not active.
+     */
+    public function render_agent_button_shortcode(): string {
+        if ( is_admin() || $this->is_amp_request() || ! $this->is_widget_enabled() || ! $this->get_active_agent_name() ) {
+            return '';
+        }
+        return '<span class="gecx-agent-button-slot">' . $this->get_agent_button_html() . '</span>';
+    }
+
+    /**
+     * Registers the plugin's blocks, the block editor counterparts of the
+     * [gecx_agent_button] and [gecx_suggested_prompts] shortcodes.
+     *
+     * Both are rendered on the server. In the editor they show placeholders:
+     * the launcher and prompts are custom elements defined by the
+     * Google-hosted widget bundle, which the editor does not load.
+     */
+    public function register_blocks(): void {
+        if ( ! function_exists( 'register_block_type' ) ) {
+            return;
+        }
+        wp_register_script(
+            'gecx-editor-blocks',
+            plugins_url( 'assets/js/editor-blocks.js', $this->plugin_file ),
+            [ 'wp-blocks', 'wp-element', 'wp-i18n', 'wp-block-editor', 'wp-components' ],
+            defined( 'GECX_VERSION' ) ? GECX_VERSION : null,
+            true
+        );
+        if ( function_exists( 'wp_set_script_translations' ) ) {
+            wp_set_script_translations(
+                'gecx-editor-blocks',
+                'gemini-enterprise-for-cx',
+                plugin_dir_path( $this->plugin_file ) . 'languages'
+            );
+        }
+        register_block_type(
+            'gecx/agent-button',
+            [
+                'api_version'     => 2,
+                'title'           => __( 'Gemini Enterprise for CX Launcher', 'gemini-enterprise-for-cx' ),
+                'category'        => 'widgets',
+                'editor_script'   => 'gecx-editor-blocks',
+                'render_callback' => [ $this, 'render_agent_button_shortcode' ],
+                'supports'        => [
+                    'html'     => false,
+                    'multiple' => false,
+                ],
+            ]
+        );
+        register_block_type(
+            'gecx/suggested-prompts',
+            [
+                'api_version'     => 2,
+                'title'           => __( 'Gemini Enterprise for CX Suggested Prompts', 'gemini-enterprise-for-cx' ),
+                'category'        => 'widgets',
+                'editor_script'   => 'gecx-editor-blocks',
+                'attributes'      => [
+                    'productId' => [
+                        'type'    => 'number',
+                        'default' => 0,
+                    ],
+                ],
+                'uses_context'    => [ 'postId' ],
+                'render_callback' => [ $this, 'render_suggested_prompts_block' ],
+                'supports'        => [
+                    'html'     => false,
+                    'multiple' => false,
+                ],
+            ]
+        );
+    }
+
+    /**
+     * Renders the gecx/suggested-prompts block.
+     *
+     * Uses the block's Product ID setting when one is set. Otherwise the
+     * product comes from the block context (the Single Product block and
+     * template) or from the product page being viewed.
+     *
+     * @param array $attributes Block attributes.
+     * @param string $content    Block content (unused; the block is dynamic).
+     * @param mixed  $block      WP_Block instance.
+     * @return string Prompts markup, or '' when there is no product.
+     */
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundBeforeLastUsed -- render_callback signature.
+    public function render_suggested_prompts_block( $attributes = [], $content = '', $block = null ): string {
+        $product_id = is_array( $attributes ) && isset( $attributes['productId'] ) ? absint( $attributes['productId'] ) : 0;
+        if ( 0 === $product_id && is_object( $block ) && isset( $block->context['postId'] ) ) {
+            $context_id = absint( $block->context['postId'] );
+            if ( $context_id > 0 && $this->can_show_prompts_for_product( $context_id ) ) {
+                $product_id = $context_id;
+            }
+        }
+        return $this->render_suggested_prompts_shortcode( $product_id > 0 ? [ 'id' => $product_id ] : [] );
     }
 
     /**
@@ -153,7 +365,12 @@ class GECX_Storefront {
     public function enqueue_storefront_assets(): void {
         // wp_enqueue_scripts also fires for requests that render no storefront
         // page, and nothing downstream of this point is meaningful for them.
-        if ( is_admin() || wp_doing_ajax() || wp_is_json_request() || is_feed() ) {
+        // wp_is_json_request() is deliberately not checked: it is true for any
+        // page request whose Accept header mentions application/json, such as
+        // some monitors and link previewers. The page still renders with the
+        // launcher markup, and a page cache would then serve that copy, with
+        // no scripts to define the launcher, to every shopper.
+        if ( is_admin() || wp_doing_ajax() || is_feed() || $this->is_amp_request() ) {
             return;
         }
 
@@ -176,17 +393,20 @@ class GECX_Storefront {
         wp_enqueue_style( 'gecx-widget-style', $urls['style'], [], $version );
         wp_add_inline_style(
             'gecx-widget-style',
-            'footer .gecx-nav-menu-item, .site-footer .gecx-nav-menu-item, [role="contentinfo"] .gecx-nav-menu-item, .wp-block-template-part:has(footer) .gecx-nav-menu-item { display: none !important; }' .
-            ' .gecx-nav-menu-item { display: inline-flex !important; align-items: center !important; justify-content: center !important; vertical-align: middle !important; align-self: center !important; height: auto !important; margin: 0 4px !important; }' .
-            ' .gecx-nav-menu-item gecx-agent-button { display: inline-flex !important; align-items: center !important; vertical-align: middle !important; }' .
+            // Which of the in-menu item and the mobile header button shows is
+            // decided in storefront.js from whether the theme's hamburger is
+            // actually visible. Themes switch to it anywhere between 600px
+            // and 1024px, so no fixed breakpoint here can be right for all of
+            // them. The menu item's own layout uses :where() so it has no
+            // specificity and the theme's menu styles, vertical ones included,
+            // win over it.
+            'footer .gecx-nav-menu-item, .site-footer .gecx-nav-menu-item, [role="contentinfo"] .gecx-nav-menu-item, .wp-block-template-part:has(footer) .gecx-nav-menu-item, #colophon .gecx-nav-menu-item, .elementor-location-footer .gecx-nav-menu-item { display: none !important; }' .
+            ' :where(.gecx-nav-menu-item) { display: flex; align-items: center; justify-content: center; align-self: center; height: auto; margin: 0 4px; list-style: none; }' .
+            ' .gecx-nav-menu-item gecx-agent-button { display: inline-flex; align-items: center; vertical-align: middle; }' .
             ' .wp-block-navigation__responsive-container.is-menu-open .gecx-nav-menu-item { display: none !important; }' .
-            ' @media (max-width: 599.98px) { .wp-block-navigation .gecx-nav-menu-item { display: none !important; } }' .
-            ' @media (min-width: 600px) { .wp-block-navigation .gecx-mobile-header-button { display: none !important; } }' .
-            ' @media (max-width: 767.98px) { .main-navigation .gecx-nav-menu-item, .site-header nav .gecx-nav-menu-item { display: none !important; } }' .
-            ' @media (min-width: 768px) { .main-navigation .gecx-mobile-header-button, .site-header .gecx-mobile-header-button { display: none !important; } }' .
             ' .gecx-mobile-header-button { display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; margin: 0 6px; align-self: center; height: auto; line-height: normal; }' .
             ' .gecx-mobile-header-button gecx-agent-button { display: inline-flex; align-items: center; vertical-align: middle; }' .
-            ' .gecx-mobile-header-button.gecx-mobile-header-button--floating { position: fixed; bottom: 20px; right: 20px; z-index: 99999; margin: 0; height: auto; }' .
+            ' .gecx-mobile-header-button.gecx-mobile-header-button--floating { position: fixed; bottom: calc(20px + var(--gecx-floating-offset, 0px) + var(--gecx-floating-extra-offset, 0px) + env(safe-area-inset-bottom, 0px)); right: 20px; z-index: 99999; margin: 0; height: auto; }' .
             ' body.rtl .gecx-mobile-header-button.gecx-mobile-header-button--floating { right: auto; left: 20px; }' .
             ' chat-messenger.slide-over { position: fixed !important; }' .
             ' .gecx-floating-button-container { transition: transform 0.5s cubic-bezier(0.32, 0.72, 0, 1); }' .
@@ -283,10 +503,22 @@ class GECX_Storefront {
             'cartRefresh'      => self::get_cart_refresh_config(),
         ];
 
-        if ( is_product() && $this->is_pdp_prompts_auto_inject_enabled() ) {
-            $product_id               = self::resolve_current_product_id();
-            $config['isPdp']          = true;
-            $config['pdpPromptsHtml'] = $this->get_suggested_prompts_html( $product_id );
+        if ( $this->is_pdp_prompts_auto_inject_enabled() ) {
+            $is_product_page = is_product();
+            // Also true for a page embedding a product with [product_page] or
+            // the Single Product block, which is_product() does not report.
+            $config['isPdp'] = $is_product_page || $this->page_embeds_single_product();
+            // Localized on every page so storefront.js can also place prompts
+            // for a product loaded without a full page load. This copy names
+            // no product, so it carries no product's prompt overrides.
+            $config['pdpPromptsHtml'] = $this->build_suggested_prompts_html( 0 );
+            if ( $is_product_page ) {
+                // With this product's overrides. storefront.js only uses it
+                // while the URL is still the one this page was rendered for,
+                // since themes that switch pages without a reload keep this
+                // config on every product page the shopper visits after it.
+                $config['pdpProductPromptsHtml'] = $this->get_suggested_prompts_html( self::resolve_current_product_id() );
+            }
         }
 
         wp_localize_script( 'gecx-storefront-js', 'gecxStorefrontConfig', $config );
@@ -306,7 +538,7 @@ class GECX_Storefront {
      * data store, and the script would pull in jQuery for nothing.
      */
     public function enqueue_cart_fragments(): void {
-        if ( is_admin() || wp_doing_ajax() || wp_is_json_request() || is_feed() ) {
+        if ( is_admin() || wp_doing_ajax() || is_feed() || $this->is_amp_request() ) {
             return;
         }
         if ( ! $this->get_active_agent_name() || ! $this->is_widget_enabled() ) {
@@ -389,39 +621,220 @@ class GECX_Storefront {
     }
 
     /**
-     * Inject agent button into WordPress primary navigation menu (Classic Themes).
+     * Theme locations the launcher is injected into automatically.
+     *
+     * Includes the drawer and handheld locations themes render their mobile
+     * menu into: storefront.js hides the in-menu item whenever the theme's
+     * hamburger is visible, so the copy there never shows beside the mobile
+     * header button. Utility locations such as 'top' and 'footer' are
+     * deliberately absent.
+     */
+    public const DEFAULT_NAV_MENU_LOCATIONS = [
+        'primary',
+        'main',
+        'main-menu',
+        'main_menu',
+        'main_nav',
+        'main_navigation',
+        'header',
+        'header-menu',
+        'header_menu',
+        'menu-1',
+        'menu_1',
+        'primary-menu',
+        'primary_menu',
+        'primary_navigation',
+        'nav-menu',
+        'expanded',
+        'mobile',
+        'mobile-menu',
+        'mobile_menu',
+        'handheld',
+    ];
+
+    /**
+     * Sanitizes the launcher menu target option.
+     *
+     * '' means automatic. 'location:<slug>' names a registered theme location
+     * and 'menu:<id>' a navigation menu, which is how menus rendered by page
+     * builders without a theme location are reached.
+     *
+     * @param mixed $target Raw option value.
+     * @return string Sanitized target.
+     */
+    public static function sanitize_nav_menu_target( $target ): string {
+        if ( ! is_string( $target ) ) {
+            return '';
+        }
+        if ( 1 === preg_match( '/^location:[A-Za-z0-9_\-]+$/', $target ) ) {
+            return $target;
+        }
+        if ( 1 === preg_match( '/^menu:[1-9][0-9]*$/', $target ) ) {
+            return $target;
+        }
+        return '';
+    }
+
+    /**
+     * Whether the launcher should be placed automatically in navigation menus.
+     */
+    private function should_inject_into_menus(): bool {
+        if ( is_admin() || $this->is_amp_request() || ! $this->is_widget_enabled() || ! $this->get_active_agent_name() ) {
+            return false;
+        }
+        return 'nav_menu' === self::sanitize_button_placement( get_option( 'gecx_button_placement', self::DEFAULT_BUTTON_PLACEMENT ) );
+    }
+
+    /**
+     * Resolves which menu a wp_nav_menu() or wp_page_menu() call renders, and
+     * whether the launcher belongs in it.
+     *
+     * @param mixed $args Menu arguments, as an object (wp_nav_menu) or array (wp_page_menu).
+     * @return string Key identifying the menu for once-only injection, or ''
+     *                when the launcher does not belong in it.
+     */
+    private function nav_menu_injection_key( $args ): string {
+        $args     = is_object( $args ) ? get_object_vars( $args ) : ( is_array( $args ) ? $args : [] );
+        $location = isset( $args['theme_location'] ) && is_string( $args['theme_location'] ) ? $args['theme_location'] : '';
+        $target   = self::sanitize_nav_menu_target( get_option( 'gecx_nav_menu_target', '' ) );
+
+        if ( 0 === strpos( $target, 'location:' ) ) {
+            return ( '' !== $location && substr( $target, 9 ) === $location ) ? 'location:' . $location : '';
+        }
+
+        if ( 0 === strpos( $target, 'menu:' ) ) {
+            $menu_id = $this->resolve_nav_menu_id( $args['menu'] ?? null, $location );
+            return ( $menu_id > 0 && 'menu:' . $menu_id === $target ) ? $target : '';
+        }
+
+        $locations = apply_filters( 'gecx_nav_menu_locations', self::DEFAULT_NAV_MENU_LOCATIONS );
+        if ( '' !== $location && is_array( $locations ) && in_array( $location, $locations, true ) ) {
+            return 'location:' . $location;
+        }
+        if ( apply_filters( 'gecx_inject_in_all_menus', false ) ) {
+            return '' !== $location ? 'location:' . $location : 'menu:' . $this->resolve_nav_menu_id( $args['menu'] ?? null, '' );
+        }
+        return '';
+    }
+
+    /**
+     * ID of the navigation menu a menu call renders.
+     *
+     * @param mixed  $menu     The 'menu' argument: a term, ID, slug or name.
+     * @param string $location The 'theme_location' argument.
+     */
+    private function resolve_nav_menu_id( $menu, string $location ): int {
+        if ( ! empty( $menu ) && function_exists( 'wp_get_nav_menu_object' ) ) {
+            $object = wp_get_nav_menu_object( $menu );
+            if ( $object && isset( $object->term_id ) ) {
+                return (int) $object->term_id;
+            }
+        }
+        if ( '' !== $location && function_exists( 'get_nav_menu_locations' ) ) {
+            $locations = get_nav_menu_locations();
+            if ( isset( $locations[ $location ] ) ) {
+                return (int) $locations[ $location ];
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Whether the launcher was already placed in this menu during the request.
+     *
+     * Tracked per menu rather than per request: themes such as Storefront,
+     * Astra, Kadence and OceanWP render the desktop menu and the mobile drawer
+     * menu from separate locations, and each needs its own copy.
+     *
+     * @param string $key Menu key from nav_menu_injection_key().
+     */
+    private function claim_nav_menu( string $key ): bool {
+        if ( isset( $this->nav_injected_menus[ $key ] ) && ! apply_filters( 'gecx_allow_multiple_nav_injections', false ) ) {
+            return false;
+        }
+        $this->nav_injected_menus[ $key ] = true;
+        $this->nav_injected               = true;
+        return true;
+    }
+
+    /**
+     * Inserts markup just before the closing tag of the first matching list.
+     *
+     * The list is closed where its own nesting says it is, so markup never
+     * lands inside a submenu or after the list, whatever the menu contains.
+     *
+     * @param string $html       Rendered markup.
+     * @param string $item       Markup to insert.
+     * @param string $list_class Class the list must carry, or '' for the first list.
+     * @return string|null Updated markup, or null when no such list exists.
+     */
+    public static function insert_into_list( string $html, string $item, string $list_class = '' ): ?string {
+        $pattern = '' === $list_class
+            ? '/<ul\b[^>]*>/i'
+            : '/<ul\b[^>]*\bclass\s*=\s*(["\'])(?:[^"\']*\s)?' . preg_quote( $list_class, '/' ) . '(?:\s[^"\']*)?\1[^>]*>/i';
+        if ( 1 !== preg_match( $pattern, $html, $match, PREG_OFFSET_CAPTURE ) ) {
+            return null;
+        }
+        if ( ! preg_match_all( '/<(\/?)ul\b[^>]*>/i', $html, $tags, PREG_OFFSET_CAPTURE | PREG_SET_ORDER, (int) $match[0][1] ) ) {
+            return null;
+        }
+        $depth = 0;
+        foreach ( $tags as $tag ) {
+            $depth += '' === $tag[1][0] ? 1 : -1;
+            if ( 0 === $depth ) {
+                return substr( $html, 0, (int) $tag[0][1] ) . $item . substr( $html, (int) $tag[0][1] );
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Inject agent button into WordPress navigation menus (Classic Themes).
      *
      * @param string $items HTML list items for the menu.
      * @param mixed  $args  Menu args object/array.
      * @return string Modified HTML menu items.
      */
     public function inject_nav_menu_agent_button( string $items, $args = null ): string {
-        if ( is_admin() || ! $this->is_widget_enabled() || ! $this->get_active_agent_name() ) {
+        if ( ! $this->should_inject_into_menus() ) {
             return $items;
         }
 
-        $placement = (string) get_option( 'gecx_button_placement', 'nav_menu' );
-        if ( 'nav_menu' !== $placement ) {
+        $key = $this->nav_menu_injection_key( $args );
+        if ( '' === $key || ! $this->claim_nav_menu( $key ) ) {
             return $items;
         }
 
-        if ( $this->nav_injected && ! apply_filters( 'gecx_allow_multiple_nav_injections', false ) ) {
-            return $items;
+        return $items . '<li class="menu-item gecx-nav-menu-item">' . $this->get_agent_button_html() . '</li>';
+    }
+
+    /**
+     * Inject agent button into the page list WordPress falls back to when a
+     * theme location has no menu assigned.
+     *
+     * wp_nav_menu() hands that case to wp_page_menu(), which never applies
+     * wp_nav_menu_items, so fresh installs and stores that never built a menu
+     * would otherwise get no launcher from the server.
+     *
+     * @param string $menu Rendered page menu.
+     * @param array  $args Page menu arguments, including those of the wp_nav_menu() call.
+     * @return string Modified page menu.
+     */
+    public function inject_page_menu_agent_button( string $menu, $args = [] ): string {
+        if ( ! $this->should_inject_into_menus() ) {
+            return $menu;
         }
 
-        $target_locations = apply_filters(
-            'gecx_nav_menu_locations',
-            [ 'primary', 'main', 'main-menu', 'header', 'header-menu', 'menu-1', 'primary-menu', 'main_nav', 'nav-menu' ]
-        );
-        $menu_location   = is_object( $args ) && isset( $args->theme_location ) ? (string) $args->theme_location : '';
-
-        if ( ( ! empty( $menu_location ) && in_array( $menu_location, $target_locations, true ) ) || apply_filters( 'gecx_inject_in_all_menus', false ) ) {
-            $button_html        = '<li class="menu-item gecx-nav-menu-item" style="display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;">' . $this->get_agent_button_html() . '</li>';
-            $items             .= $button_html;
-            $this->nav_injected = true;
+        $key = $this->nav_menu_injection_key( is_array( $args ) ? $args : [] );
+        if ( '' === $key || 0 === strpos( $key, 'menu:' ) || isset( $this->nav_injected_menus[ $key ] ) ) {
+            return $menu;
         }
 
-        return $items;
+        $updated = self::insert_into_list( $menu, '<li class="page_item gecx-nav-menu-item">' . $this->get_agent_button_html() . '</li>' );
+        if ( null === $updated || ! $this->claim_nav_menu( $key ) ) {
+            return $menu;
+        }
+        return $updated;
     }
 
     /**
@@ -432,12 +845,12 @@ class GECX_Storefront {
      * @return string Modified block HTML.
      */
     public function inject_block_navigation_agent_button( string $block_content, array $block = [] ): string {
-        if ( is_admin() || ! $this->is_widget_enabled() || ! $this->get_active_agent_name() ) {
+        if ( ! $this->should_inject_into_menus() ) {
             return $block_content;
         }
 
-        $placement = (string) get_option( 'gecx_button_placement', 'nav_menu' );
-        if ( 'nav_menu' !== $placement ) {
+        // A merchant who named a classic menu wants it there, not here.
+        if ( '' !== self::sanitize_nav_menu_target( get_option( 'gecx_nav_menu_target', '' ) ) ) {
             return $block_content;
         }
 
@@ -459,23 +872,27 @@ class GECX_Storefront {
             return $block_content;
         }
 
-        $button_html = '<li class="wp-block-navigation-item gecx-nav-menu-item" style="display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;">' . $this->get_agent_button_html() . '</li>';
-
-        $last_ul_pos = strrpos( $block_content, '</ul>' );
-        if ( false !== $last_ul_pos ) {
-            $this->nav_injected = true;
-            return substr_replace( $block_content, $button_html . '</ul>', $last_ul_pos, 5 );
+        // Only into the navigation's own top-level list. A navigation holding
+        // no list, such as one with only a logo or search block, is left to
+        // storefront.js rather than given a list item outside any list.
+        $updated = self::insert_into_list(
+            $block_content,
+            '<li class="wp-block-navigation-item gecx-nav-menu-item">' . $this->get_agent_button_html() . '</li>',
+            'wp-block-navigation__container'
+        );
+        if ( null === $updated ) {
+            return $block_content;
         }
 
         $this->nav_injected = true;
-        return $block_content . $button_html;
+        return $updated;
     }
 
     /**
      * Inject the chat widget custom element into the footer.
      */
     public function inject_chat_widget(): void {
-        if ( is_admin() ) {
+        if ( is_admin() || $this->is_amp_request() ) {
             return;
         }
 
@@ -531,6 +948,31 @@ class GECX_Storefront {
     /**
      * Helper to check if widget is enabled.
      */
+    /**
+     * Whether this request renders an AMP page.
+     *
+     * AMP pages cannot run the widget's JavaScript, and the AMP plugin strips
+     * the custom elements and reports them as validation errors, so the
+     * plugin stays off them entirely.
+     */
+    protected function is_amp_request(): bool {
+        $is_amp = false;
+        if ( function_exists( 'did_action' ) && did_action( 'parse_query' ) ) {
+            if ( function_exists( 'amp_is_request' ) ) {
+                $is_amp = (bool) amp_is_request();
+            } elseif ( function_exists( 'is_amp_endpoint' ) ) {
+                $is_amp = (bool) is_amp_endpoint();
+            }
+        }
+        /**
+         * Filters whether the current request renders an AMP page, on which
+         * the plugin outputs nothing.
+         *
+         * @param bool $is_amp Whether an AMP plugin reports an AMP request.
+         */
+        return (bool) apply_filters( 'gecx_is_amp_request', $is_amp );
+    }
+
     protected function is_widget_enabled(): bool {
         $enabled = (bool) get_option( 'gecx_agent_enabled', 0 );
         if ( function_exists( 'apply_filters' ) ) {
@@ -566,6 +1008,16 @@ class GECX_Storefront {
      */
     public function inject_suggested_prompts(): void {
         if ( is_admin() || ! is_product() || ! $this->is_pdp_prompts_auto_inject_enabled() ) {
+            return;
+        }
+
+        // On block themes WooCommerce's template compatibility layer fires
+        // third-party woocommerce_single_product_summary callbacks just
+        // before the excerpt block, whatever their priority, which puts the
+        // prompts above the add-to-cart button. There the add-to-cart block
+        // filter places them instead, and storefront.js covers a block theme
+        // still using the classic template.
+        if ( function_exists( 'wp_is_block_theme' ) && wp_is_block_theme() ) {
             return;
         }
 
@@ -628,6 +1080,14 @@ class GECX_Storefront {
              return '';
         }
 
+        // A product named in the shortcode or block may be a draft, private
+        // or password protected, and its prompt overrides must not reach
+        // visitors who could not see the product itself.
+        $explicit = isset( $atts['id'] ) || isset( $atts['product_id'] );
+        if ( $explicit && ! $this->can_show_prompts_for_product( $product_id ) ) {
+            return '';
+        }
+
         if ( ! $this->is_pdp_prompts_configured() ) {
             return '';
         }
@@ -644,7 +1104,7 @@ class GECX_Storefront {
      * Helper to check if PDP prompts are configured (widget enabled and agent set).
      */
     protected function is_pdp_prompts_configured(): bool {
-        return $this->is_widget_enabled() && (bool) $this->get_active_agent_name();
+        return $this->is_widget_enabled() && (bool) $this->get_active_agent_name() && ! $this->is_amp_request();
     }
 
     /**
@@ -663,6 +1123,23 @@ class GECX_Storefront {
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- get_suggested_prompts_html() returns properly escaped markup.
         echo $this->get_suggested_prompts_html( $product_id );
         $this->pdp_prompts_injected = true;
+    }
+
+    /**
+     * Whether the current page embeds a single product through the
+     * [product_page] shortcode or the WooCommerce Single Product block.
+     */
+    protected function page_embeds_single_product(): bool {
+        if ( ! function_exists( 'is_singular' ) || ! is_singular() ) {
+            return false;
+        }
+        $post = function_exists( 'get_post' ) ? get_post() : null;
+        if ( ! $post || ! isset( $post->post_content ) ) {
+            return false;
+        }
+        $content = (string) $post->post_content;
+        return ( function_exists( 'has_shortcode' ) && has_shortcode( $content, 'product_page' ) )
+            || ( function_exists( 'has_block' ) && has_block( 'woocommerce/single-product', $post ) );
     }
 
     /**
@@ -697,7 +1174,35 @@ class GECX_Storefront {
         if ( $product_id <= 0 && is_product() ) {
             $product_id = self::resolve_current_product_id();
         }
+        return $this->build_suggested_prompts_html( $product_id );
+    }
 
+    /**
+     * Whether prompts for a product named in the shortcode or block may be
+     * shown to the current visitor: the product must exist and be published
+     * without a password, unless the visitor can read it anyway.
+     *
+     * @param int $product_id Product ID.
+     * @return bool
+     */
+    protected function can_show_prompts_for_product( int $product_id ): bool {
+        if ( $product_id <= 0 || ! function_exists( 'wc_get_product' ) || ! wc_get_product( $product_id ) ) {
+            return false;
+        }
+        if ( 'publish' === get_post_status( $product_id ) && ! post_password_required( $product_id ) ) {
+            return true;
+        }
+        return current_user_can( 'read_post', $product_id );
+    }
+
+    /**
+     * Builds the suggested prompts markup for a product, or markup naming no
+     * product when $product_id is 0.
+     *
+     * @param int $product_id Product ID, or 0.
+     * @return string HTML output.
+     */
+    protected function build_suggested_prompts_html( int $product_id ): string {
         $attrs = [
             'chat-widget-selector' => 'gecx-woocommerce-chat-widget',
             'direction'            => 'row',
@@ -754,18 +1259,26 @@ class GECX_Storefront {
         $right_side = $is_rtl ? 'left' : 'right';
         $left_side  = $is_rtl ? 'right' : 'left';
 
+        // Bottom offsets add the height of any bar the theme fixes to the
+        // bottom of the viewport (--gecx-floating-offset, measured by
+        // storefront.js), spacing the merchant adds themselves
+        // (--gecx-floating-extra-offset), and the device's safe area.
+        $bottom = static function ( int $base ): string {
+            return 'bottom: calc(' . $base . 'px + var(--gecx-floating-offset, 0px) + var(--gecx-floating-extra-offset, 0px) + env(safe-area-inset-bottom, 0px));';
+        };
+
         switch ( $position ) {
             case 'center_left':
                 return 'position: fixed; top: 50%; ' . $left_side . ': 0; transform: translateY(-50%); z-index: 999999;';
             case 'center_right':
                 return 'position: fixed; top: 50%; ' . $right_side . ': 0; transform: translateY(-50%); z-index: 999999;';
             case 'bottom_right':
-                return 'position: fixed; bottom: 20px; ' . $right_side . ': 20px; z-index: 999999;';
+                return 'position: fixed; ' . $bottom( 20 ) . ' ' . $right_side . ': 20px; z-index: 999999;';
             case 'bottom_left':
-                return 'position: fixed; bottom: 20px; ' . $left_side . ': 20px; z-index: 999999;';
+                return 'position: fixed; ' . $bottom( 20 ) . ' ' . $left_side . ': 20px; z-index: 999999;';
             case 'bottom_center':
             default:
-                return 'position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 999999;';
+                return 'position: fixed; ' . $bottom( 24 ) . ' left: 50%; transform: translateX(-50%); z-index: 999999;';
         }
     }
 

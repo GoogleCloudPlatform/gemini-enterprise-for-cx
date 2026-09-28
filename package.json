@@ -1,0 +1,14 @@
+{
+  "name": "gemini-enterprise-for-cx",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "description": "Development tooling only. Nothing here ships in the plugin.",
+  "scripts": {
+    "test:e2e": "playwright test --project=placement",
+    "test:e2e:themes": "bash tests/e2e/bin/run-theme-matrix.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@wordpress/env": "11.16.0"
+  }
+}

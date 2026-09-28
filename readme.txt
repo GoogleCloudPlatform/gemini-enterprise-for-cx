@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.23
+Stable tag: 0.3.29
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -126,6 +126,25 @@ Yes, one: `https://www.gstatic.com/gecx/chat-widget/woocommerce-chat-widget.js`,
 = What data is sent to Google? =
 During merchant setup, store URL and WooCommerce API credentials are authenticated. During storefront usage, customer chat queries and viewed product context are processed to return relevant answers. Standard request headers (such as IP address) are processed by Google's infrastructure in accordance with the Google Privacy Policy.
 
+= Where does the launcher appear, and what if my theme hides it? =
+With the Top navigation menu placement, the launcher joins your header menu and your theme's mobile menu, and moves beside the menu (hamburger) button whenever your theme shows one. If it cannot find a place on screen, it appears as a floating button instead.
+
+If it lands in the wrong menu, choose one under Launcher Placement > Menu. Menus built with page builders such as Elementor appear there too. To place it yourself, choose Manual and add the `[gecx_agent_button]` shortcode or the Gemini Enterprise for CX Launcher block where you want it, for example in a header template.
+
+Themes that replace page content without a full page load can call `window.gecxInit()` afterwards. The plugin also watches for content added after the page loads.
+
+= Can the chat widget match my theme's colors? =
+The chat widget's colors, fonts and branding come from your agent's settings in the Gemini Enterprise for CX console, not from your WordPress theme. The widget applies that branding itself.
+
+= The floating button covers part of my theme. =
+The floating button moves up to clear bars your theme fixes to the bottom of the screen. To add more space, set the `--gecx-floating-extra-offset` CSS variable, for example `:root { --gecx-floating-extra-offset: 24px; }`.
+
+= Does the plugin work with caching and optimization plugins? =
+Yes. The launcher scripts are kept out of the JavaScript delay features of WP Rocket, LiteSpeed Cache and Cloudflare Rocket Loader automatically. With other optimization plugins, exclude `storefront.js`, `gstatic.com/gecx/` and `gecxStorefrontConfig` from delaying. To opt out of the automatic exclusions, return false from the `gecx_exclude_from_js_delay` filter.
+
+= Are AMP pages, headless storefronts and custom page templates supported? =
+AMP pages cannot run the chat widget, so the plugin outputs nothing on them. Headless storefronts served from a different origin are not supported, because the plugin only hands a shopper's session credentials to pages on the store's own origin. The launcher and widget load in the page footer, so custom page templates must call `wp_footer()`, as WordPress requires.
+
 = How do I keep my theme's cart in step with the agent? =
 After the agent changes the cart, the plugin refreshes WooCommerce cart fragments, updates the WooCommerce Blocks cart data store, and dispatches `wc-blocks_added_to_cart` or `wc-blocks_removed_from_cart`. Themes and side-cart plugins that need more can listen for the `gecx:cart-updated` event on `document.body`. Its `detail` carries `change` (`added`, `removed` or `updated`), `itemsCount`, `previousItemsCount` and the Store API `cart`.
 
@@ -148,6 +167,37 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.29 =
+* Don't show one product's prompt overrides on another product after a page transition. On themes that switch pages without a full reload, the first product page's config stayed in place, so its overrides could appear on later product pages and its product-page flag could place prompts on pages with no product. The config now carries markup naming no product for later pages, and this product's markup and flag are only used while the URL is unchanged.
+* Show prompts for a product named in `[gecx_suggested_prompts]` or the Suggested Prompts block only if the visitor could see that product: it must be a published product without a password, unless the visitor can read it anyway. Before, the prompt overrides of draft, pending, private and password-protected products could be shown to anyone.
+
+= 0.3.28 =
+* Load the launcher scripts even when a page request's Accept header mentions `application/json`. WordPress treats such a request as a JSON request, so the page rendered with the launcher markup but without the scripts that define it, and a page cache could then serve that broken copy, with no launcher, to every shopper.
+
+= 0.3.27 =
+* Always show the info tooltip next to the Suggested Prompts setting, so merchants who keep automatic prompts on also see how to place prompts with the shortcode or block.
+* Drop "(Recommended)" from the Top navigation menu placement option.
+
+= 0.3.26 =
+* Add a Gemini Enterprise for CX Suggested Prompts block, the block editor counterpart of `[gecx_suggested_prompts]`, which uses the product it is placed on (the Single Product block or template) or a Product ID set in the block.
+* On the settings page, show how to place the launcher and prompts yourself in an info tooltip, only when Manual placement is chosen or automatic prompts are turned off.
+
+= 0.3.25 =
+* Don't add the floating fallback launcher while the chat widget is briefly hiding launchers on a shopper's first visit, which left two launchers once the widget showed them again; re-check when the widget shows or hides a launcher; and don't count a launcher clipped inside a collapsed menu as visible.
+
+= 0.3.24 =
+* Decide between the in-menu launcher and the mobile header launcher from whether the theme's hamburger is visible, not from fixed 600px and 768px breakpoints, so themes that switch at 921px or 1024px (Astra, Kadence, Divi, OceanWP) and block navigation with the overlay always on no longer lose the launcher.
+* Recognize more hamburgers (links and ARIA buttons in the header, Flatsome, Avada, OceanWP, Blocksy, Woodmart), and show a floating launcher whenever no other launcher is on screen.
+* Place the launcher in desktop and mobile drawer menus separately, add common theme location names (`main_menu`, `main_navigation`, `menu_1`, `handheld`, `mobile_menu` and others), cover the page list WordPress shows when no menu is assigned, and choose the main header menu over top bar menus when placing from JavaScript.
+* Add a Menu setting to pick a theme location or a menu, which also reaches page builder menus rendered without a location, and a Manual placement with a `[gecx_agent_button]` shortcode and a Gemini Enterprise for CX Launcher block.
+* Style the menu launcher with zero-specificity rules and no inline styles, so vertical, off-canvas and mega menus keep their own layout; remove launcher items that end up in footers; and insert into a block navigation's own list instead of after its last list.
+* Place product prompts after the main add-to-cart form rather than a sticky add-to-cart bar, quick view or related product, add Bricks, Avada and Oxygen targets, and place them on pages that embed a product with `[product_page]` or the Single Product block.
+* Re-run placement when content is added after load (late headers, page transitions, infinite scroll) and expose `window.gecxInit()` for themes that swap content themselves.
+* Lift floating launchers above bars themes fix to the bottom of the screen and clear the device safe area; merchants can add spacing with the `--gecx-floating-extra-offset` CSS variable. Narrow fixed headers while the chat panel pushes the page aside.
+* Output nothing on AMP pages, and keep the launcher scripts out of WP Rocket, LiteSpeed Cache and Cloudflare Rocket Loader JavaScript delay (filter: `gecx_exclude_from_js_delay`).
+* Fix the Defer widget until interaction setting, which never deferred because WordPress localizes `false` as an empty string.
+* Add browser tests: placement fixtures modeled on theme markup, and a wp-env theme matrix covering Storefront, Astra, Kadence, OceanWP and Twenty Twenty-Five.
 
 = 0.3.23 =
 * Refresh every cart surface once when the agent changes the cart. `chat-messenger-update-cart` is handled a single time even when it reaches both `document` and `window`, the cart is read from the Store API on every theme, and a stale nonce is replaced and the read retried once after a 401 or 403.

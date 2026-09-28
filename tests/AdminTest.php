@@ -18,6 +18,26 @@ class AdminTest extends GECX_TestCase {
         parent::setUp();
     }
 
+    public function test_admin_ajax_save_button_config_saves_manual_placement_and_menu_target(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $_POST = [
+            'nonce'           => wp_create_nonce( 'gecx_save_agent_nonce' ),
+            'placement'       => 'manual',
+            'nav_menu_target' => 'location:primary_navigation',
+        ];
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->ajax_save_button_config();
+
+        $this->assertSame( 'manual', get_option( 'gecx_button_placement' ) );
+        $this->assertSame( 'location:primary_navigation', get_option( 'gecx_nav_menu_target' ) );
+
+        $_POST['nav_menu_target'] = 'menu:abc';
+        $admin->ajax_save_button_config();
+
+        $this->assertSame( '', get_option( 'gecx_nav_menu_target' ) );
+    }
+
     public function test_admin_ajax_save_button_config(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $_POST = [
@@ -803,6 +823,43 @@ class AdminTest extends GECX_TestCase {
         $this->assertStringNotContainsString( 'attacker.example', $html );
         $this->assertStringNotContainsString( 'wc-auth', $html );
         $this->assertStringContainsString( 'disabled="disabled"', $html );
+    }
+
+    /**
+     * @dataProvider info_tip_cases
+     */
+    public function test_settings_page_info_tips( string $placement, int $prompts_enabled, bool $manual_tip_shown ): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_webhook_id', 4242 );
+        update_option( 'gecx_auth_complete', 1 );
+        update_option( 'gecx_agent_enabled', 1 );
+        update_option( 'gecx_button_placement', $placement );
+        update_option( 'gecx_pdp_prompts_enabled', $prompts_enabled );
+
+        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        ob_start();
+        try {
+            $admin->render_settings_page();
+        } finally {
+            $html = ob_get_clean();
+        }
+
+        $this->assertStringContainsString( '<code>[gecx_agent_button]</code>', $html );
+        $this->assertStringContainsString( '<code>[gecx_suggested_prompts]</code>', $html );
+        $this->assertMatchesRegularExpression( '/id="gecx-manual-placement-tip".*?style="(.*?)"/s', $html );
+        preg_match( '/id="gecx-manual-placement-tip".*?style="(.*?)"/s', $html, $manual );
+        $this->assertSame( $manual_tip_shown ? '' : 'display: none;', $manual[1] );
+        // The prompts tip is always shown, whatever the setting.
+        $this->assertMatchesRegularExpression( '/id="gecx-prompts-manual-tip"[^>]*aria-describedby="gecx-prompts-manual-tip-text">/', $html );
+    }
+
+    public static function info_tip_cases(): array {
+        return [
+            'manual placement, auto prompts off' => [ 'manual', 0, true ],
+            'menu placement, auto prompts on'    => [ 'nav_menu', 1, false ],
+            'floating placement, prompts off'    => [ 'floating', 0, false ],
+        ];
     }
 
     public function test_toggle_app_embed_records_merchant_intent(): void {

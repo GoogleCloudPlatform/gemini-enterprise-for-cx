@@ -277,10 +277,52 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
+        $GLOBALS['gecx_test_products'][101] = new WC_Product( 101 );
+
         $storefront = new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
         $html       = $storefront->render_suggested_prompts_shortcode( [ 'id' => 101 ] );
 
         $this->assertStringContainsString( '<gecx-suggested-prompts', $html );
+    }
+
+    /**
+     * @dataProvider hidden_product_cases
+     */
+    public function test_prompts_for_a_named_product_the_visitor_cannot_see_are_not_shown( string $status, bool $password ): void {
+        $GLOBALS['gecx_test_is_product'] = false;
+        $storefront                      = $this->activate_widget( 'manual' );
+        $product                         = new WC_Product( 404 );
+        $product->update_meta_data( '_gecx_suggested_prompts_override', 'Secret launch question?' );
+        $GLOBALS['gecx_test_products'][404]          = $product;
+        $GLOBALS['gecx_test_post_statuses'][404]     = $status;
+        $GLOBALS['gecx_test_password_required'][404] = $password;
+
+        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode( [ 'id' => 404 ] ) );
+        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode( [ 'product_id' => 404 ] ) );
+        $this->assertSame( '', $storefront->render_suggested_prompts_block( [ 'productId' => 404 ] ) );
+        $this->assertSame( '', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => 404 ] ] ) );
+
+        // Someone who can read the product, such as the admin previewing the
+        // page, still sees its prompts.
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $this->assertStringContainsString( 'Secret launch question?', $storefront->render_suggested_prompts_shortcode( [ 'id' => 404 ] ) );
+    }
+
+    public static function hidden_product_cases(): array {
+        return [
+            'draft'              => [ 'draft', false ],
+            'private'            => [ 'private', false ],
+            'pending review'     => [ 'pending', false ],
+            'password protected' => [ 'publish', true ],
+        ];
+    }
+
+    public function test_prompts_for_a_named_post_that_is_not_a_product_are_not_shown(): void {
+        $GLOBALS['gecx_test_is_product'] = false;
+        $GLOBALS['gecx_test_post_meta'][77]['_gecx_suggested_prompts_override'] = 'Not a product?';
+        $storefront = $this->activate_widget( 'manual' );
+
+        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode( [ 'id' => 77 ] ) );
     }
 
     public function test_suggested_prompts_shortcode_marks_injected_and_prevents_auto_injection(): void {
@@ -462,7 +504,6 @@ class StorefrontTest extends GECX_TestCase {
         $contexts = [
             'gecx_test_is_admin',
             'gecx_test_doing_ajax',
-            'gecx_test_is_json_request',
             'gecx_test_is_feed',
         ];
         foreach ( $contexts as $context ) {
@@ -477,6 +518,22 @@ class StorefrontTest extends GECX_TestCase {
             $this->assertEquals( [], $GLOBALS['gecx_test_enqueued_styles'] );
             $this->assertEquals( [], $GLOBALS['gecx_test_enqueued_scripts'] );
         }
+    }
+
+    public function test_storefront_assets_are_enqueued_when_the_page_request_accepts_json(): void {
+        // Some clients send Accept: application/json for an ordinary page,
+        // which makes wp_is_json_request() true. The page still renders the
+        // launcher markup, and a page cache serves that copy to shoppers, so
+        // it must include the scripts that define the launcher.
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+        $GLOBALS['gecx_test_is_json_request'] = true;
+
+        $storefront = new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront->enqueue_storefront_assets();
+
+        $this->assertContains( 'gecx-widget-script', $GLOBALS['gecx_test_enqueued_scripts'] );
+        $this->assertContains( 'gecx-storefront-js', $GLOBALS['gecx_test_enqueued_scripts'] );
     }
 
     public function test_agent_button_short_label_falls_back_to_a_translated_shop(): void {
@@ -510,10 +567,14 @@ class StorefrontTest extends GECX_TestCase {
         $storefront->enqueue_storefront_assets();
 
         $inline_styles = $GLOBALS['gecx_test_inline_styles']['gecx-widget-style'] ?? '';
-        $this->assertStringContainsString( '@media (max-width: 599.98px) { .wp-block-navigation .gecx-nav-menu-item { display: none !important; } }', $inline_styles );
-        $this->assertStringContainsString( '@media (min-width: 600px) { .wp-block-navigation .gecx-mobile-header-button { display: none !important; } }', $inline_styles );
-        $this->assertStringContainsString( '@media (max-width: 767.98px) { .main-navigation .gecx-nav-menu-item, .site-header nav .gecx-nav-menu-item { display: none !important; } }', $inline_styles );
-        $this->assertStringContainsString( '@media (min-width: 768px) { .main-navigation .gecx-mobile-header-button, .site-header .gecx-mobile-header-button { display: none !important; } }', $inline_styles );
+        // Menu item versus mobile button is decided in storefront.js from the
+        // theme's hamburger, not from breakpoints that only fit some themes.
+        $this->assertStringNotContainsString( '@media (max-width: 767.98px) { .main-navigation .gecx-nav-menu-item', $inline_styles );
+        $this->assertStringNotContainsString( '@media (min-width: 768px) { .main-navigation .gecx-mobile-header-button', $inline_styles );
+        $this->assertStringNotContainsString( '@media (min-width: 600px) { .wp-block-navigation .gecx-mobile-header-button', $inline_styles );
+        // Zero-specificity layout so vertical and off-canvas menus keep theirs.
+        $this->assertStringContainsString( ' :where(.gecx-nav-menu-item) { display: flex;', $inline_styles );
+        $this->assertStringNotContainsString( '.gecx-nav-menu-item { display: inline-flex !important', $inline_styles );
         $this->assertStringContainsString( '.gecx-mobile-header-button--floating', $inline_styles );
         $this->assertStringContainsString( 'chat-messenger.slide-over { position: fixed !important; }', $inline_styles );
         $this->assertStringNotContainsString( '.wp-block-navigation__container', $inline_styles );
@@ -555,7 +616,7 @@ class StorefrontTest extends GECX_TestCase {
         $html_bottom = ob_get_clean();
 
         $this->assertStringContainsString( 'class="gecx-floating-button-container gecx-floating-button-container--bottom-center"', $html_bottom );
-        $this->assertStringContainsString( 'position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);', $html_bottom );
+        $this->assertStringContainsString( 'position: fixed; bottom: calc(24px + var(--gecx-floating-offset, 0px) + var(--gecx-floating-extra-offset, 0px) + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%);', $html_bottom );
 
         // Bottom right (20px offset to align with mobile floating button)
         update_option( 'gecx_floating_position', 'bottom_right' );
@@ -564,7 +625,7 @@ class StorefrontTest extends GECX_TestCase {
         $html_bottom_right = ob_get_clean();
 
         $this->assertStringContainsString( 'class="gecx-floating-button-container gecx-floating-button-container--bottom-right"', $html_bottom_right );
-        $this->assertStringContainsString( 'position: fixed; bottom: 20px; right: 20px; z-index: 999999;', $html_bottom_right );
+        $this->assertStringContainsString( 'position: fixed; bottom: calc(20px + var(--gecx-floating-offset, 0px) + var(--gecx-floating-extra-offset, 0px) + env(safe-area-inset-bottom, 0px)); right: 20px; z-index: 999999;', $html_bottom_right );
 
         // Center right
         update_option( 'gecx_floating_position', 'center_right' );
@@ -591,7 +652,7 @@ class StorefrontTest extends GECX_TestCase {
         $html_bottom_left = ob_get_clean();
 
         $this->assertStringContainsString( 'class="gecx-floating-button-container gecx-floating-button-container--bottom-left"', $html_bottom_left );
-        $this->assertStringContainsString( 'position: fixed; bottom: 20px; left: 20px; z-index: 999999;', $html_bottom_left );
+        $this->assertStringContainsString( 'position: fixed; bottom: calc(20px + var(--gecx-floating-offset, 0px) + var(--gecx-floating-extra-offset, 0px) + env(safe-area-inset-bottom, 0px)); left: 20px; z-index: 999999;', $html_bottom_left );
 
         // Unknown stored option falls back to bottom_center
         update_option( 'gecx_floating_position', 'unknown_invalid_position' );
@@ -600,7 +661,7 @@ class StorefrontTest extends GECX_TestCase {
         $html_unknown = ob_get_clean();
 
         $this->assertStringContainsString( 'class="gecx-floating-button-container gecx-floating-button-container--bottom-center"', $html_unknown );
-        $this->assertStringContainsString( 'position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);', $html_unknown );
+        $this->assertStringContainsString( 'position: fixed; bottom: calc(24px + var(--gecx-floating-offset, 0px) + var(--gecx-floating-extra-offset, 0px) + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%);', $html_unknown );
 
         // RTL locales mirror horizontal placement
         $GLOBALS['gecx_test_is_rtl'] = true;
@@ -609,13 +670,13 @@ class StorefrontTest extends GECX_TestCase {
         ob_start();
         $storefront->inject_chat_widget();
         $html_rtl_bottom_right = ob_get_clean();
-        $this->assertStringContainsString( 'position: fixed; bottom: 20px; left: 20px; z-index: 999999;', $html_rtl_bottom_right );
+        $this->assertStringContainsString( 'position: fixed; bottom: calc(20px + var(--gecx-floating-offset, 0px) + var(--gecx-floating-extra-offset, 0px) + env(safe-area-inset-bottom, 0px)); left: 20px; z-index: 999999;', $html_rtl_bottom_right );
 
         update_option( 'gecx_floating_position', 'bottom_left' );
         ob_start();
         $storefront->inject_chat_widget();
         $html_rtl_bottom_left = ob_get_clean();
-        $this->assertStringContainsString( 'position: fixed; bottom: 20px; right: 20px; z-index: 999999;', $html_rtl_bottom_left );
+        $this->assertStringContainsString( 'position: fixed; bottom: calc(20px + var(--gecx-floating-offset, 0px) + var(--gecx-floating-extra-offset, 0px) + env(safe-area-inset-bottom, 0px)); right: 20px; z-index: 999999;', $html_rtl_bottom_left );
 
         update_option( 'gecx_floating_position', 'center_right' );
         ob_start();
@@ -778,6 +839,9 @@ const code = fs.readFileSync(process.argv[2], 'utf8');
 let domLoadedCallback = null;
 let appendedNavItem = null;
 const navUl = {
+  children: [],
+  parentElement: null,
+  closest: () => null,
   appendChild: (child) => { appendedNavItem = child; }
 };
 
@@ -851,13 +915,8 @@ const sandbox = {
       }
     },
     createElement: (tag) => makeMockTemplateOrDiv(tag),
-    querySelector: (sel) => {
-      if (sel.indexOf('header nav ul') !== -1) {
-        return navUl;
-      }
-      return null;
-    },
-    querySelectorAll: () => []
+    querySelector: () => null,
+    querySelectorAll: (sel) => (sel.indexOf('header nav ul') !== -1 ? [navUl] : [])
   },
   Object: Object,
   URL: URL,
@@ -1272,6 +1331,275 @@ JS;
             ]
         );
         $this->assertContains( 'update_checkout', $classic_checkout['jquery'] );
+    }
+    private function activate_widget( string $placement = 'nav_menu' ): GECX_Storefront {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+        update_option( 'gecx_button_placement', $placement );
+        return new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+    }
+
+    public function test_nav_menu_injection_reaches_desktop_and_mobile_menu_locations(): void {
+        $storefront = $this->activate_widget();
+        $items      = '<li class="menu-item">Home</li>';
+
+        // Storefront renders its desktop menu at 'primary' and its drawer at
+        // 'handheld'. Each needs its own launcher.
+        $this->assertStringContainsString( 'gecx-agent-button', $storefront->inject_nav_menu_agent_button( $items, (object) [ 'theme_location' => 'primary' ] ) );
+        $this->assertStringContainsString( 'gecx-agent-button', $storefront->inject_nav_menu_agent_button( $items, (object) [ 'theme_location' => 'handheld' ] ) );
+        foreach ( [ 'main_menu', 'main_navigation', 'menu_1', 'mobile_menu' ] as $location ) {
+            $this->assertStringContainsString( 'gecx-agent-button', $storefront->inject_nav_menu_agent_button( $items, (object) [ 'theme_location' => $location ] ), $location );
+        }
+    }
+
+    public function test_nav_menu_item_carries_no_inline_layout(): void {
+        $result = $this->activate_widget()->inject_nav_menu_agent_button( '', (object) [ 'theme_location' => 'primary' ] );
+
+        $this->assertStringContainsString( '<li class="menu-item gecx-nav-menu-item">', $result );
+        $this->assertStringNotContainsString( 'li class="menu-item gecx-nav-menu-item" style=', $result );
+    }
+
+    public function test_nav_menu_target_location_limits_injection_to_that_location(): void {
+        $storefront = $this->activate_widget();
+        update_option( 'gecx_nav_menu_target', 'location:top-bar' );
+
+        $this->assertSame( '', $storefront->inject_nav_menu_agent_button( '', (object) [ 'theme_location' => 'primary' ] ) );
+        $this->assertStringContainsString( 'gecx-agent-button', $storefront->inject_nav_menu_agent_button( '', (object) [ 'theme_location' => 'top-bar' ] ) );
+    }
+
+    public function test_nav_menu_target_menu_reaches_page_builder_menus_without_a_location(): void {
+        $storefront                        = $this->activate_widget();
+        $GLOBALS['gecx_test_nav_menus']    = [ (object) [ 'term_id' => 7, 'slug' => 'shop-header', 'name' => 'Shop header' ] ];
+        update_option( 'gecx_nav_menu_target', 'menu:7' );
+
+        // Elementor's Nav Menu widget passes the menu slug and no location.
+        $this->assertStringContainsString( 'gecx-agent-button', $storefront->inject_nav_menu_agent_button( '', (object) [ 'theme_location' => '', 'menu' => 'shop-header' ] ) );
+        $this->assertSame( '', $storefront->inject_nav_menu_agent_button( '', (object) [ 'theme_location' => '', 'menu' => 'other' ] ) );
+    }
+
+    public function test_nav_menu_target_menu_matches_the_menu_assigned_to_a_location(): void {
+        $storefront                                  = $this->activate_widget();
+        $GLOBALS['gecx_test_nav_menu_locations']     = [ 'primary' => 9 ];
+        update_option( 'gecx_nav_menu_target', 'menu:9' );
+
+        $this->assertStringContainsString( 'gecx-agent-button', $storefront->inject_nav_menu_agent_button( '', (object) [ 'theme_location' => 'primary' ] ) );
+    }
+
+    public function test_nav_menu_target_is_sanitized(): void {
+        $this->assertSame( 'location:primary', GECX_Storefront::sanitize_nav_menu_target( 'location:primary' ) );
+        $this->assertSame( 'menu:12', GECX_Storefront::sanitize_nav_menu_target( 'menu:12' ) );
+        $this->assertSame( '', GECX_Storefront::sanitize_nav_menu_target( 'menu:0' ) );
+        $this->assertSame( '', GECX_Storefront::sanitize_nav_menu_target( 'location:"><script>' ) );
+        $this->assertSame( '', GECX_Storefront::sanitize_nav_menu_target( [ 'menu:1' ] ) );
+    }
+
+    public function test_page_menu_fallback_gets_the_launcher_inside_its_list(): void {
+        $storefront = $this->activate_widget();
+        $menu       = '<div class="menu"><ul><li class="page_item page_item_has_children"><a>Shop</a><ul class="children"><li>Sub</li></ul></li><li>About</li></ul></div>';
+
+        $result = $storefront->inject_page_menu_agent_button( $menu, [ 'theme_location' => 'primary' ] );
+
+        $this->assertStringContainsString( '<li>About</li><li class="page_item gecx-nav-menu-item">', $result );
+        $this->assertStringEndsWith( '</li></ul></div>', $result );
+        $this->assertSame( $menu, $storefront->inject_page_menu_agent_button( $menu, [ 'theme_location' => 'footer' ] ) );
+    }
+
+    public function test_insert_into_list_respects_nesting_and_class(): void {
+        $html = '<nav><ul class="wp-block-navigation__container is-x"><li>A<ul class="sub"><li>B</li></ul></li></ul><ul class="other"><li>C</li></ul></nav>';
+
+        $this->assertSame(
+            '<nav><ul class="wp-block-navigation__container is-x"><li>A<ul class="sub"><li>B</li></ul></li>X</ul><ul class="other"><li>C</li></ul></nav>',
+            GECX_Storefront::insert_into_list( $html, 'X', 'wp-block-navigation__container' )
+        );
+        $this->assertNull( GECX_Storefront::insert_into_list( '<nav><div>logo</div></nav>', 'X', 'wp-block-navigation__container' ) );
+        $this->assertNull( GECX_Storefront::insert_into_list( '<ul class="wp-block-navigation__container-extra"><li></li></ul>', 'X', 'wp-block-navigation__container' ) );
+    }
+
+    public function test_block_navigation_injection_lands_in_its_own_list_not_the_last_one(): void {
+        $storefront = $this->activate_widget();
+        $content    = '<nav class="wp-block-navigation"><ul class="wp-block-navigation__container"><li>Link</li></ul><div class="wp-block-social-links"><ul><li>Social</li></ul></div></nav>';
+
+        $result = $storefront->inject_block_navigation_agent_button( $content, [ 'attrs' => [] ] );
+
+        $this->assertStringContainsString( '<li>Link</li><li class="wp-block-navigation-item gecx-nav-menu-item">', $result );
+        $this->assertStringContainsString( '<ul><li>Social</li></ul>', $result );
+    }
+
+    public function test_block_navigation_without_a_list_is_left_to_the_script(): void {
+        $content = '<nav class="wp-block-navigation"><div class="wp-block-search"></div></nav>';
+
+        $this->assertSame( $content, $this->activate_widget()->inject_block_navigation_agent_button( $content, [ 'attrs' => [] ] ) );
+    }
+
+    public function test_block_navigation_is_skipped_when_a_classic_menu_is_targeted(): void {
+        $storefront = $this->activate_widget();
+        update_option( 'gecx_nav_menu_target', 'location:primary' );
+        $content = '<nav class="wp-block-navigation"><ul class="wp-block-navigation__container"><li>Link</li></ul></nav>';
+
+        $this->assertSame( $content, $storefront->inject_block_navigation_agent_button( $content, [ 'attrs' => [] ] ) );
+    }
+
+    public function test_manual_placement_disables_automatic_placement_and_enables_the_shortcode(): void {
+        $storefront = $this->activate_widget( 'manual' );
+        $this->assertSame( 'manual', GECX_Storefront::sanitize_button_placement( 'manual' ) );
+
+        $this->assertSame( '', $storefront->inject_nav_menu_agent_button( '', (object) [ 'theme_location' => 'primary' ] ) );
+        ob_start();
+        $storefront->inject_chat_widget();
+        $html = (string) ob_get_clean();
+        $this->assertStringNotContainsString( 'gecx-floating-button-container', $html );
+        $this->assertStringContainsString( '<gecx-woocommerce-chat-widget', $html );
+
+        $this->assertStringContainsString( '<span class="gecx-agent-button-slot"><gecx-agent-button', $storefront->render_agent_button_shortcode() );
+    }
+
+    public function test_agent_button_shortcode_is_empty_while_the_widget_is_off(): void {
+        $storefront = $this->activate_widget( 'manual' );
+        update_option( 'gecx_agent_enabled', 0 );
+
+        $this->assertSame( '', $storefront->render_agent_button_shortcode() );
+    }
+
+    public function test_agent_button_block_is_server_rendered(): void {
+        $storefront = $this->activate_widget( 'manual' );
+        $storefront->register_blocks();
+
+        $block = $GLOBALS['gecx_test_block_types']['gecx/agent-button'] ?? null;
+        $this->assertIsArray( $block );
+        $this->assertSame( 'gecx-editor-blocks', $block['editor_script'] );
+        $this->assertSame( [ $storefront, 'render_agent_button_shortcode' ], $block['render_callback'] );
+    }
+
+    public function test_suggested_prompts_block_is_server_rendered(): void {
+        $storefront = $this->activate_widget( 'manual' );
+        $storefront->register_blocks();
+
+        $block = $GLOBALS['gecx_test_block_types']['gecx/suggested-prompts'] ?? null;
+        $this->assertIsArray( $block );
+        $this->assertSame( 'gecx-editor-blocks', $block['editor_script'] );
+        $this->assertSame( [ 'postId' ], $block['uses_context'] );
+        $this->assertSame( [ $storefront, 'render_suggested_prompts_block' ], $block['render_callback'] );
+    }
+
+    public function test_suggested_prompts_block_renders_for_the_chosen_or_context_product(): void {
+        $GLOBALS['gecx_test_is_product'] = false;
+        $storefront                      = $this->activate_widget( 'manual' );
+        update_option( 'gecx_pdp_prompts_enabled', 0 );
+
+        // No product ID and no product in context or on the page: nothing.
+        $this->assertSame( '', $storefront->render_suggested_prompts_block( [] ) );
+
+        // A post that isn't a product in the block context is ignored.
+        $this->assertSame( '', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => 55 ] ] ) );
+
+        // The Product ID setting works anywhere, even with auto prompts off.
+        $GLOBALS['gecx_test_products'][101] = new WC_Product( 101 );
+        $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->render_suggested_prompts_block( [ 'productId' => 101 ] ) );
+
+        // A product in the block context (Single Product block or template).
+        $GLOBALS['gecx_test_products'][303] = new WC_Product( 303 );
+        $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => 303 ] ] ) );
+    }
+
+    public function test_nothing_is_output_on_amp_pages(): void {
+        $storefront                  = $this->activate_widget( 'floating' );
+        $GLOBALS['gecx_test_is_amp'] = true;
+
+        $storefront->enqueue_storefront_assets();
+        $this->assertNotContains( 'gecx-storefront-js', $GLOBALS['gecx_test_enqueued_scripts'] );
+
+        ob_start();
+        $storefront->inject_chat_widget();
+        $this->assertSame( '', (string) ob_get_clean() );
+
+        $this->assertSame( '', $storefront->render_agent_button_shortcode() );
+        update_option( 'gecx_button_placement', 'nav_menu' );
+        $this->assertSame( '', $storefront->inject_nav_menu_agent_button( '', (object) [ 'theme_location' => 'primary' ] ) );
+    }
+
+    public function test_launcher_scripts_opt_out_of_js_delay_optimizers(): void {
+        $storefront = $this->activate_widget();
+        $tag        = '<script src="https://example.com/storefront.js" id="gecx-storefront-js-js"></script>';
+
+        $result = $storefront->exclude_script_from_optimizers( $tag, 'gecx-storefront-js' );
+        $this->assertStringContainsString( '<script data-cfasync="false" data-no-optimize="1" data-no-defer="1" src=', $result );
+        $this->assertSame( $result, $storefront->exclude_script_from_optimizers( $result, 'gecx-storefront-js' ) );
+        $this->assertSame( $tag, $storefront->exclude_script_from_optimizers( $tag, 'some-other-script' ) );
+
+        $this->assertSame(
+            [ 'id' => 'gecx-storefront-js-js-extra', 'data-cfasync' => 'false', 'data-no-optimize' => '1', 'data-no-defer' => '1' ],
+            $storefront->exclude_inline_config_from_optimizers( [ 'id' => 'gecx-storefront-js-js-extra' ] )
+        );
+        $this->assertSame( [ 'id' => 'other' ], $storefront->exclude_inline_config_from_optimizers( [ 'id' => 'other' ] ) );
+
+        $exclusions = $storefront->add_wp_rocket_delay_exclusions( [ 'jquery' ] );
+        $this->assertContains( 'gecxStorefrontConfig', $exclusions );
+        $this->assertContains( 'www.gstatic.com/gecx/chat-widget/woocommerce-chat-widget.js', $exclusions );
+        $this->assertSame( 'jquery', $exclusions[0] );
+    }
+
+    public function test_js_delay_opt_out_can_be_turned_off(): void {
+        $storefront = $this->activate_widget();
+        add_filter( 'gecx_exclude_from_js_delay', static function (): bool { return false; } );
+        $tag = '<script src="x.js"></script>';
+
+        $this->assertSame( $tag, $storefront->exclude_script_from_optimizers( $tag, 'gecx-widget-script' ) );
+        $this->assertSame( [ 'a' ], $storefront->add_wp_rocket_delay_exclusions( [ 'a' ] ) );
+    }
+
+    public function test_prompts_markup_is_localized_off_product_pages_for_dynamically_loaded_products(): void {
+        $config = $this->localized_storefront_config();
+
+        $this->assertFalse( $config['isPdp'] );
+        $this->assertStringContainsString( '<gecx-suggested-prompts', $config['pdpPromptsHtml'] );
+    }
+
+    public function test_product_page_config_keeps_its_overrides_out_of_the_generic_prompts_markup(): void {
+        // Themes that switch pages without a reload keep the first page's
+        // config, so the markup used for later products must not carry this
+        // product's overrides.
+        $GLOBALS['gecx_test_is_product'] = true;
+        $GLOBALS['gecx_test_the_id']     = 101;
+        $GLOBALS['gecx_test_post_meta'][101]['_gecx_suggested_prompts_override'] = 'Is it grain free?';
+
+        $config = $this->localized_storefront_config();
+
+        $this->assertTrue( $config['isPdp'] );
+        $this->assertStringContainsString( '<gecx-suggested-prompts', $config['pdpPromptsHtml'] );
+        $this->assertStringNotContainsString( 'static-prompts', $config['pdpPromptsHtml'] );
+        $this->assertStringContainsString( 'Is it grain free?', $config['pdpProductPromptsHtml'] );
+    }
+
+    public function test_config_has_no_product_prompts_markup_off_product_pages(): void {
+        $this->assertArrayNotHasKey( 'pdpProductPromptsHtml', $this->localized_storefront_config() );
+    }
+
+    public function test_pages_embedding_a_product_count_as_product_pages(): void {
+        $GLOBALS['gecx_test_post'] = (object) [ 'post_content' => 'Intro [product_page id="12"]' ];
+        $this->assertTrue( $this->localized_storefront_config()['isPdp'] );
+
+        $GLOBALS['gecx_test_post'] = (object) [ 'post_content' => '<!-- wp:woocommerce/single-product {"productId":12} /-->' ];
+        $this->assertTrue( $this->localized_storefront_config()['isPdp'] );
+    }
+
+    public function test_floating_positions_clear_bottom_bars_and_the_safe_area(): void {
+        $style = $this->activate_widget( 'floating' )->get_floating_container_style( 'bottom_right' );
+
+        $this->assertStringContainsString( 'var(--gecx-floating-offset, 0px)', $style );
+        $this->assertStringContainsString( 'var(--gecx-floating-extra-offset, 0px)', $style );
+        $this->assertStringContainsString( 'env(safe-area-inset-bottom, 0px)', $style );
+    }
+    public function test_classic_prompts_hook_is_skipped_on_block_themes(): void {
+        $storefront                           = $this->activate_widget();
+        $GLOBALS['gecx_test_is_product']      = true;
+        $GLOBALS['gecx_test_is_block_theme']  = true;
+
+        ob_start();
+        $storefront->inject_suggested_prompts();
+        $this->assertSame( '', (string) ob_get_clean() );
+
+        // The add-to-cart block filter still places them.
+        $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->inject_block_suggested_prompts( '<div class="wp-block-woocommerce-add-to-cart-form"></div>', [] ) );
     }
 }
 
