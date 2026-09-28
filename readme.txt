@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.28
+Stable tag: 0.3.29
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -167,6 +167,10 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.29 =
+* Don't show one product's prompt overrides on another product after a page transition. On themes that switch pages without a full reload, the first product page's config stayed in place, so its overrides could appear on later product pages and its product-page flag could place prompts on pages with no product. The config now carries markup naming no product for later pages, and this product's markup and flag are only used while the URL is unchanged.
+* Show prompts for a product named in `[gecx_suggested_prompts]` or the Suggested Prompts block only if the visitor could see that product: it must be a published product without a password, unless the visitor can read it anyway. Before, the prompt overrides of draft, pending, private and password-protected products could be shown to anyone.
 
 = 0.3.28 =
 * Load the launcher scripts even when a page request's Accept header mentions `application/json`. WordPress treats such a request as a JSON request, so the page rendered with the launcher markup but without the scripts that define it, and a page cache could then serve that broken copy, with no launcher, to every shopper.

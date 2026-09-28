@@ -1269,13 +1269,32 @@ function gecxFindProductScope() {
 }
 
 /**
+ * The URL, without its fragment, that the server rendered this page and its
+ * config for.
+ * @const {string}
+ */
+const gecxRenderedUrl = (typeof window !== 'undefined' && window.location) ?
+    String(window.location.href).split('#')[0] : '';
+
+/**
+ * Whether the page is still the one the config was rendered for. Themes that
+ * switch pages without a full page load (swup, barba, PJAX, Turbo) change the
+ * URL but keep the first page's config, so anything in it about that page's
+ * product is stale once this is false.
+ * @return {boolean}
+ */
+function gecxOnRenderedPage() {
+  return String(window.location.href).split('#')[0] === gecxRenderedUrl;
+}
+
+/**
  * Whether the page shows a single product, including pages loaded without a
  * full page load and products embedded with [product_page].
  * @param {!Object} cfg
  * @return {boolean}
  */
 function gecxPageShowsProduct(cfg) {
-  if (cfg.isPdp) {
+  if (cfg.isPdp && gecxOnRenderedPage()) {
     return true;
   }
   return !!((document.body && document.body.classList &&
@@ -1306,7 +1325,11 @@ function initPdpPlacement() {
     return;
   }
 
-  const promptsEl = gecxCreateSafeWidgetElement(cfg.pdpPromptsHtml, 'gecx-suggested-prompts');
+  // The product page's own markup carries that product's prompt overrides,
+  // so it is only right on the page it was rendered for.
+  const promptsHtml = (cfg.pdpProductPromptsHtml && gecxOnRenderedPage()) ?
+      cfg.pdpProductPromptsHtml : cfg.pdpPromptsHtml;
+  const promptsEl = gecxCreateSafeWidgetElement(promptsHtml, 'gecx-suggested-prompts');
   if (promptsEl) {
     if (typeof pdpTarget.insertAdjacentElement === 'function') {
       pdpTarget.insertAdjacentElement('afterend', promptsEl);

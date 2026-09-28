@@ -352,7 +352,7 @@ class GECX_Storefront {
         $product_id = is_array( $attributes ) && isset( $attributes['productId'] ) ? absint( $attributes['productId'] ) : 0;
         if ( 0 === $product_id && is_object( $block ) && isset( $block->context['postId'] ) ) {
             $context_id = absint( $block->context['postId'] );
-            if ( $context_id > 0 && function_exists( 'wc_get_product' ) && wc_get_product( $context_id ) ) {
+            if ( $context_id > 0 && $this->can_show_prompts_for_product( $context_id ) ) {
                 $product_id = $context_id;
             }
         }
@@ -509,9 +509,16 @@ class GECX_Storefront {
             // the Single Product block, which is_product() does not report.
             $config['isPdp'] = $is_product_page || $this->page_embeds_single_product();
             // Localized on every page so storefront.js can also place prompts
-            // for a product loaded without a full page load. Only a product
-            // page knows which product's prompt overrides to use.
-            $config['pdpPromptsHtml'] = $this->get_suggested_prompts_html( $is_product_page ? self::resolve_current_product_id() : 0 );
+            // for a product loaded without a full page load. This copy names
+            // no product, so it carries no product's prompt overrides.
+            $config['pdpPromptsHtml'] = $this->build_suggested_prompts_html( 0 );
+            if ( $is_product_page ) {
+                // With this product's overrides. storefront.js only uses it
+                // while the URL is still the one this page was rendered for,
+                // since themes that switch pages without a reload keep this
+                // config on every product page the shopper visits after it.
+                $config['pdpProductPromptsHtml'] = $this->get_suggested_prompts_html( self::resolve_current_product_id() );
+            }
         }
 
         wp_localize_script( 'gecx-storefront-js', 'gecxStorefrontConfig', $config );
@@ -1073,6 +1080,14 @@ class GECX_Storefront {
              return '';
         }
 
+        // A product named in the shortcode or block may be a draft, private
+        // or password protected, and its prompt overrides must not reach
+        // visitors who could not see the product itself.
+        $explicit = isset( $atts['id'] ) || isset( $atts['product_id'] );
+        if ( $explicit && ! $this->can_show_prompts_for_product( $product_id ) ) {
+            return '';
+        }
+
         if ( ! $this->is_pdp_prompts_configured() ) {
             return '';
         }
@@ -1159,7 +1174,35 @@ class GECX_Storefront {
         if ( $product_id <= 0 && is_product() ) {
             $product_id = self::resolve_current_product_id();
         }
+        return $this->build_suggested_prompts_html( $product_id );
+    }
 
+    /**
+     * Whether prompts for a product named in the shortcode or block may be
+     * shown to the current visitor: the product must exist and be published
+     * without a password, unless the visitor can read it anyway.
+     *
+     * @param int $product_id Product ID.
+     * @return bool
+     */
+    protected function can_show_prompts_for_product( int $product_id ): bool {
+        if ( $product_id <= 0 || ! function_exists( 'wc_get_product' ) || ! wc_get_product( $product_id ) ) {
+            return false;
+        }
+        if ( 'publish' === get_post_status( $product_id ) && ! post_password_required( $product_id ) ) {
+            return true;
+        }
+        return current_user_can( 'read_post', $product_id );
+    }
+
+    /**
+     * Builds the suggested prompts markup for a product, or markup naming no
+     * product when $product_id is 0.
+     *
+     * @param int $product_id Product ID, or 0.
+     * @return string HTML output.
+     */
+    protected function build_suggested_prompts_html( int $product_id ): string {
         $attrs = [
             'chat-widget-selector' => 'gecx-woocommerce-chat-widget',
             'direction'            => 'row',

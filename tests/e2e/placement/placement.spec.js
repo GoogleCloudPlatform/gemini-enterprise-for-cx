@@ -206,6 +206,39 @@ test('places product prompts after the main add-to-cart form, not a sticky bar',
   expect(await page.locator('#main-form + gecx-suggested-prompts').count()).toBe(1);
 });
 
+test('uses no product\'s overrides after a page transition to another product', async ({ page }) => {
+  const productPrompts = assets.pdpPromptsHtml.replace('<gecx-suggested-prompts', '<gecx-suggested-prompts static-prompts="[&quot;Is the tuna wild caught?&quot;]"');
+  const productPage = (id) => `<main><div id="product-${id}" class="product type-product"><div class="summary entry-summary">
+      <form class="cart" id="form-${id}"><button>Add to cart</button></form></div></div></main>`;
+  await openFixture(page, {
+    bodyClass: 'single-product',
+    config: { pdpPromptsHtml: assets.pdpPromptsHtml, pdpProductPromptsHtml: productPrompts, isPdp: true },
+    // The server already placed this product's prompts.
+    body: productPage(12).replace('</form>', '</form>' + productPrompts),
+  });
+  expect(await page.locator('#form-12 + gecx-suggested-prompts[static-prompts]').count()).toBe(1);
+
+  // A swup-style transition to another product: new URL and content, same config.
+  await page.evaluate((html) => {
+    history.pushState({}, '', '/product/salmon/');
+    document.querySelector('main').outerHTML = html;
+    document.dispatchEvent(new Event('swup:page:view'));
+  }, productPage(34));
+  await settle(page);
+  expect(await page.locator('#form-34 + gecx-suggested-prompts').count()).toBe(1);
+  expect(await page.locator('gecx-suggested-prompts[static-prompts]').count()).toBe(0);
+
+  // And on to a page that shows no product: isPdp described the first page only.
+  await page.evaluate(() => {
+    history.pushState({}, '', '/about/');
+    document.body.classList.remove('single-product');
+    document.querySelector('main').outerHTML = '<main><p>About us</p><form class="cart"><button>Newsletter</button></form></main>';
+    document.dispatchEvent(new Event('swup:page:view'));
+  });
+  await settle(page);
+  expect(await page.locator('gecx-suggested-prompts').count()).toBe(0);
+});
+
 test('places the launcher in a header rendered after load', async ({ page }) => {
   await openFixture(page, { body: '<main id="app"></main>' });
   await page.evaluate(() => {

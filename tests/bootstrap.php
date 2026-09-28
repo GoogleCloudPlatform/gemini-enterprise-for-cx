@@ -106,6 +106,8 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_blog_memberships']     = [];
     $GLOBALS['gecx_test_super_admins']         = [];
     $GLOBALS['gecx_test_products']             = [];
+    $GLOBALS['gecx_test_post_statuses']        = [];
+    $GLOBALS['gecx_test_password_required']    = [];
     $GLOBALS['gecx_test_script_translations']  = [];
 
     // Request context. Every one of these is false for a storefront page
@@ -919,11 +921,13 @@ if ( ! function_exists( 'user_can' ) ) {
             $allcaps['manage_options']     = true;
             $allcaps['manage_woocommerce'] = true;
             $allcaps['edit_post']          = true;
+            $allcaps['read_post']          = true;
             $allcaps['delete_users']       = true;
         }
         if ( in_array( 'shop_manager', $user->roles, true ) ) {
             $allcaps['manage_woocommerce'] = true;
             $allcaps['edit_post']          = true;
+            $allcaps['read_post']          = true;
         }
         if ( function_exists( 'apply_filters' ) ) {
             $allcaps = (array) apply_filters(
@@ -2479,4 +2483,16 @@ function gecx_run_test_class( string $className ): array {
         exit( 1 );
     }
     return [ 'passed' => $passed, 'failed' => $failed ];
+}
+
+if ( ! function_exists( 'get_post_status' ) ) {
+    function get_post_status( $post = null ) {
+        return $GLOBALS['gecx_test_post_statuses'][ (int) $post ] ?? 'publish';
+    }
+}
+
+if ( ! function_exists( 'post_password_required' ) ) {
+    function post_password_required( $post = null ): bool {
+        return (bool) ( $GLOBALS['gecx_test_password_required'][ (int) $post ] ?? false );
+    }
 }

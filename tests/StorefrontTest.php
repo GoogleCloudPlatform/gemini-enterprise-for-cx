@@ -277,10 +277,52 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
+        $GLOBALS['gecx_test_products'][101] = new WC_Product( 101 );
+
         $storefront = new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
         $html       = $storefront->render_suggested_prompts_shortcode( [ 'id' => 101 ] );
 
         $this->assertStringContainsString( '<gecx-suggested-prompts', $html );
+    }
+
+    /**
+     * @dataProvider hidden_product_cases
+     */
+    public function test_prompts_for_a_named_product_the_visitor_cannot_see_are_not_shown( string $status, bool $password ): void {
+        $GLOBALS['gecx_test_is_product'] = false;
+        $storefront                      = $this->activate_widget( 'manual' );
+        $product                         = new WC_Product( 404 );
+        $product->update_meta_data( '_gecx_suggested_prompts_override', 'Secret launch question?' );
+        $GLOBALS['gecx_test_products'][404]          = $product;
+        $GLOBALS['gecx_test_post_statuses'][404]     = $status;
+        $GLOBALS['gecx_test_password_required'][404] = $password;
+
+        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode( [ 'id' => 404 ] ) );
+        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode( [ 'product_id' => 404 ] ) );
+        $this->assertSame( '', $storefront->render_suggested_prompts_block( [ 'productId' => 404 ] ) );
+        $this->assertSame( '', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => 404 ] ] ) );
+
+        // Someone who can read the product, such as the admin previewing the
+        // page, still sees its prompts.
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $this->assertStringContainsString( 'Secret launch question?', $storefront->render_suggested_prompts_shortcode( [ 'id' => 404 ] ) );
+    }
+
+    public static function hidden_product_cases(): array {
+        return [
+            'draft'              => [ 'draft', false ],
+            'private'            => [ 'private', false ],
+            'pending review'     => [ 'pending', false ],
+            'password protected' => [ 'publish', true ],
+        ];
+    }
+
+    public function test_prompts_for_a_named_post_that_is_not_a_product_are_not_shown(): void {
+        $GLOBALS['gecx_test_is_product'] = false;
+        $GLOBALS['gecx_test_post_meta'][77]['_gecx_suggested_prompts_override'] = 'Not a product?';
+        $storefront = $this->activate_widget( 'manual' );
+
+        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode( [ 'id' => 77 ] ) );
     }
 
     public function test_suggested_prompts_shortcode_marks_injected_and_prevents_auto_injection(): void {
@@ -1451,6 +1493,7 @@ JS;
         $this->assertSame( '', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => 55 ] ] ) );
 
         // The Product ID setting works anywhere, even with auto prompts off.
+        $GLOBALS['gecx_test_products'][101] = new WC_Product( 101 );
         $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->render_suggested_prompts_block( [ 'productId' => 101 ] ) );
 
         // A product in the block context (Single Product block or template).
@@ -1509,6 +1552,26 @@ JS;
 
         $this->assertFalse( $config['isPdp'] );
         $this->assertStringContainsString( '<gecx-suggested-prompts', $config['pdpPromptsHtml'] );
+    }
+
+    public function test_product_page_config_keeps_its_overrides_out_of_the_generic_prompts_markup(): void {
+        // Themes that switch pages without a reload keep the first page's
+        // config, so the markup used for later products must not carry this
+        // product's overrides.
+        $GLOBALS['gecx_test_is_product'] = true;
+        $GLOBALS['gecx_test_the_id']     = 101;
+        $GLOBALS['gecx_test_post_meta'][101]['_gecx_suggested_prompts_override'] = 'Is it grain free?';
+
+        $config = $this->localized_storefront_config();
+
+        $this->assertTrue( $config['isPdp'] );
+        $this->assertStringContainsString( '<gecx-suggested-prompts', $config['pdpPromptsHtml'] );
+        $this->assertStringNotContainsString( 'static-prompts', $config['pdpPromptsHtml'] );
+        $this->assertStringContainsString( 'Is it grain free?', $config['pdpProductPromptsHtml'] );
+    }
+
+    public function test_config_has_no_product_prompts_markup_off_product_pages(): void {
+        $this->assertArrayNotHasKey( 'pdpProductPromptsHtml', $this->localized_storefront_config() );
     }
 
     public function test_pages_embedding_a_product_count_as_product_pages(): void {
