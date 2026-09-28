@@ -2285,6 +2285,97 @@ class RestApiTest extends GECX_TestCase {
         $GLOBALS['gecx_test_orders'][ $order_id ]->update_meta_data( '_gecx_session_id', '' );
         $this->assertFalse( $rest_api->gate_order_webhook_delivery( true, 901, $order_id ) );
     }
+
+    /**
+     * Runs the post-dispatch sync for a Store API cart request and returns
+     * the woocommerce_items_in_cart and woocommerce_cart_hash cookies it set.
+     *
+     * @return array<string, mixed>
+     */
+    private function cart_cookies_set_by( string $method, string $route, string $cart_token = '' ): array {
+        $request = new WP_REST_Request( $method, $route );
+        if ( '' !== $cart_token ) {
+            $request->set_header( 'Cart-Token', $cart_token );
+        }
+        $GLOBALS['gecx_test_cookies'] = [];
+        ( new GECX_Rest_API() )->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items_count' => 1 ] ), null, $request );
+        return array_intersect_key(
+            $GLOBALS['gecx_test_cookies'] ?? [],
+            array_flip( [ 'woocommerce_items_in_cart', 'woocommerce_cart_hash' ] )
+        );
+    }
+
+    public function test_browser_cart_read_refreshes_the_cart_cookies(): void {
+        WC()->cart                              = new WC_Cart_Mock();
+        WC()->cart->cart_for_session            = [ 'item' => [ 'quantity' => 1 ] ];
+        $_COOKIE['wp_woocommerce_session_test'] = 't_guest_session_123||12345||12345||hash';
+
+        $cookies = $this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart' );
+
+        $this->assertSame( '1', $cookies['woocommerce_items_in_cart']['value'] );
+        $this->assertSame( WC()->cart->get_cart_hash(), $cookies['woocommerce_cart_hash']['value'] );
+        $this->assertContains( 'woocommerce_set_cart_cookies', array_column( $GLOBALS['gecx_test_actions'], 0 ) );
+    }
+
+    public function test_browser_cart_read_clears_the_cart_cookies_once_the_cart_is_empty(): void {
+        WC()->cart                              = new WC_Cart_Mock();
+        $_COOKIE['wp_woocommerce_session_test'] = 't_guest_session_123||12345||12345||hash';
+        $_COOKIE['woocommerce_items_in_cart']   = '1';
+        $_COOKIE['woocommerce_cart_hash']       = 'stale';
+
+        $cookies = $this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart' );
+
+        $this->assertLessThan( time(), $cookies['woocommerce_items_in_cart']['expire'] );
+        $this->assertLessThan( time(), $cookies['woocommerce_cart_hash']['expire'] );
+        $this->assertArrayNotHasKey( 'woocommerce_items_in_cart', $_COOKIE );
+    }
+
+    public function test_cart_read_without_a_session_cookie_leaves_the_cart_cookies_alone(): void {
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item' => [ 'quantity' => 1 ] ];
+
+        $this->assertSame( [], $this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart' ) );
+    }
+
+    public function test_agent_cart_write_leaves_the_cart_cookies_alone(): void {
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item' => [ 'quantity' => 1 ] ];
+
+        $this->assertSame(
+            [],
+            $this->cart_cookies_set_by( 'POST', '/wc/store/v1/cart/add-item', $this->generate_jwt( 't_guest_session_123' ) )
+        );
+    }
+
+    public function test_cart_token_read_refreshes_the_cookies_of_the_browser_that_owns_the_session(): void {
+        WC()->cart                              = new WC_Cart_Mock();
+        WC()->cart->cart_for_session            = [ 'item' => [ 'quantity' => 1 ] ];
+        $_COOKIE['wp_woocommerce_session_test'] = 't_guest_session_123||12345||12345||hash';
+
+        $cookies = $this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart', $this->generate_jwt( 't_guest_session_123' ) );
+
+        $this->assertSame( '1', $cookies['woocommerce_items_in_cart']['value'] );
+    }
+
+    public function test_cart_token_read_for_another_session_leaves_the_browser_cookies_alone(): void {
+        WC()->cart                              = new WC_Cart_Mock();
+        WC()->cart->cart_for_session            = [ 'item' => [ 'quantity' => 1 ] ];
+        $_COOKIE['wp_woocommerce_session_test'] = 't_guest_session_123||12345||12345||hash';
+
+        $this->assertSame(
+            [],
+            $this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart', $this->generate_jwt( 't_someone_else_999' ) )
+        );
+    }
+
+    public function test_cart_token_read_that_bridges_a_guest_session_also_sets_the_cart_cookies(): void {
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item' => [ 'quantity' => 1 ] ];
+
+        $cookies = $this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart', $this->generate_jwt( 't_agent_shopper_888' ) );
+
+        $this->assertSame( '1', $cookies['woocommerce_items_in_cart']['value'] );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {

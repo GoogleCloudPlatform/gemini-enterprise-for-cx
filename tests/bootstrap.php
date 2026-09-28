@@ -127,6 +127,8 @@ function gecx_reset_test_globals(): void {
 
     $GLOBALS['gecx_test_enqueued_styles']  = [];
     $GLOBALS['gecx_test_enqueued_scripts'] = [];
+    $GLOBALS['gecx_test_registered_scripts'] = [ 'wc-cart-fragments' ];
+    $GLOBALS['gecx_test_is_block_theme']   = false;
     $GLOBALS['gecx_test_current_screen']   = null;
     unset( $GLOBALS['hook_suffix'] );
 
@@ -374,6 +376,10 @@ if ( ! class_exists( 'WC_Cart_Mock' ) ) {
         }
         public function is_empty(): bool {
             return empty( $this->get_cart_for_session() );
+        }
+        public function get_cart_hash(): string {
+            $cart = $this->get_cart_for_session();
+            return $cart ? md5( (string) wp_json_encode( $cart ) ) : '';
         }
     }
 }
@@ -1906,6 +1912,21 @@ if ( ! function_exists( 'delete_post_meta_by_key' ) ) {
 if ( ! function_exists( 'wp_enqueue_script' ) ) {
     function wp_enqueue_script( ...$args ): void {
         $GLOBALS['gecx_test_enqueued_scripts'][] = (string) ( $args[0] ?? '' );
+    }
+}
+
+if ( ! function_exists( 'wp_script_is' ) ) {
+    function wp_script_is( string $handle, string $status = 'enqueued' ): bool {
+        if ( 'registered' === $status ) {
+            return in_array( $handle, $GLOBALS['gecx_test_registered_scripts'] ?? [], true );
+        }
+        return in_array( $handle, $GLOBALS['gecx_test_enqueued_scripts'] ?? [], true );
+    }
+}
+
+if ( ! function_exists( 'wp_is_block_theme' ) ) {
+    function wp_is_block_theme(): bool {
+        return ! empty( $GLOBALS['gecx_test_is_block_theme'] );
     }
 }
 

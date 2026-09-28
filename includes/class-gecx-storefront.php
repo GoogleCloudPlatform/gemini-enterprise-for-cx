@@ -66,6 +66,14 @@ class GECX_Storefront {
     public const DEFAULT_FLOATING_POSITION = 'bottom_center';
 
     /**
+     * Cart count badges of the WooCommerce block mini-cart.
+     */
+    public const DEFAULT_CART_BADGE_SELECTORS = [
+        '.wc-block-mini-cart__badge',
+        '.wc-block-components-mini-cart__badge',
+    ];
+
+    /**
      * Sanitize button placement to an allowed key.
      *
      * @param mixed $placement Button placement input.
@@ -119,6 +127,8 @@ class GECX_Storefront {
      */
     public function register_storefront_hooks(): void {
         add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_storefront_assets' ] );
+        // Priority 20: WooCommerce registers wc-cart-fragments at priority 10.
+        add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_cart_fragments' ], 20 );
         add_action( 'wp_footer', [ $this, 'inject_chat_widget' ] );
         add_filter( 'wp_nav_menu_items', [ $this, 'inject_nav_menu_agent_button' ], 10, 2 );
         add_filter( 'render_block_core/navigation', [ $this, 'inject_block_navigation_agent_button' ], 10, 2 );
@@ -268,6 +278,9 @@ class GECX_Storefront {
             'isCart'           => $is_cart,
             'isCheckout'       => $is_checkout,
             'isCartOrCheckout' => $is_cart || $is_checkout,
+            // Nested so the booleans keep their type: wp_localize_script()
+            // casts top-level scalars to strings, and false becomes "".
+            'cartRefresh'      => self::get_cart_refresh_config(),
         ];
 
         if ( is_product() && $this->is_pdp_prompts_auto_inject_enabled() ) {
@@ -277,6 +290,102 @@ class GECX_Storefront {
         }
 
         wp_localize_script( 'gecx-storefront-js', 'gecxStorefrontConfig', $config );
+    }
+
+    /**
+     * Enqueues WooCommerce's cart fragments script on classic themes.
+     *
+     * Classic theme headers (Storefront, Astra, Flatsome, the Elementor and
+     * Divi menu carts and others) only redraw their cart count when
+     * wc-cart-fragments answers `wc_fragment_refresh`, which storefront.js
+     * triggers after the agent changes the cart. Since WooCommerce 7.8 that
+     * script is no longer loaded on every page by default, so a theme that
+     * does not enqueue it itself would keep showing the old count.
+     *
+     * Block themes are skipped: their mini-cart block reads the wc/store/cart
+     * data store, and the script would pull in jQuery for nothing.
+     */
+    public function enqueue_cart_fragments(): void {
+        if ( is_admin() || wp_doing_ajax() || wp_is_json_request() || is_feed() ) {
+            return;
+        }
+        if ( ! $this->get_active_agent_name() || ! $this->is_widget_enabled() ) {
+            return;
+        }
+
+        $is_block_theme = function_exists( 'wp_is_block_theme' ) && wp_is_block_theme();
+
+        /**
+         * Filters whether the plugin enqueues wc-cart-fragments so classic
+         * theme cart counts update after the agent changes the cart.
+         *
+         * @param bool $enqueue Defaults to true on classic themes and false on block themes.
+         */
+        if ( ! apply_filters( 'gecx_enqueue_cart_fragments', ! $is_block_theme ) ) {
+            return;
+        }
+
+        if ( wp_script_is( 'wc-cart-fragments', 'registered' ) ) {
+            wp_enqueue_script( 'wc-cart-fragments' );
+        }
+    }
+
+    /**
+     * Settings storefront.js uses to refresh cart surfaces after the agent
+     * changes the cart.
+     *
+     * @return array{nativeEvents: bool, legacyEvents: bool, badgeSelectors: string[]}
+     */
+    public static function get_cart_refresh_config(): array {
+        /**
+         * Filters the selectors of cart count badges storefront.js writes the
+         * new item count into when the WooCommerce Blocks cart data store is
+         * not on the page.
+         *
+         * Only add elements whose whole text is the bare count. Counts
+         * rendered as text such as "3 items" are refreshed through cart
+         * fragments instead.
+         *
+         * @param string[] $selectors CSS selectors.
+         */
+        $selectors = apply_filters( 'gecx_cart_badge_selectors', self::DEFAULT_CART_BADGE_SELECTORS );
+        $selectors = is_array( $selectors ) ? $selectors : self::DEFAULT_CART_BADGE_SELECTORS;
+        $selectors = array_values(
+            array_filter(
+                array_map(
+                    static function ( $selector ): string {
+                        // JSON-encoded into the page and only ever passed to
+                        // querySelectorAll(), which rejects invalid selectors.
+                        return is_string( $selector ) ? trim( $selector ) : '';
+                    },
+                    $selectors
+                )
+            )
+        );
+
+        return [
+            /**
+             * Filters whether storefront.js dispatches the WooCommerce Blocks
+             * wc-blocks_added_to_cart and wc-blocks_removed_from_cart events
+             * after the agent changes the cart. The block mini-cart refreshes
+             * its badge on them.
+             *
+             * @param bool $enabled Default true.
+             */
+            'nativeEvents'   => (bool) apply_filters( 'gecx_cart_refresh_native_events', true ),
+            /**
+             * Filters whether storefront.js triggers the jQuery
+             * added_to_cart and removed_from_cart events instead of the
+             * native ones. Off by default: many themes open a side cart on
+             * them, and their handlers expect arguments only a real
+             * add-to-cart click provides. The block mini-cart translates
+             * them into the native events itself.
+             *
+             * @param bool $enabled Default false.
+             */
+            'legacyEvents'   => (bool) apply_filters( 'gecx_cart_refresh_legacy_events', false ),
+            'badgeSelectors' => $selectors,
+        ];
     }
 
     /**

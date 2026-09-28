@@ -429,6 +429,62 @@ class GECX_Rest_API {
     }
 
     /**
+     * Brings the browser's woocommerce_items_in_cart and woocommerce_cart_hash
+     * cookies in line with the cart WooCommerce just loaded.
+     *
+     * The agent changes the cart from Google's servers, so WooCommerce sets
+     * those cookies on the agent's response, not the shopper's. The browser
+     * keeps the old ones, which has two effects. Full-page caches keep serving
+     * cached pages to a shopper they think has an empty cart, since
+     * woocommerce_items_in_cart is what makes them bypass the cache. And
+     * wc-cart-fragments reuses its sessionStorage copy of the header cart,
+     * because the cart hash cookie it compares against has not changed.
+     *
+     * storefront.js reads the cart from the Store API after every agent update,
+     * and this sets the cookies on that read. WooCommerce's own
+     * WC_Cart_Session::maybe_set_cart_cookies() runs on 'wp' and 'shutdown',
+     * neither of which can set a cookie on a REST response, and the method
+     * that does the writing is private. This mirrors it, including the
+     * woocommerce_set_cart_cookies action that caching plugins listen for.
+     * wc_setcookie() does nothing once headers are sent. The callers ensure
+     * the loaded cart is the browser's own.
+     */
+    private static function maybe_set_browser_cart_cookies(): void {
+        if ( ! function_exists( 'WC' ) || ! isset( WC()->cart ) || ! function_exists( 'wc_setcookie' ) ) {
+            return;
+        }
+        $cart     = WC()->cart;
+        $is_empty = method_exists( $cart, 'is_empty' ) ? (bool) $cart->is_empty() : true;
+
+        if ( ! $is_empty ) {
+            $cookies = [
+                'woocommerce_items_in_cart' => '1',
+                'woocommerce_cart_hash'     => method_exists( $cart, 'get_cart_hash' ) ? (string) $cart->get_cart_hash() : '',
+            ];
+            foreach ( $cookies as $name => $value ) {
+                if ( ! isset( $_COOKIE[ $name ] ) || $_COOKIE[ $name ] !== $value ) {
+                    wc_setcookie( $name, $value );
+                    $_COOKIE[ $name ] = $value;
+                }
+            }
+            // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce action.
+            do_action( 'woocommerce_set_cart_cookies', true );
+            return;
+        }
+
+        if ( isset( $_COOKIE['woocommerce_items_in_cart'] ) ) {
+            foreach ( [ 'woocommerce_items_in_cart', 'woocommerce_cart_hash' ] as $name ) {
+                if ( isset( $_COOKIE[ $name ] ) ) {
+                    wc_setcookie( $name, '0', time() - HOUR_IN_SECONDS );
+                    unset( $_COOKIE[ $name ] );
+                }
+            }
+            // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce action.
+            do_action( 'woocommerce_set_cart_cookies', false );
+        }
+    }
+
+    /**
      * Checks whether a REST request represents a cart mutation on the
      * WooCommerce Store API.
      *
@@ -526,9 +582,16 @@ class GECX_Rest_API {
             || ! empty( $_SERVER['HTTP_CART_TOKEN'] )
             || '' !== (string) $request->get_header( 'Cart-Token' );
 
-        $is_cart_token_cart_read = ( 'GET' === $method && 1 === preg_match( '#^/wc/store/v\d+/cart(/.*)?$#', $route ) && $has_cart_token );
+        $is_cart_read            = ( 'GET' === $method && 1 === preg_match( '#^/wc/store/v\d+/cart(/.*)?$#', $route ) );
+        $is_cart_token_cart_read = ( $is_cart_read && $has_cart_token );
 
         if ( ! $is_mutation && ! $is_cart_token_cart_read ) {
+            // A browser reading its own cart: nothing to sync, but the agent
+            // may have changed this cart from its own request, which never
+            // reaches the browser's cookies. See maybe_set_browser_cart_cookies().
+            if ( $is_cart_read && self::has_woocommerce_session_cookie() ) {
+                self::maybe_set_browser_cart_cookies();
+            }
             return $response;
         }
 
@@ -608,10 +671,21 @@ class GECX_Rest_API {
             // WC_Session_Handler::is_session_cookie_valid() fail, which calls destroy_session()
             // and deletes that user's row from the sessions table along with their saved cart.
             $is_guest_session_key = ( 0 === strpos( $session_key, 't_' ) );
+            $bridged_to_browser   = false;
             if ( ! $has_cookie && $has_cart_items && 0 === get_current_user_id() && $is_guest_session_key ) {
                 if ( $is_cart_token_cart_read || ( $is_mutation && ! $has_cart_token ) ) {
                     self::set_guest_session_cookie( $session_key );
+                    $bridged_to_browser = true;
                 }
+            }
+
+            // Only when the cart just loaded is the browser's own: the session
+            // this request bridged to it, or the one its verified session
+            // cookie names. A cookied browser presenting a Cart-Token for some
+            // other session must not have that session's hash written into
+            // its cookies.
+            if ( $is_cart_token_cart_read && ( $bridged_to_browser || ( '' !== $session_key && self::get_verified_session_cookie_customer_id() === $session_key ) ) ) {
+                self::maybe_set_browser_cart_cookies();
             }
 
             $uses_sql_session_handler = ! isset( WC()->session )
