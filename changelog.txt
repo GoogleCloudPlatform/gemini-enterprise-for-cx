@@ -1,5 +1,9 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-09-28 - version 0.3.27
+* Always show the info tooltip next to the Suggested Prompts setting, so merchants who keep automatic prompts on also see how to place prompts with the shortcode or block.
+* Drop "(Recommended)" from the Top navigation menu placement option.
+
 2026-09-28 - version 0.3.26
 * Add a Gemini Enterprise for CX Suggested Prompts block, the block editor counterpart of `[gecx_suggested_prompts]`, which uses the product it is placed on (the Single Product block or template) or a Product ID set in the block.
 * On the settings page, show how to place the launcher and prompts yourself in an info tooltip, only when Manual placement is chosen or automatic prompts are turned off.

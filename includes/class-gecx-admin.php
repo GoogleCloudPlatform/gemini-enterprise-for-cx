@@ -1177,14 +1177,13 @@ class GECX_Admin {
                                       class="gecx-info-tip"
                                       tabindex="0"
                                       aria-label="<?php esc_attr_e( 'Adding prompts yourself', 'gemini-enterprise-for-cx' ); ?>"
-                                      aria-describedby="gecx-prompts-manual-tip-text"
-                                      style="<?php echo $pdp_prompts_enabled ? 'display: none;' : ''; ?>">
+                                      aria-describedby="gecx-prompts-manual-tip-text">
                                     <span class="dashicons dashicons-info-outline" aria-hidden="true"></span>
                                     <span id="gecx-prompts-manual-tip-text" class="gecx-info-tip__text" role="tooltip">
                                         <?php
                                         printf(
                                             /* translators: 1: shortcode, 2: block name. */
-                                            esc_html__( 'You can still show prompts where you want them with the %1$s shortcode or the %2$s block, for example in the Single Product template.', 'gemini-enterprise-for-cx' ),
+                                            esc_html__( 'To show prompts somewhere else, use the %1$s shortcode or the %2$s block, for example in the Single Product template. Turn this setting off if you only want prompts where you place them.', 'gemini-enterprise-for-cx' ),
                                             '<code>[gecx_suggested_prompts]</code>',
                                             '<code>' . esc_html__( 'Gemini Enterprise for CX Suggested Prompts', 'gemini-enterprise-for-cx' ) . '</code>'
                                         );
@@ -1217,7 +1216,7 @@ class GECX_Admin {
                                                name="gecx_button_placement"
                                                value="nav_menu"
                                                <?php checked( $button_placement, 'nav_menu' ); ?> />
-                                        <strong><?php esc_html_e( 'Top navigation menu (Recommended)', 'gemini-enterprise-for-cx' ); ?></strong>
+                                        <strong><?php esc_html_e( 'Top navigation menu', 'gemini-enterprise-for-cx' ); ?></strong>
                                         <br><span class="description" style="margin-left: 20px;"><?php esc_html_e( 'Part of your primary header navigation bar.', 'gemini-enterprise-for-cx' ); ?></span>
                                     </label>
                                     <label style="display: block; margin-bottom: 10px;">

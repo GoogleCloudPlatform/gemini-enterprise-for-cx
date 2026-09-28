@@ -828,7 +828,7 @@ class AdminTest extends GECX_TestCase {
     /**
      * @dataProvider info_tip_cases
      */
-    public function test_settings_page_shows_info_tips_only_when_relevant( string $placement, int $prompts_enabled, bool $manual_tip_shown, bool $prompts_tip_shown ): void {
+    public function test_settings_page_info_tips( string $placement, int $prompts_enabled, bool $manual_tip_shown ): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_webhook_id', 4242 );
@@ -849,16 +849,16 @@ class AdminTest extends GECX_TestCase {
         $this->assertStringContainsString( '<code>[gecx_suggested_prompts]</code>', $html );
         $this->assertMatchesRegularExpression( '/id="gecx-manual-placement-tip".*?style="(.*?)"/s', $html );
         preg_match( '/id="gecx-manual-placement-tip".*?style="(.*?)"/s', $html, $manual );
-        preg_match( '/id="gecx-prompts-manual-tip".*?style="(.*?)"/s', $html, $prompts );
         $this->assertSame( $manual_tip_shown ? '' : 'display: none;', $manual[1] );
-        $this->assertSame( $prompts_tip_shown ? '' : 'display: none;', $prompts[1] );
+        // The prompts tip is always shown, whatever the setting.
+        $this->assertMatchesRegularExpression( '/id="gecx-prompts-manual-tip"[^>]*aria-describedby="gecx-prompts-manual-tip-text">/', $html );
     }
 
     public static function info_tip_cases(): array {
         return [
-            'manual placement, auto prompts off' => [ 'manual', 0, true, true ],
-            'menu placement, auto prompts on'    => [ 'nav_menu', 1, false, false ],
-            'floating placement, prompts off'    => [ 'floating', 0, false, true ],
+            'manual placement, auto prompts off' => [ 'manual', 0, true ],
+            'menu placement, auto prompts on'    => [ 'nav_menu', 1, false ],
+            'floating placement, prompts off'    => [ 'floating', 0, false ],
         ];
     }
 

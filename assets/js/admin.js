@@ -68,11 +68,8 @@ $(function() {
     const isChecked = $checkbox.is(':checked');
     const isEnabled = isChecked ? '1' : '0';
 
-    $('#gecx-prompts-manual-tip').toggle(!isChecked);
-
     function revertPdpToggle() {
       $checkbox.prop('checked', !isChecked);
-      $('#gecx-prompts-manual-tip').toggle(isChecked);
       showNotice('error', gecx_admin_params.errorTogglePrompts);
     }
 

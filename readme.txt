@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.26
+Stable tag: 0.3.27
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -167,6 +167,10 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.27 =
+* Always show the info tooltip next to the Suggested Prompts setting, so merchants who keep automatic prompts on also see how to place prompts with the shortcode or block.
+* Drop "(Recommended)" from the Top navigation menu placement option.
 
 = 0.3.26 =
 * Add a Gemini Enterprise for CX Suggested Prompts block, the block editor counterpart of `[gecx_suggested_prompts]`, which uses the product it is placed on (the Single Product block or template) or a Product ID set in the block.
