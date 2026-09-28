@@ -135,6 +135,37 @@ test('falls back to a floating launcher when the hamburger is not recognized', a
   expect(launchers[0].container).toContain('gecx-nav-menu-item');
 });
 
+test('adds no fallback while the widget is briefly hiding launchers on load', async ({ page }) => {
+  // The widget hides every launcher until it knows its enablement state
+  // (a first visit, before that state is cached) and then shows them again.
+  await openFixture(page, {
+    themeCss: 'nav ul{display:flex;list-style:none;gap:8px}',
+    body: `<header><nav><ul><li><a href="#">Shop</a></li>${navItem}</ul></nav></header>
+      <script>
+        const buttons = () => document.querySelectorAll('gecx-agent-button');
+        buttons().forEach((b) => { b.setAttribute('hidden', ''); b.classList.add('gecx-hidden'); b.setAttribute('data-gecx-mobile-hidden', ''); b.style.display = 'none'; });
+        setTimeout(() => buttons().forEach((b) => { b.removeAttribute('hidden'); b.classList.remove('gecx-hidden'); b.removeAttribute('data-gecx-mobile-hidden'); b.style.display = ''; }), 400);
+      </script>`,
+  });
+  await page.waitForTimeout(800);
+  const launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-nav-menu-item');
+});
+
+test('does not count a launcher clipped inside a collapsed menu as visible', async ({ page }) => {
+  // Storefront's handheld menu is collapsed with max-height:0 and overflow
+  // hidden; a launcher inside it has a size but can't be seen.
+  await openFixture(page, {
+    width: 1280,
+    themeCss: '.handheld ul{max-height:0;overflow:hidden;margin:0}',
+    body: `<header><div class="handheld"><ul><li><a href="#">Shop</a></li>${navItem}</ul></div></header>`,
+  });
+  const launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-launcher-fallback');
+});
+
 test('leaves vertical menu layout to the theme', async ({ page }) => {
   await openFixture(page, {
     themeCss: '.vmenu{list-style:none;width:200px} .vmenu li{display:block}',

@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.24
+Stable tag: 0.3.25
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -164,6 +164,9 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 0.3.25 =
+* Don't add the floating fallback launcher while the chat widget is briefly hiding launchers on a shopper's first visit, which left two launchers once the widget showed them again; re-check when the widget shows or hides a launcher; and don't count a launcher clipped inside a collapsed menu as visible.
 
 = 0.3.24 =
 * Decide between the in-menu launcher and the mobile header launcher from whether the theme's hamburger is visible, not from fixed 600px and 768px breakpoints, so themes that switch at 921px or 1024px (Astra, Kadence, Divi, OceanWP) and block navigation with the overlay always on no longer lose the launcher.

@@ -29,7 +29,20 @@ async function visibleLaunchers(page) {
         const rect = el.getBoundingClientRect();
         const visible = typeof el.checkVisibility === 'function' ?
             el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : true;
-        return visible && rect.width > 0 && rect.height > 0 && rect.right > 0 &&
+        // Collapsed menus hide content with overflow clipping, which
+        // checkVisibility() doesn't account for.
+        let clipped = false;
+        for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+          const style = getComputedStyle(a);
+          if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+            const c = a.getBoundingClientRect();
+            if (rect.right <= c.left || rect.left >= c.right || rect.bottom <= c.top || rect.top >= c.bottom) {
+              clipped = true;
+              break;
+            }
+          }
+        }
+        return visible && !clipped && rect.width > 0 && rect.height > 0 && rect.right > 0 &&
             rect.left < window.innerWidth && rect.bottom > 0 && rect.top < window.innerHeight;
       })
       .map((el) => {

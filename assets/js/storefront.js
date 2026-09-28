@@ -843,12 +843,52 @@ function gecxIsOnScreen(el) {
   }
   const viewportWidth = window.innerWidth ||
       (document.documentElement && document.documentElement.clientWidth) || 0;
+  let onScreen = false;
   for (let i = 0; i < rects.length; i++) {
     if (rects[i].right > 0 && (!viewportWidth || rects[i].left < viewportWidth)) {
-      return true;
+      onScreen = true;
+      break;
     }
   }
+  return onScreen && !gecxIsClippedAway(el);
+}
+
+/**
+ * Whether an ancestor that clips its overflow hides the element entirely,
+ * as collapsed menus do (Storefront's handheld menu is `max-height: 0;
+ * overflow: hidden`). Such an element has a size and a position but can't
+ * be seen.
+ * @param {!Element} el
+ * @return {boolean}
+ */
+function gecxIsClippedAway(el) {
+  const box = el.getBoundingClientRect();
+  let ancestor = el.parentElement;
+  for (let depth = 0; ancestor && ancestor !== document.body && depth < 12; depth++) {
+    const style = window.getComputedStyle(ancestor);
+    if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+      const clip = ancestor.getBoundingClientRect();
+      if (box.right <= clip.left || box.left >= clip.right ||
+          box.bottom <= clip.top || box.top >= clip.bottom) {
+        return true;
+      }
+    }
+    ancestor = ancestor.parentElement;
+  }
   return false;
+}
+
+/**
+ * Whether the chat widget itself is hiding a launcher. The widget hides
+ * every launcher on the page while it decides whether to show them, for
+ * example on a first visit before its enablement state is cached, and
+ * shows them again afterwards.
+ * @param {!Element} button
+ * @return {boolean}
+ */
+function gecxIsHiddenByWidget(button) {
+  return button.classList.contains('gecx-hidden') ||
+      button.hasAttribute('data-gecx-mobile-hidden');
 }
 
 /**
@@ -1144,13 +1184,22 @@ function gecxEnsureVisibleLauncher() {
   }
   let fallback = document.querySelector('.gecx-launcher-fallback');
   let visible = false;
+  let hiddenByWidget = false;
   gecxEach('gecx-agent-button', function(button) {
-    if (!visible && !(fallback && fallback.contains(button)) && gecxIsOnScreen(button)) {
+    if (fallback && fallback.contains(button)) {
+      return;
+    }
+    if (gecxIsHiddenByWidget(button)) {
+      hiddenByWidget = true;
+    } else if (!visible && gecxIsOnScreen(button)) {
       visible = true;
     }
   });
 
-  if (visible) {
+  // While the widget is hiding launchers it hides a fallback too, and the
+  // launcher it hid comes back on its own. Adding a fallback then would leave
+  // two launchers once the widget shows them again.
+  if (visible || hiddenByWidget) {
     if (fallback) {
       fallback.style.display = 'none';
     }
@@ -1685,6 +1734,15 @@ if (typeof MutationObserver !== 'undefined' && document.body) {
   // placement cannot trigger itself.
   const contentObserver = new MutationObserver(function(mutations) {
     for (let i = 0; i < mutations.length; i++) {
+      // The widget showing or hiding a launcher changes whether the page
+      // needs the fallback.
+      if (mutations[i].type === 'attributes') {
+        if (mutations[i].target.tagName === 'GECX-AGENT-BUTTON') {
+          gecxScheduleReinit();
+          return;
+        }
+        continue;
+      }
       const added = mutations[i].addedNodes || [];
       for (let j = 0; j < added.length; j++) {
         const node = added[j];
@@ -1696,6 +1754,11 @@ if (typeof MutationObserver !== 'undefined' && document.body) {
       }
     }
   });
-  contentObserver.observe(document.body, { childList: true, subtree: true });
+  contentObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['hidden', 'class', 'style']
+  });
 }
 })();

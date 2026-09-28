@@ -1,5 +1,8 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-09-28 - version 0.3.25
+* Don't add the floating fallback launcher while the chat widget is briefly hiding launchers on a shopper's first visit, which left two launchers once the widget showed them again; re-check when the widget shows or hides a launcher; and don't count a launcher clipped inside a collapsed menu as visible.
+
 2026-09-27 - version 0.3.24
 * Decide between the in-menu launcher and the mobile header launcher from whether the theme's hamburger is visible, not from fixed 600px and 768px breakpoints, so themes that switch at 921px or 1024px (Astra, Kadence, Divi, OceanWP) and block navigation with the overlay always on no longer lose the launcher.
 * Recognize more hamburgers (links and ARIA buttons in the header, Flatsome, Avada, OceanWP, Blocksy, Woodmart), and show a floating launcher whenever no other launcher is on screen.
