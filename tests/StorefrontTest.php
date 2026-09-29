@@ -482,14 +482,14 @@ class StorefrontTest extends GECX_TestCase {
         // A product page, including one whose slug merely starts with "cart",
         // must not be reported: the script reloads the page when this is true,
         // which would interrupt the conversation.
-        $this->assertFalse( $this->localized_storefront_config()['isCartOrCheckout'] );
+        $this->assertSame( '', $this->localized_storefront_config()['isCartOrCheckout'] );
 
         $GLOBALS['gecx_test_is_cart'] = true;
-        $this->assertTrue( $this->localized_storefront_config()['isCartOrCheckout'] );
+        $this->assertSame( '1', $this->localized_storefront_config()['isCartOrCheckout'] );
 
         $GLOBALS['gecx_test_is_cart']     = false;
         $GLOBALS['gecx_test_is_checkout'] = true;
-        $this->assertTrue( $this->localized_storefront_config()['isCartOrCheckout'] );
+        $this->assertSame( '1', $this->localized_storefront_config()['isCartOrCheckout'] );
     }
 
 
@@ -730,7 +730,7 @@ class StorefrontTest extends GECX_TestCase {
         $this->assertTrue( in_array( 'gecx-storefront-js', $GLOBALS['gecx_test_enqueued_scripts'], true ) );
 
         $config = $GLOBALS['gecx_test_localized_scripts']['gecx-storefront-js']['gecxStorefrontConfig'] ?? [];
-        $this->assertFalse( $config['shouldLoadWidget'] );
+        $this->assertSame( '', $config['shouldLoadWidget'] );
         $this->assertStringContainsString( 'woocommerce-chat-widget.js', $config['widgetScriptUrl'] );
     }
 
@@ -895,7 +895,7 @@ function makeMockTemplateOrDiv(tag) {
 const initialConfig = {
   isWidgetEnabled: true,
   placement: 'nav_menu',
-  buttonHtml: '<gecx-agent-button display-style="responsive" onclick="evil()"></gecx-agent-button>',
+  markup: { button: '<gecx-agent-button display-style="responsive" onclick="evil()"></gecx-agent-button>' },
   sessionUrl: 'https://example.com/wp-json/gecx/v1/session'
 };
 
@@ -931,11 +931,16 @@ if (!Object.isFrozen(sandbox.window.gecxStorefrontConfig)) {
   process.exit(1);
 }
 
+if (!Object.isFrozen(initialConfig.markup)) {
+  console.error('Expected the nested markup object to be frozen');
+  process.exit(1);
+}
+
 // Attempt post-load replacement of window.gecxStorefrontConfig with malicious payload
 sandbox.window.gecxStorefrontConfig = {
   isWidgetEnabled: true,
   placement: 'nav_menu',
-  buttonHtml: '<script>alert(1)</script>'
+  markup: { button: '<script>alert(1)</script>' }
 };
 
 if (typeof domLoadedCallback === 'function') {
@@ -1550,8 +1555,8 @@ JS;
     public function test_prompts_markup_is_localized_off_product_pages_for_dynamically_loaded_products(): void {
         $config = $this->localized_storefront_config();
 
-        $this->assertFalse( $config['isPdp'] );
-        $this->assertStringContainsString( '<gecx-suggested-prompts', $config['pdpPromptsHtml'] );
+        $this->assertSame( '', $config['isPdp'] );
+        $this->assertStringContainsString( '<gecx-suggested-prompts', $config['markup']['prompts'] );
     }
 
     public function test_product_page_config_keeps_its_overrides_out_of_the_generic_prompts_markup(): void {
@@ -1564,22 +1569,36 @@ JS;
 
         $config = $this->localized_storefront_config();
 
-        $this->assertTrue( $config['isPdp'] );
-        $this->assertStringContainsString( '<gecx-suggested-prompts', $config['pdpPromptsHtml'] );
-        $this->assertStringNotContainsString( 'static-prompts', $config['pdpPromptsHtml'] );
-        $this->assertStringContainsString( 'Is it grain free?', $config['pdpProductPromptsHtml'] );
+        $this->assertSame( '1', $config['isPdp'] );
+        $this->assertStringContainsString( '<gecx-suggested-prompts', $config['markup']['prompts'] );
+        $this->assertStringNotContainsString( 'static-prompts', $config['markup']['prompts'] );
+        $this->assertStringContainsString( 'Is it grain free?', $config['markup']['productPrompts'] );
+    }
+
+    public function test_quotes_in_labels_and_prompts_survive_wp_localize_script(): void {
+        // wp_localize_script() decodes entities in top-level strings, which
+        // turned &quot; back into " and ended the attribute early.
+        update_option( 'gecx_button_label', 'Ask "Woo"' );
+        $GLOBALS['gecx_test_is_product'] = true;
+        $GLOBALS['gecx_test_the_id']     = 101;
+        $GLOBALS['gecx_test_post_meta'][101]['_gecx_suggested_prompts_override'] = 'What does "grain free" mean?';
+
+        $markup = $this->localized_storefront_config()['markup'];
+
+        $this->assertStringContainsString( 'label="Ask &quot;Woo&quot;"', $markup['button'] );
+        $this->assertStringContainsString( '&quot;What does \\&quot;grain free\\&quot; mean?&quot;', $markup['productPrompts'] );
     }
 
     public function test_config_has_no_product_prompts_markup_off_product_pages(): void {
-        $this->assertArrayNotHasKey( 'pdpProductPromptsHtml', $this->localized_storefront_config() );
+        $this->assertArrayNotHasKey( 'productPrompts', $this->localized_storefront_config()['markup'] );
     }
 
     public function test_pages_embedding_a_product_count_as_product_pages(): void {
         $GLOBALS['gecx_test_post'] = (object) [ 'post_content' => 'Intro [product_page id="12"]' ];
-        $this->assertTrue( $this->localized_storefront_config()['isPdp'] );
+        $this->assertSame( '1', $this->localized_storefront_config()['isPdp'] );
 
         $GLOBALS['gecx_test_post'] = (object) [ 'post_content' => '<!-- wp:woocommerce/single-product {"productId":12} /-->' ];
-        $this->assertTrue( $this->localized_storefront_config()['isPdp'] );
+        $this->assertSame( '1', $this->localized_storefront_config()['isPdp'] );
     }
 
     public function test_floating_positions_clear_bottom_bars_and_the_safe_area(): void {

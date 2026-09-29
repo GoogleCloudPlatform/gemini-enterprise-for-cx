@@ -2032,7 +2032,16 @@ if ( ! function_exists( 'wp_add_inline_style' ) ) {
 
 if ( ! function_exists( 'wp_localize_script' ) ) {
     function wp_localize_script( ...$args ): void {
-        $GLOBALS['gecx_test_localized_scripts'][ $args[0] ][ $args[1] ] = $args[2];
+        // Like WP_Scripts::localize(), decode entities in top-level strings.
+        $l10n = $args[2];
+        if ( is_array( $l10n ) ) {
+            foreach ( $l10n as $key => $value ) {
+                if ( is_scalar( $value ) ) {
+                    $l10n[ $key ] = html_entity_decode( (string) $value, ENT_QUOTES, 'UTF-8' );
+                }
+            }
+        }
+        $GLOBALS['gecx_test_localized_scripts'][ $args[0] ][ $args[1] ] = $l10n;
     }
 }
 

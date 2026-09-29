@@ -30,7 +30,7 @@ async function openFixture(page, options) {
   const cfg = Object.assign({
     placement: 'nav_menu',
     isWidgetEnabled: true,
-    buttonHtml: BUTTON,
+    markup: { button: BUTTON },
     widgetScriptUrl: WIDGET_URL,
     shouldLoadWidget: '1',
     cartRestUrl: 'https://store.test/wp-json/wc/store/v1/cart',
@@ -196,7 +196,7 @@ test('joins the main menu rather than a top bar menu', async ({ page }) => {
 test('places product prompts after the main add-to-cart form, not a sticky bar', async ({ page }) => {
   await openFixture(page, {
     bodyClass: 'single-product',
-    config: { pdpPromptsHtml: assets.pdpPromptsHtml, isPdp: false },
+    config: { markup: { button: BUTTON, prompts: assets.pdpPromptsHtml }, isPdp: false },
     body: `<div class="ast-sticky-add-to-cart"><div class="sticky-add-to-cart"><form class="cart"><button>Add</button></form></div></div>
       <main><div id="product-12" class="product type-product"><div class="summary entry-summary">
       <form class="cart" id="main-form"><button>Add to cart</button></form></div></div>
@@ -212,7 +212,7 @@ test('uses no product\'s overrides after a page transition to another product', 
       <form class="cart" id="form-${id}"><button>Add to cart</button></form></div></div></main>`;
   await openFixture(page, {
     bodyClass: 'single-product',
-    config: { pdpPromptsHtml: assets.pdpPromptsHtml, pdpProductPromptsHtml: productPrompts, isPdp: true },
+    config: { markup: { button: BUTTON, prompts: assets.pdpPromptsHtml, productPrompts: productPrompts }, isPdp: true },
     // The server already placed this product's prompts.
     body: productPage(12).replace('</form>', '</form>' + productPrompts),
   });
@@ -286,6 +286,28 @@ test('narrows fixed headers while the chat panel pushes the page', async ({ page
     document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed'));
   });
   await expect.poll(() => page.locator('header.sticky').evaluate((el) => el.style.right)).toBe('');
+});
+
+test('leaves the WordPress admin bar full width while the chat panel pushes the page', async ({ page }) => {
+  await openFixture(page, {
+    bodyClass: 'admin-bar',
+    themeCss: '#wpadminbar{position:fixed;top:0;left:0;width:100%;height:32px;background:#1d2327}' +
+        '.sticky{position:fixed;top:32px;left:0;width:100%;height:60px;background:#eee}',
+    body: `<div id="wpadminbar"><div class="quicklinks">Site</div></div>
+      <header class="sticky"><nav><ul><li>Shop</li>${navItem}</ul></nav></header><main style="margin-top:112px">Content</main>`,
+  });
+  await page.evaluate(() => {
+    const messenger = document.createElement('chat-messenger');
+    messenger.className = 'slide-in';
+    document.body.appendChild(messenger);
+    document.body.style.paddingRight = '400px';
+    document.body.classList.add('gecx-chat-open');
+    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed'));
+  });
+  // The theme's header still moves aside, so the admin bar has been considered.
+  await expect.poll(() => page.locator('header.sticky').evaluate((el) => el.getBoundingClientRect().right)).toBeLessThanOrEqual(1280 - 400);
+  expect(await page.locator('#wpadminbar').evaluate((el) => el.getBoundingClientRect().width)).toBe(1280);
+  expect(await page.locator('#wpadminbar').getAttribute('style')).toBeNull();
 });
 
 test('deferred loading waits for interaction even though WordPress localizes false as ""', async ({ page }) => {

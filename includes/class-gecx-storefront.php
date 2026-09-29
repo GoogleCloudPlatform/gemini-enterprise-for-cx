@@ -472,7 +472,13 @@ class GECX_Storefront {
         $placement   = (string) get_option( 'gecx_button_placement', 'nav_menu' );
         $config      = [
             'placement'        => $placement,
-            'buttonHtml'       => $this->get_agent_button_html(),
+            // Markup is nested because wp_localize_script() runs
+            // html_entity_decode() on every top-level string, which would turn
+            // esc_attr()'s &quot; back into " and let a quote in a label or
+            // prompt end the attribute. Nested values are passed through as is.
+            'markup'           => [
+                'button' => $this->get_agent_button_html(),
+            ],
             'isWidgetEnabled'  => $enabled,
             'widgetScriptUrl'  => esc_url_raw( (string) $urls['script'] ),
             'shouldLoadWidget' => $should_load_widget,
@@ -511,13 +517,13 @@ class GECX_Storefront {
             // Localized on every page so storefront.js can also place prompts
             // for a product loaded without a full page load. This copy names
             // no product, so it carries no product's prompt overrides.
-            $config['pdpPromptsHtml'] = $this->build_suggested_prompts_html( 0 );
+            $config['markup']['prompts'] = $this->build_suggested_prompts_html( 0 );
             if ( $is_product_page ) {
                 // With this product's overrides. storefront.js only uses it
                 // while the URL is still the one this page was rendered for,
                 // since themes that switch pages without a reload keep this
                 // config on every product page the shopper visits after it.
-                $config['pdpProductPromptsHtml'] = $this->get_suggested_prompts_html( self::resolve_current_product_id() );
+                $config['markup']['productPrompts'] = $this->get_suggested_prompts_html( self::resolve_current_product_id() );
             }
         }
 
