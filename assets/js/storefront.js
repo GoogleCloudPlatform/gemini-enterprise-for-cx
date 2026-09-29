@@ -44,8 +44,15 @@ const gecxInitialStorefrontConfig = (function() {
     return null;
   }
   const copy = Object.assign({}, raw);
+  // The markup is a nested object, which a shallow copy would still share
+  // with the global. Copy it too so it cannot be changed after load.
+  copy.markup = Object.assign({}, (raw.markup && typeof raw.markup === 'object') ? raw.markup : {});
   if (typeof Object.freeze === 'function') {
     try {
+      if (raw.markup && typeof raw.markup === 'object') {
+        Object.freeze(raw.markup);
+      }
+      Object.freeze(copy.markup);
       Object.freeze(raw);
       Object.freeze(copy);
     } catch (err) {
@@ -54,6 +61,18 @@ const gecxInitialStorefrontConfig = (function() {
   }
   return copy;
 })();
+
+/**
+ * Returns a piece of widget markup from the config: 'button', 'prompts' or
+ * 'productPrompts'.
+ * @param {?Object} cfg
+ * @param {string} key
+ * @return {string}
+ */
+function gecxConfigMarkup(cfg, key) {
+  const markup = cfg && cfg.markup;
+  return (markup && typeof markup[key] === 'string') ? markup[key] : '';
+}
 
 /**
  * Returns the frozen storefront configuration object.
@@ -1050,7 +1069,7 @@ function gecxCreateSafeWidgetElement(html, expectedTagName) {
  */
 function gecxCreateLauncherContainer(tagName, className) {
   const cfg = gecxGetStorefrontConfig();
-  const btnEl = gecxCreateSafeWidgetElement(cfg && cfg.buttonHtml, 'gecx-agent-button');
+  const btnEl = gecxCreateSafeWidgetElement(gecxConfigMarkup(cfg, 'button'), 'gecx-agent-button');
   if (!btnEl) {
     return null;
   }
@@ -1108,7 +1127,7 @@ function gecxFindHeaderMenuList() {
 // Client-side DOM check for desktop navigation placement.
 function initNavPlacement() {
   const cfg = gecxGetStorefrontConfig();
-  if (!cfg || !cfg.isWidgetEnabled || cfg.placement !== 'nav_menu' || !cfg.buttonHtml) {
+  if (!cfg || !cfg.isWidgetEnabled || cfg.placement !== 'nav_menu' || !gecxConfigMarkup(cfg, 'button')) {
     return;
   }
   if (document.querySelector('.gecx-nav-menu-item')) {
@@ -1305,7 +1324,7 @@ function gecxPageShowsProduct(cfg) {
 // Client-side DOM check for PDP suggested prompts placement (Page builders & non-standard templates fallback).
 function initPdpPlacement() {
   const cfg = gecxGetStorefrontConfig();
-  if (!cfg || !cfg.isWidgetEnabled || !cfg.pdpPromptsHtml || !gecxPageShowsProduct(cfg)) {
+  if (!cfg || !cfg.isWidgetEnabled || !gecxConfigMarkup(cfg, 'prompts') || !gecxPageShowsProduct(cfg)) {
     return;
   }
   if (document.querySelector('gecx-suggested-prompts')) {
@@ -1327,8 +1346,9 @@ function initPdpPlacement() {
 
   // The product page's own markup carries that product's prompt overrides,
   // so it is only right on the page it was rendered for.
-  const promptsHtml = (cfg.pdpProductPromptsHtml && gecxOnRenderedPage()) ?
-      cfg.pdpProductPromptsHtml : cfg.pdpPromptsHtml;
+  const productPrompts = gecxConfigMarkup(cfg, 'productPrompts');
+  const promptsHtml = (productPrompts && gecxOnRenderedPage()) ?
+      productPrompts : gecxConfigMarkup(cfg, 'prompts');
   const promptsEl = gecxCreateSafeWidgetElement(promptsHtml, 'gecx-suggested-prompts');
   if (promptsEl) {
     if (typeof pdpTarget.insertAdjacentElement === 'function') {
@@ -1420,8 +1440,11 @@ function gecxFindFixedFullWidthElements() {
   }
   const viewportWidth = window.innerWidth || 0;
   const consider = function(el) {
+    // The WordPress admin bar stays full width: the chat panel starts below
+    // it, so narrowing it would leave a blank strip above the panel.
     if (found.indexOf(el) !== -1 || gecxIsOwnElement(el) ||
-        typeof el.getBoundingClientRect !== 'function') {
+        typeof el.getBoundingClientRect !== 'function' ||
+        el.id === 'wpadminbar' || (typeof el.closest === 'function' && el.closest('#wpadminbar'))) {
       return;
     }
     if (window.getComputedStyle(el).position !== 'fixed') {

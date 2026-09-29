@@ -1,6 +1,6 @@
 *** Gemini Enterprise for CX Changelog ***
 
-2026-09-28 - version 0.3.29
+2026-09-29 - version 0.3.30
 * Refresh every cart surface once when the agent changes the cart. `chat-messenger-update-cart` is handled a single time even when it reaches both `document` and `window`, the cart is read from the Store API on every theme, and a stale nonce is replaced and the read retried once after a 401 or 403.
 * Dispatch the WooCommerce Blocks `wc-blocks_added_to_cart` or `wc-blocks_removed_from_cart` event, chosen by whether the item count went up or down, so the block mini-cart refreshes its cart. The jQuery `added_to_cart` event, which many themes answer by opening a side cart, is no longer triggered unless the `gecx_cart_refresh_legacy_events` filter returns true. When it does, `added_to_cart` or `removed_from_cart` is triggered in place of the native event, which the block mini-cart derives from it.
 * Always trigger `wc_fragment_refresh`, and enqueue `wc-cart-fragments` on classic themes (filterable with `gecx_enqueue_cart_fragments`), so classic header cart counts update without a reload.
@@ -19,10 +19,12 @@
 * Re-run placement when content is added after load (late headers, page transitions, infinite scroll) and expose `window.gecxInit()` for themes that swap content themselves. After a page transition, prompts no longer carry the first product's prompt overrides.
 * Show prompts for a product named in `[gecx_suggested_prompts]` or the Suggested Prompts block only if the visitor could see that product: it must be a published product without a password, unless the visitor can read it anyway. Before, the prompt overrides of draft, pending, private and password-protected products could be shown to anyone.
 * Load the launcher scripts even when a page request's Accept header mentions `application/json`. WordPress treats such a request as a JSON request, so the page rendered with the launcher markup but without the scripts that define it, and a page cache could then serve that broken copy, with no launcher, to every shopper.
-* Lift floating launchers above bars themes fix to the bottom of the screen and clear the device safe area; merchants can add spacing with the `--gecx-floating-extra-offset` CSS variable. Narrow fixed headers while the chat panel pushes the page aside.
+* Lift floating launchers above bars themes fix to the bottom of the screen and clear the device safe area; merchants can add spacing with the `--gecx-floating-extra-offset` CSS variable. Narrow fixed headers while the chat panel pushes the page aside, leaving the WordPress admin bar full width.
 * Output nothing on AMP pages, and keep the launcher scripts out of WP Rocket, LiteSpeed Cache and Cloudflare Rocket Loader JavaScript delay (filter: `gecx_exclude_from_js_delay`).
 * Fix the Defer widget until interaction setting, which never deferred because WordPress localizes `false` as an empty string.
 * Add browser tests: placement fixtures modeled on theme markup, and a wp-env theme matrix covering Storefront, Astra, Kadence, OceanWP and Twenty Twenty-Five.
+* Pass the launcher and prompts markup to storefront.js nested in its config. `wp_localize_script()` decodes HTML entities in top-level strings, so a double quote in a launcher label or a product's prompt override ended the attribute early and broke the launchers and prompts that storefront.js places.
+* Disclose in the readme that the signed tokens sent to Google contain the store administrator's, or a logged-in shopper's, WordPress user ID and email address.
 
 2026-09-25 - version 0.3.22
 * Pass `admin_jwt` in the URL fragment (`#admin_jwt=`) instead of the query string when redirecting to the Google Cloud onboarding console, so the token is not sent to the console server, written to its access logs, or leaked via `Referer`.

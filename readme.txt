@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.29
+Stable tag: 0.3.30
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -60,7 +60,7 @@ This plugin connects to 3rd-party services provided by Google to function, and l
    * **Service Provider:** Google LLC
    * **Endpoints:** `https://gecx.cloud.google.com`
    * **Purpose:** Merchant account authentication, store onboarding, agent configuration, and secure exchange of WooCommerce REST API credentials for authenticating to admin apis.
-   * **Data Transmitted:** Store URL, admin authorization tokens, and product/catalog metadata.
+   * **Data Transmitted:** Store URL, admin authorization tokens, and product/catalog metadata. Admin authorization tokens are signed by the store and contain the store administrator's WordPress user ID and email address; they are sent when the store is connected, when its connection status is checked, when an agent is unlinked, and when the plugin is uninstalled from a connected store.
    * **Account Requirement:** A Google account with access to Gemini Enterprise for CX.
 
 2. **Storefront Chat Widget Client SDK (externally hosted script)**
@@ -70,7 +70,7 @@ This plugin connects to 3rd-party services provided by Google to function, and l
    * **Purpose:** Delivers the client runtime required to render the interactive chat widget and product suggestion pills on the customer-facing storefront, and to communicate with the GECX service.
    * **When it loads:** Never by default. It is enqueued on storefront pages only after a store administrator has connected the store to Google Cloud, linked an agent, and enabled the agent in the plugin settings. If either condition is unmet, the script is not requested at all.
    * **Why it is hosted externally:** It is the official client runtime for the Gemini Enterprise for CX SaaS platform, versioned and released with that service rather than with this plugin. It speaks directly to the service's streaming, session and agent protocols, which change far more often than a WordPress plugin release cycle. A copy frozen inside the plugin would break storefronts for any merchant who did not update the plugin in step with every service change.
-   * **Data Transmitted:** Standard HTTP request headers (IP address, User-Agent) when the browser fetches the script. Customer chat messages and product browsing context are processed by GECX during live chat interactions.
+   * **Data Transmitted:** Standard HTTP request headers (IP address, User-Agent) when the browser fetches the script. Customer chat messages and product browsing context are processed by GECX during live chat interactions. For a shopper who is logged in to the store, the widget also sends GECX a token signed by the store that contains the shopper's WordPress user ID and email address; guests' tokens contain neither.
    * **Terms of Service:** https://cloud.google.com/terms
    * **Privacy Policy:** https://policies.google.com/privacy
 
@@ -168,7 +168,7 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 
 The complete release history is kept in changelog.txt at the plugin root.
 
-= 0.3.29 =
+= 0.3.30 =
 * Refresh every cart surface once when the agent changes the cart. `chat-messenger-update-cart` is handled a single time even when it reaches both `document` and `window`, the cart is read from the Store API on every theme, and a stale nonce is replaced and the read retried once after a 401 or 403.
 * Dispatch the WooCommerce Blocks `wc-blocks_added_to_cart` or `wc-blocks_removed_from_cart` event, chosen by whether the item count went up or down, so the block mini-cart refreshes its cart. The jQuery `added_to_cart` event, which many themes answer by opening a side cart, is no longer triggered unless the `gecx_cart_refresh_legacy_events` filter returns true. When it does, `added_to_cart` or `removed_from_cart` is triggered in place of the native event, which the block mini-cart derives from it.
 * Always trigger `wc_fragment_refresh`, and enqueue `wc-cart-fragments` on classic themes (filterable with `gecx_enqueue_cart_fragments`), so classic header cart counts update without a reload.
@@ -187,10 +187,12 @@ The complete release history is kept in changelog.txt at the plugin root.
 * Re-run placement when content is added after load (late headers, page transitions, infinite scroll) and expose `window.gecxInit()` for themes that swap content themselves. After a page transition, prompts no longer carry the first product's prompt overrides.
 * Show prompts for a product named in `[gecx_suggested_prompts]` or the Suggested Prompts block only if the visitor could see that product: it must be a published product without a password, unless the visitor can read it anyway. Before, the prompt overrides of draft, pending, private and password-protected products could be shown to anyone.
 * Load the launcher scripts even when a page request's Accept header mentions `application/json`. WordPress treats such a request as a JSON request, so the page rendered with the launcher markup but without the scripts that define it, and a page cache could then serve that broken copy, with no launcher, to every shopper.
-* Lift floating launchers above bars themes fix to the bottom of the screen and clear the device safe area; merchants can add spacing with the `--gecx-floating-extra-offset` CSS variable. Narrow fixed headers while the chat panel pushes the page aside.
+* Lift floating launchers above bars themes fix to the bottom of the screen and clear the device safe area; merchants can add spacing with the `--gecx-floating-extra-offset` CSS variable. Narrow fixed headers while the chat panel pushes the page aside, leaving the WordPress admin bar full width.
 * Output nothing on AMP pages, and keep the launcher scripts out of WP Rocket, LiteSpeed Cache and Cloudflare Rocket Loader JavaScript delay (filter: `gecx_exclude_from_js_delay`).
 * Fix the Defer widget until interaction setting, which never deferred because WordPress localizes `false` as an empty string.
 * Add browser tests: placement fixtures modeled on theme markup, and a wp-env theme matrix covering Storefront, Astra, Kadence, OceanWP and Twenty Twenty-Five.
+* Pass the launcher and prompts markup to storefront.js nested in its config. `wp_localize_script()` decodes HTML entities in top-level strings, so a double quote in a launcher label or a product's prompt override ended the attribute early and broke the launchers and prompts that storefront.js places.
+* Disclose in the readme that the signed tokens sent to Google contain the store administrator's, or a logged-in shopper's, WordPress user ID and email address.
 
 = 0.3.22 =
 * Pass `admin_jwt` in the URL fragment (`#admin_jwt=`) instead of the query string when redirecting to the Google Cloud onboarding console, so the token is not sent to the console server, written to its access logs, or leaked via `Referer`.
