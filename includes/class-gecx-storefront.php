@@ -518,7 +518,7 @@ class GECX_Storefront {
             // for a product loaded without a full page load. This copy names
             // no product, so it carries no product's prompt overrides.
             $config['markup']['prompts'] = $this->build_suggested_prompts_html( 0 );
-            if ( $is_product_page ) {
+            if ( $is_product_page && ! $this->current_product_is_password_protected() ) {
                 // With this product's overrides. storefront.js only uses it
                 // while the URL is still the one this page was rendered for,
                 // since themes that switch pages without a reload keep this
@@ -1013,7 +1013,7 @@ class GECX_Storefront {
      * Inject suggested prompts component on single product pages.
      */
     public function inject_suggested_prompts(): void {
-        if ( is_admin() || ! is_product() || ! $this->is_pdp_prompts_auto_inject_enabled() ) {
+        if ( is_admin() || ! is_product() || ! $this->is_pdp_prompts_auto_inject_enabled() || $this->current_product_is_password_protected() ) {
             return;
         }
 
@@ -1043,7 +1043,7 @@ class GECX_Storefront {
      */
     // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- WordPress render_block filter callback signature.
     public function inject_block_suggested_prompts( string $block_content, array $block = [] ): string {
-        if ( is_admin() || ! is_product() || ! $this->is_pdp_prompts_auto_inject_enabled() ) {
+        if ( is_admin() || ! is_product() || ! $this->is_pdp_prompts_auto_inject_enabled() || $this->current_product_is_password_protected() ) {
             return $block_content;
         }
 
@@ -1091,6 +1091,9 @@ class GECX_Storefront {
         // visitors who could not see the product itself.
         $explicit = isset( $atts['id'] ) || isset( $atts['product_id'] );
         if ( $explicit && ! $this->can_show_prompts_for_product( $product_id ) ) {
+            return '';
+        }
+        if ( ! $explicit && $this->current_product_is_password_protected() ) {
             return '';
         }
 
@@ -1157,6 +1160,18 @@ class GECX_Storefront {
      *
      * @return int Product ID, or 0 when none can be resolved.
      */
+    /**
+     * Whether the product page being viewed is password protected and its
+     * password has not been entered. Its prompt overrides are then withheld,
+     * like the rest of the product, and kept out of cached pages.
+     *
+     * @return bool
+     */
+    protected function current_product_is_password_protected(): bool {
+        $product_id = self::resolve_current_product_id();
+        return $product_id > 0 && post_password_required( $product_id );
+    }
+
     private static function resolve_current_product_id(): int {
         $product_id = (int) get_the_ID();
         if ( $product_id > 0 ) {

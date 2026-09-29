@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.30
+Stable tag: 0.3.31
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -168,7 +168,7 @@ Yes. You need a Google account with access to Gemini Enterprise for CX to config
 
 The complete release history is kept in changelog.txt at the plugin root.
 
-= 0.3.30 =
+= 0.3.31 =
 * Refresh every cart surface once when the agent changes the cart. `chat-messenger-update-cart` is handled a single time even when it reaches both `document` and `window`, the cart is read from the Store API on every theme, and a stale nonce is replaced and the read retried once after a 401 or 403.
 * Dispatch the WooCommerce Blocks `wc-blocks_added_to_cart` or `wc-blocks_removed_from_cart` event, chosen by whether the item count went up or down, so the block mini-cart refreshes its cart. The jQuery `added_to_cart` event, which many themes answer by opening a side cart, is no longer triggered unless the `gecx_cart_refresh_legacy_events` filter returns true. When it does, `added_to_cart` or `removed_from_cart` is triggered in place of the native event, which the block mini-cart derives from it.
 * Always trigger `wc_fragment_refresh`, and enqueue `wc-cart-fragments` on classic themes (filterable with `gecx_enqueue_cart_fragments`), so classic header cart counts update without a reload.
@@ -193,6 +193,8 @@ The complete release history is kept in changelog.txt at the plugin root.
 * Add browser tests: placement fixtures modeled on theme markup, and a wp-env theme matrix covering Storefront, Astra, Kadence, OceanWP and Twenty Twenty-Five.
 * Pass the launcher and prompts markup to storefront.js nested in its config. `wp_localize_script()` decodes HTML entities in top-level strings, so a double quote in a launcher label or a product's prompt override ended the attribute early and broke the launchers and prompts that storefront.js places.
 * Disclose in the readme that the signed tokens sent to Google contain the store administrator's, or a logged-in shopper's, WordPress user ID and email address.
+* Withhold a password-protected product's prompt overrides until its password is entered. They were added to the page config, and so to cached copies of the page, while the rest of the product stayed hidden.
+* On multisite, also clean up archived, spam and deactivated sites on uninstall. Their webhook, keypair and read/write API keys were left behind and would work again if the site were restored.
 
 = 0.3.22 =
 * Pass `admin_jwt` in the URL fragment (`#admin_jwt=`) instead of the query string when redirecting to the Google Cloud onboarding console, so the token is not sent to the console server, written to its access logs, or leaked via `Referer`.

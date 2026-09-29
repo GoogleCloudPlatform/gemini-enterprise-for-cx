@@ -363,6 +363,30 @@ class AdminTest extends GECX_TestCase {
         $this->assertArrayNotHasKey( $webhook_id, $GLOBALS['gecx_test_webhooks'] );
     }
 
+    public function test_uninstall_also_cleans_archived_spam_and_deactivated_sites(): void {
+        // Those flags only hide a site. Its webhook, keypair and API keys stay
+        // and would work again if the site were restored.
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $GLOBALS['gecx_test_is_multisite'] = true;
+        $GLOBALS['gecx_test_sites']        = [ 1, 4, 7, 9 ];
+        $GLOBALS['gecx_test_site_flags']   = [
+            4 => [ 'archived' => 1 ],
+            7 => [ 'spam' => 1 ],
+            9 => [ 'deleted' => 1 ],
+        ];
+        update_option( 'gecx_webhook_id', 4242 );
+
+        if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+            define( 'WP_UNINSTALL_PLUGIN', true );
+        }
+
+        include dirname( __DIR__ ) . '/uninstall.php';
+
+        $this->assertEquals( [ 1, 4, 7, 9 ], $GLOBALS['gecx_test_switched_blogs'] );
+        $this->assertEquals( [], $GLOBALS['gecx_test_blog_stack'] );
+        $this->assertFalse( get_option( 'gecx_webhook_id' ) );
+    }
+
     public function test_uninstall_cleans_every_site_on_a_network(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $GLOBALS['gecx_test_is_multisite'] = true;

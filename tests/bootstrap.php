@@ -120,6 +120,7 @@ function gecx_reset_test_globals(): void {
     // Network context. Single site unless a test says otherwise.
     $GLOBALS['gecx_test_is_multisite']     = false;
     $GLOBALS['gecx_test_sites']            = [];
+    $GLOBALS['gecx_test_site_flags']       = [];
     $GLOBALS['gecx_test_sites_by_path']    = [];
     $GLOBALS['gecx_test_switched_blogs']   = [];
     $GLOBALS['gecx_test_blog_stack']       = [];
@@ -1217,7 +1218,18 @@ if ( ! function_exists( 'is_multisite' ) ) {
 
 if ( ! function_exists( 'get_sites' ) ) {
     function get_sites( array $args = [] ): array {
-        return $GLOBALS['gecx_test_sites'] ?? [];
+        // Honors the archived/spam/deleted filters like core, against flags
+        // set per site in gecx_test_site_flags.
+        $sites = $GLOBALS['gecx_test_sites'] ?? [];
+        return array_values( array_filter( $sites, static function ( $id ) use ( $args ): bool {
+            $flags = $GLOBALS['gecx_test_site_flags'][ $id ] ?? [];
+            foreach ( [ 'archived', 'spam', 'deleted' ] as $flag ) {
+                if ( isset( $args[ $flag ] ) && (int) $args[ $flag ] !== (int) ( $flags[ $flag ] ?? 0 ) ) {
+                    return false;
+                }
+            }
+            return true;
+        } ) );
     }
 }
 

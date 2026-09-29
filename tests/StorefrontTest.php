@@ -1589,6 +1589,32 @@ JS;
         $this->assertStringContainsString( '&quot;What does \\&quot;grain free\\&quot; mean?&quot;', $markup['productPrompts'] );
     }
 
+    public function test_password_protected_product_prompts_stay_hidden_until_the_password_is_entered(): void {
+        $GLOBALS['gecx_test_is_product'] = true;
+        $GLOBALS['gecx_test_the_id']     = 101;
+        $GLOBALS['gecx_test_post_meta'][101]['_gecx_suggested_prompts_override'] = 'Is the private-sale blend grain free?';
+        $GLOBALS['gecx_test_password_required'][101] = true;
+        update_option( 'gecx_pdp_prompts_enabled', 1 );
+
+        $config = $this->localized_storefront_config();
+        $this->assertArrayNotHasKey( 'productPrompts', $config['markup'] );
+        $this->assertStringNotContainsString( 'private-sale', (string) wp_json_encode( $config ) );
+
+        $storefront = new GECX_Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        ob_start();
+        $storefront->inject_suggested_prompts();
+        $this->assertSame( '', (string) ob_get_clean() );
+        $block_html = '<div class="wp-block-woocommerce-add-to-cart-form">Cart</div>';
+        $this->assertSame( $block_html, $storefront->inject_block_suggested_prompts( $block_html ) );
+        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode() );
+        $this->assertSame( '', $storefront->render_suggested_prompts_block( [] ) );
+
+        // Once the shopper has entered the password, the prompts come back.
+        $GLOBALS['gecx_test_password_required'][101] = false;
+        $this->assertStringContainsString( 'private-sale', $storefront->render_suggested_prompts_shortcode() );
+        $this->assertStringContainsString( 'private-sale', $this->localized_storefront_config()['markup']['productPrompts'] );
+    }
+
     public function test_config_has_no_product_prompts_markup_off_product_pages(): void {
         $this->assertArrayNotHasKey( 'productPrompts', $this->localized_storefront_config()['markup'] );
     }
