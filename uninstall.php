@@ -31,14 +31,16 @@ if ( ! class_exists( 'GECX_Auth' ) && file_exists( __DIR__ . '/includes/class-ge
 //
 // A null entry means "whatever site we are already on": on a single site there
 // is nothing to switch to, and switch_to_blog() is not defined.
+//
+// Archived, spam and deactivated ("deleted") sites are included. Those flags
+// only hide a site; its tables, and so its webhook, keypair and read/write API
+// keys, stay in place and work again if the site is restored. A site that is
+// really deleted is no longer in the list.
 $gecx_site_ids = [ null ];
 if ( is_multisite() ) {
     $gecx_site_ids = get_sites( [
-        'fields'   => 'ids',
-        'number'   => 0,
-        'deleted'  => 0,
-        'archived' => 0,
-        'spam'     => 0,
+        'fields' => 'ids',
+        'number' => 0,
     ] );
 }
 
