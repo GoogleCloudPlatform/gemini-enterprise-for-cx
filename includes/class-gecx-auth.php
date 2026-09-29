@@ -999,7 +999,7 @@ class GECX_Auth {
      * nothing to compare against but the request's own unparsed claims.
      *
      * The sole caller widens WooCommerce API key authentication to the routes
-     * in GECX_Rest_API::WC_AUTHENTICATED_ROUTES. Answering from an inferred
+     * in GECX_Rest_Console_API::WC_AUTHENTICATED_ROUTES. Answering from an inferred
      * route is what lets the route matched here differ from the route
      * WordPress goes on to dispatch, and a key admitted for the wrong route
      * carries the key owner's full WordPress capabilities into it.

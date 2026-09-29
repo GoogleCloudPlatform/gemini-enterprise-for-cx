@@ -132,8 +132,8 @@ class GECX_Admin {
         update_option( 'gecx_do_activation_redirect', true );
         delete_option( 'gecx_dismiss_activation_notice' );
         GECX_Auth::get_or_generate_keypair();
-        if ( class_exists( 'GECX_Rest_API' ) ) {
-            GECX_Rest_API::reconcile_webhook_on_activation();
+        if ( class_exists( 'GECX_Rest_Order_Webhook' ) ) {
+            GECX_Rest_Order_Webhook::reconcile_webhook_on_activation();
         }
     }
 
@@ -148,8 +148,8 @@ class GECX_Admin {
         if ( function_exists( 'as_unschedule_all_actions' ) ) {
             as_unschedule_all_actions( self::VERSION_SYNC_CRON_HOOK, [], 'gecx' );
         }
-        if ( class_exists( 'GECX_Rest_API' ) ) {
-            GECX_Rest_API::set_order_webhook_status( 'paused' );
+        if ( class_exists( 'GECX_Rest_Order_Webhook' ) ) {
+            GECX_Rest_Order_Webhook::set_order_webhook_status( 'paused' );
         }
     }
 
@@ -1414,8 +1414,8 @@ class GECX_Admin {
         } else {
             update_option( self::MERCHANT_DISABLED_OPTION, 1, false );
         }
-        if ( class_exists( 'GECX_Rest_API' ) ) {
-            GECX_Rest_API::set_order_webhook_status( 1 === $enabled ? 'active' : 'paused' );
+        if ( class_exists( 'GECX_Rest_Order_Webhook' ) ) {
+            GECX_Rest_Order_Webhook::set_order_webhook_status( 1 === $enabled ? 'active' : 'paused' );
         }
         wp_send_json_success( [ 'enabled' => $enabled ] );
     }
@@ -1690,7 +1690,7 @@ class GECX_Admin {
         $actual        = (string) ( $data['actualLinkedAgentId'] ?? $data['actual_linked_agent_id'] ?? '' );
         $actual_broker = (string) ( $data['tokenBrokerName'] ?? $data['token_broker_name'] ?? '' );
 
-        // Same allowlist GECX_Rest_API::link_agent_handler() applies to the
+        // Same allowlist GECX_Rest_Console_API::link_agent_handler() applies to the
         // values a caller supplies, applied here to the values the backend
         // reports. Both end up in the same two options and in the widget's
         // agent-name and token-broker attributes, so both have to mean the
@@ -1780,8 +1780,8 @@ class GECX_Admin {
             // orders.
             if ( ! $merchant_disabled ) {
                 update_option( 'gecx_agent_enabled', 1 );
-                if ( class_exists( 'GECX_Rest_API' ) ) {
-                    GECX_Rest_API::set_order_webhook_status( 'active' );
+                if ( class_exists( 'GECX_Rest_Order_Webhook' ) ) {
+                    GECX_Rest_Order_Webhook::set_order_webhook_status( 'active' );
                 }
             }
             delete_option( 'gecx_dismiss_activation_notice' );
@@ -1827,8 +1827,8 @@ class GECX_Admin {
      * left in place so a re-link does not lose their customization.
      */
     private function unlink_agent_internal(): void {
-        if ( class_exists( 'GECX_Rest_API' ) ) {
-            GECX_Rest_API::set_order_webhook_status( 'paused' );
+        if ( class_exists( 'GECX_Rest_Order_Webhook' ) ) {
+            GECX_Rest_Order_Webhook::set_order_webhook_status( 'paused' );
         }
         // Legacy shared secret, retired in favour of the store's RSA keypair.
         // Still deleted so a store upgraded from an older version does not keep

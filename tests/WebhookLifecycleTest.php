@@ -100,7 +100,7 @@ class WebhookLifecycleTest extends TestCase {
             '_links'               => [ 'self' => [ [ 'href' => 'https://example.com/wp-json/wc/v3/orders/4242' ] ] ],
         ];
 
-        $minimized = $this->rest_api->minimize_order_webhook_payload( $full_payload, 'order', 4242, $webhook_id );
+        $minimized = $this->rest_api->order_webhook->minimize_order_webhook_payload( $full_payload, 'order', 4242, $webhook_id );
 
         $this->assertSame(
             [
@@ -156,7 +156,7 @@ class WebhookLifecycleTest extends TestCase {
             'billing' => [ 'email' => 'keepme@example.com' ],
         ];
 
-        $result = $this->rest_api->minimize_order_webhook_payload( $full_payload, 'order', 99, $foreign_id );
+        $result = $this->rest_api->order_webhook->minimize_order_webhook_payload( $full_payload, 'order', 99, $foreign_id );
         $this->assertSame( $full_payload, $result );
     }
 
@@ -170,7 +170,7 @@ class WebhookLifecycleTest extends TestCase {
         $order = new WC_Order( 500 );
         $order->save();
 
-        $this->assertFalse( $this->rest_api->gate_order_webhook_delivery( true, $webhook, 500 ) );
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 500 ) );
     }
 
     public function test_delivery_suppressed_with_invalid_session_id(): void {
@@ -184,7 +184,7 @@ class WebhookLifecycleTest extends TestCase {
         $order->update_meta_data( '_gecx_session_id', 'invalid session spaces <script>' );
         $order->save();
 
-        $this->assertFalse( $this->rest_api->gate_order_webhook_delivery( true, $webhook, 501 ) );
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 501 ) );
     }
 
     public function test_delivery_allowed_with_valid_session_id(): void {
@@ -198,7 +198,7 @@ class WebhookLifecycleTest extends TestCase {
         $order->update_meta_data( '_gecx_session_id', 'projects/123/locations/global/commerceSessions/sess-123' );
         $order->save();
 
-        $this->assertTrue( $this->rest_api->gate_order_webhook_delivery( true, $webhook, 502 ) );
+        $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 502 ) );
     }
 
     public function test_delivery_suppressed_when_widget_disabled_or_unlinked(): void {
@@ -212,12 +212,12 @@ class WebhookLifecycleTest extends TestCase {
         // Linked but widget disabled
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 0 );
-        $this->assertFalse( $this->rest_api->gate_order_webhook_delivery( true, $webhook, 503 ) );
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 503 ) );
 
         // Enabled but unlinked
         delete_option( 'gecx_agent_name' );
         update_option( 'gecx_agent_enabled', 1 );
-        $this->assertFalse( $this->rest_api->gate_order_webhook_delivery( true, $webhook, 503 ) );
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 503 ) );
     }
 
     public function test_deactivation_pauses_webhook(): void {
@@ -320,7 +320,7 @@ class WebhookLifecycleTest extends TestCase {
 
         $request = new WP_REST_Request( 'POST', '/gecx/v1/webhooks/order-created' );
         $request->set_param( 'consumer_secret', 'cs_' . str_repeat( 'a', 40 ) );
-        $response = ( new GECX_Rest_API() )->order_created_webhooks_handler( $request );
+        $response = ( new GECX_Rest_API() )->order_webhook->order_created_webhooks_handler( $request );
 
         $this->assertInstanceOf( WP_REST_Response::class, $response );
         // The WooCommerce keys survive an unlink, so this call is not evidence
@@ -336,7 +336,7 @@ class WebhookLifecycleTest extends TestCase {
 
         $request = new WP_REST_Request( 'POST', '/gecx/v1/link-agent' );
         $request->set_param( 'agent_name', 'projects/123/locations/global/agents/agent-2' );
-        ( new GECX_Rest_API() )->link_agent_handler( $request );
+        ( new GECX_Rest_API() )->console->link_agent_handler( $request );
 
         $this->assertSame( 'projects/123/locations/global/agents/agent-2', get_option( 'gecx_agent_name' ) );
         $this->assertFalse( get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
@@ -348,7 +348,7 @@ class WebhookLifecycleTest extends TestCase {
         delete_option( 'gecx_webhook_id' );
         update_option( 'gecx_console_base_url', 'https://attacker.example' );
 
-        $result = GECX_Rest_API::ensure_order_webhook( 'cs_' . str_repeat( 'b', 40 ) );
+        $result = GECX_Rest_Order_Webhook::ensure_order_webhook( 'cs_' . str_repeat( 'b', 40 ) );
 
         $this->assertInstanceOf( WP_Error::class, $result );
         $this->assertSame( 'console_url_refused', $result->get_error_code() );
@@ -563,19 +563,19 @@ class WebhookLifecycleTest extends TestCase {
         $order1 = new WC_Order( 601 );
         $order1->update_meta_data( '_gecx_session_id', 'TestSessionToken0123456789abcdefghijklmnopq' );
         $order1->save();
-        $this->assertFalse( $this->rest_api->gate_order_webhook_delivery( true, $webhook, 601 ) );
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 601 ) );
 
         // Alphanumeric project ID instead of numeric project number
         $order2 = new WC_Order( 602 );
         $order2->update_meta_data( '_gecx_session_id', 'projects/my-cool-project/locations/global/commerceSessions/sess-123' );
         $order2->save();
-        $this->assertFalse( $this->rest_api->gate_order_webhook_delivery( true, $webhook, 602 ) );
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 602 ) );
 
         // Numeric project number (canonical resource name format) succeeds
         $order3 = new WC_Order( 603 );
         $order3->update_meta_data( '_gecx_session_id', 'projects/123456789012/locations/global/commerceSessions/sess-123' );
         $order3->save();
-        $this->assertTrue( $this->rest_api->gate_order_webhook_delivery( true, $webhook, 603 ) );
+        $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 603 ) );
     }
 
     public function test_delete_order_webhook_clears_transients_on_direct_sql(): void {
@@ -584,7 +584,7 @@ class WebhookLifecycleTest extends TestCase {
         set_transient( 'woocommerce_webhook_ids_status_active', [ 1 ] );
 
         $GLOBALS['gecx_test_disable_wc_webhook'] = true;
-        GECX_Rest_API::delete_order_webhook();
+        GECX_Rest_Order_Webhook::delete_order_webhook();
 
         $this->assertFalse( get_transient( 'woocommerce_webhook_ids' ) );
         $this->assertFalse( get_transient( 'woocommerce_webhook_ids_status_active' ) );
@@ -610,7 +610,7 @@ class WebhookLifecycleTest extends TestCase {
         $real_id = $real_gecx->save();
 
         // Pause webhooks
-        GECX_Rest_API::set_order_webhook_status( 'paused' );
+        GECX_Rest_Order_Webhook::set_order_webhook_status( 'paused' );
 
         // Foreign webhook must be completely untouched
         $foreign_reloaded = new WC_Webhook( $foreign_id );
@@ -649,7 +649,7 @@ class WebhookLifecycleTest extends TestCase {
             'line_items' => null,
         ];
 
-        $minimized = $this->rest_api->minimize_order_webhook_payload( $payload, 'order', 701, $webhook_id );
+        $minimized = $this->rest_api->order_webhook->minimize_order_webhook_payload( $payload, 'order', 701, $webhook_id );
 
         $this->assertCount( 1, $minimized['line_items'] );
         $this->assertSame( 501, $minimized['line_items'][0]['product_id'] );
