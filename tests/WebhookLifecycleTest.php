@@ -274,7 +274,7 @@ class WebhookLifecycleTest extends TestCase {
             'nonce'   => wp_create_nonce( 'gecx_save_agent_nonce' ),
             'enabled' => '0',
         ];
-        $this->admin->ajax_toggle_app_embed();
+        $this->admin->settings_page->ajax_toggle_app_embed();
 
         $webhook = new WC_Webhook( $webhook_id );
         $this->assertSame( 'paused', $webhook->get_status() );
@@ -285,7 +285,7 @@ class WebhookLifecycleTest extends TestCase {
             'nonce'   => wp_create_nonce( 'gecx_save_agent_nonce' ),
             'enabled' => '1',
         ];
-        $this->admin->ajax_toggle_app_embed();
+        $this->admin->settings_page->ajax_toggle_app_embed();
 
         $webhook = new WC_Webhook( $webhook_id );
         $this->assertSame( 'active', $webhook->get_status() );
@@ -303,7 +303,7 @@ class WebhookLifecycleTest extends TestCase {
             'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
         ];
         $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 200, '' );
-        $this->admin->ajax_unlink_agent();
+        $this->admin->console_sync->ajax_unlink_agent();
 
         $this->assertArrayHasKey( $webhook_id, $GLOBALS['gecx_test_webhooks'] );
         $webhook = new WC_Webhook( $webhook_id );

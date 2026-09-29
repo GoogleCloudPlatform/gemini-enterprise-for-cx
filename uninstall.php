@@ -204,7 +204,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                 // sites that hold a store-signed RS256 JWT reach this.
                 //
                 // wp_safe_remote_post() rather than wp_remote_post(), matching
-                // the two GECX_Admin call sites: the destination comes from an
+                // the two GECX_Admin_Console_Sync call sites: the destination comes from an
                 // option, so the resolved host is validated against the private
                 // and loopback ranges. redirection 0 because the request
                 // carries the webhook HMAC signature and, on stores that have
