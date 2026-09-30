@@ -1,6 +1,7 @@
 *** Gemini Enterprise for CX Changelog ***
 
-2026-09-30 - version 0.3.33
+2026-09-30 - version 1.0.0
+* First public release.
 * Tighten how cart-token authentication decides that a request is for the WooCommerce Store API, and drop a cart-token login once WordPress has routed the request anywhere else.
 
 2026-09-30 - version 0.3.32
