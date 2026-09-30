@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.3.33
+Stable tag: 1.0.0
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -132,8 +132,6 @@ After the agent changes the cart, the plugin refreshes WooCommerce cart fragment
 
 The complete release history is kept in changelog.txt at the plugin root.
 
-= 0.3.33 =
+= 1.0.0 =
+* First public release.
 * Tighten how cart-token authentication decides that a request is for the WooCommerce Store API, and drop a cart-token login once WordPress has routed the request anywhere else.
-
-= 0.3.32 =
-* Split the `GECX_Rest_API` and `GECX_Admin` classes into one class per job. No behavior changes.
