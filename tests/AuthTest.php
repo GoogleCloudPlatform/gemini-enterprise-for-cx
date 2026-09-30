@@ -194,6 +194,160 @@ class AuthTest extends GECX_TestCase {
     }
 
     /**
+     * With plain permalinks WordPress routes on the query string alone, so a
+     * /wp-json path there does not make the request a REST request.
+     */
+    public function test_store_api_path_is_ignored_with_plain_permalinks(): void {
+        update_option( 'permalink_structure', '' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $_SERVER['REQUEST_URI']     = '/wp-json/wc/store/v1/cart';
+
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+    }
+
+    /**
+     * rest_api_register_rewrites() adds both ^wp-json/ and ^index.php/wp-json/
+     * for every non-plain structure, PATHINFO included, so on those sites both
+     * paths are REST requests and must authenticate.
+     */
+    public function test_store_api_path_authenticates_with_pathinfo_permalinks(): void {
+        update_option( 'permalink_structure', '/index.php/%postname%/' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+
+        $_SERVER['REQUEST_URI'] = '/wp-json/wc/store/v1/cart';
+        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
+
+        $_SERVER['REQUEST_URI'] = '/index.php/wp-json/wc/store/v1/cart';
+        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
+    }
+
+    /**
+     * rest_url() produces /index.php/wp-json/ under PATHINFO permalinks, and the
+     * index-prefixed rule exists under every non-plain structure.
+     */
+    public function test_index_prefixed_store_api_path_authenticates_with_pretty_permalinks(): void {
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $_SERVER['REQUEST_URI']     = '/index.php/wp-json/wc/store/v1/cart/add-item';
+
+        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
+
+        $_SERVER['REQUEST_URI'] = '/index.php/wp-json/wp/v2/users';
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+    }
+
+    public function test_index_prefixed_store_api_path_is_ignored_with_plain_permalinks(): void {
+        update_option( 'permalink_structure', '' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $_SERVER['REQUEST_URI']     = '/index.php/wp-json/wc/store/v1/cart';
+
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+    }
+
+    /**
+     * The guard above must not cost plain-permalink stores the Store API: they
+     * reach it through ?rest_route=, which is resolved before the path.
+     */
+    public function test_rest_route_query_still_authenticates_with_plain_permalinks(): void {
+        update_option( 'permalink_structure', '' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $_SERVER['REQUEST_URI']     = '/index.php?rest_route=/wc/store/v1/cart';
+        $_GET['rest_route']         = '/wc/store/v1/cart';
+
+        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
+    }
+
+    /**
+     * Whatever route the pre-parse inference guessed, a request WordPress
+     * resolves to an ordinary page must not keep the token's user.
+     */
+    public function test_cart_token_user_is_dropped_when_request_is_not_store_api(): void {
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        wp_set_current_user( $this->auth->authenticate_via_cart_token( 0 ) );
+        $this->assertSame( 456, get_current_user_id() );
+
+        $wp             = new stdClass();
+        $wp->query_vars = [ 'page_id' => '7' ];
+        $this->auth->drop_cart_token_user_outside_store_api( $wp );
+
+        $this->assertSame( 0, get_current_user_id() );
+        $this->assertTrue( GECX_Auth::is_cart_token_request() );
+    }
+
+    /**
+     * Store API routes other than cart and batch are not a cart token's to
+     * reach, and a request WordPress resolved to no route at all is a page.
+     */
+    public function test_cart_token_user_is_dropped_for_non_cart_or_empty_routes(): void {
+        foreach ( [ '/wc/store/v1/checkout', '/wc/store/v1/order/42', '' ] as $route ) {
+            GECX_Auth::reset_cart_token_state();
+            $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+            wp_set_current_user( $this->auth->authenticate_via_cart_token( 0 ) );
+            $this->assertSame( 456, get_current_user_id() );
+
+            $wp             = new stdClass();
+            $wp->query_vars = [ 'rest_route' => $route ];
+            $this->auth->drop_cart_token_user_outside_store_api( $wp );
+
+            $this->assertSame( 0, get_current_user_id(), "route '{$route}'" );
+        }
+    }
+
+    /**
+     * A later determine_current_user callback may replace the token's user.
+     * The backstop only undoes the cart-token login, not someone else's.
+     */
+    public function test_backstop_leaves_a_user_that_replaced_the_token_user(): void {
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $this->auth->authenticate_via_cart_token( 0 );
+        wp_set_current_user( 123 );
+
+        $wp             = new stdClass();
+        $wp->query_vars = [ 'page_id' => '7' ];
+        $this->auth->drop_cart_token_user_outside_store_api( $wp );
+
+        $this->assertSame( 123, get_current_user_id() );
+        $this->assertTrue( GECX_Auth::is_cart_token_request() );
+    }
+
+    public function test_cart_token_user_is_kept_when_request_is_store_api(): void {
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        wp_set_current_user( $this->auth->authenticate_via_cart_token( 0 ) );
+
+        $wp             = new stdClass();
+        $wp->query_vars = [ 'rest_route' => '/wc/store/v1/cart/add-item' ];
+        $this->auth->drop_cart_token_user_outside_store_api( $wp );
+
+        $this->assertSame( 456, get_current_user_id() );
+    }
+
+    /**
+     * Only a cart-token login is undone. A shopper logged in by cookie keeps
+     * their session on every page.
+     */
+    public function test_cookie_user_is_untouched_by_the_parse_request_backstop(): void {
+        wp_set_current_user( 123 );
+
+        $wp             = new stdClass();
+        $wp->query_vars = [ 'page_id' => '7' ];
+        $this->auth->drop_cart_token_user_outside_store_api( $wp );
+
+        $this->assertSame( 123, get_current_user_id() );
+    }
+
+    public function test_parse_request_backstop_runs_before_rest_dispatch(): void {
+        $priority = null;
+        foreach ( $GLOBALS['gecx_test_action_priorities']['parse_request'] ?? [] as [ $callback, $registered_priority ] ) {
+            if ( [ $this->auth, 'drop_cart_token_user_outside_store_api' ] === $callback ) {
+                $priority = $registered_priority;
+            }
+        }
+
+        // rest_api_loaded() is on parse_request at 10 and exits after dispatch.
+        $this->assertNotNull( $priority );
+        $this->assertLessThan( 10, $priority );
+    }
+
+    /**
      * admin-ajax.php loads WordPress without calling wp(), so parse_request()
      * never runs, no REST route is dispatched, and 'rest_pre_dispatch' never
      * fires. A rest_route parameter there names nothing, and honouring it

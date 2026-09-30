@@ -172,8 +172,9 @@ class GECX_Rest_Console_API {
 
     /**
      * Check permissions for secret API route.
-     * Accepts authenticated WooCommerce API key calls (manage_woocommerce or manage_options),
-     * or browser session cookie with valid WP REST nonce and manage_options capability.
+     * Accepts authenticated WooCommerce API key calls, or a browser session
+     * cookie with a valid WP REST nonce. Either way the user must hold
+     * manage_woocommerce or manage_options.
      */
     public static function check_admin_permissions( \WP_REST_Request $request ) {
         // A Cart-Token identifies a shopper session, never a store operator.

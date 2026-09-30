@@ -155,6 +155,11 @@ class GECX_Auth {
     private static bool $authenticated_via_cart_token = false;
 
     /**
+     * Request-scoped: the user a Cart-Token resolved, or 0.
+     */
+    private static int $cart_token_user_id = 0;
+
+    /**
      * Re-entrancy guard. user_can() applies the 'user_has_cap' filter, which
      * third-party code may hook with calls back into wp_get_current_user().
      */
@@ -170,6 +175,54 @@ class GECX_Auth {
         // Backstop, on the dispatch path rather than in individual permission
         // callbacks. See block_cart_token_off_store_api().
         add_filter( 'rest_pre_dispatch', [ $this, 'block_cart_token_off_store_api' ], 10, 3 );
+
+        // Priority 0: rest_api_loaded() dispatches REST requests on this hook
+        // at 10 and exits, so this has to run first. See
+        // drop_cart_token_user_outside_store_api().
+        add_action( 'parse_request', [ $this, 'drop_cart_token_user_outside_store_api' ], 0 );
+    }
+
+    /**
+     * Logs out a cart-token user once WordPress has resolved a route that is
+     * not a Store API cart route.
+     *
+     * authenticate_via_cart_token() has to decide from an inferred route,
+     * because 'determine_current_user' fires before WP::parse_request(). The
+     * rest_pre_dispatch backstop only reconciles that inference for requests
+     * WordPress goes on to dispatch as REST. This reconciles the requests it
+     * serves as ordinary pages, from parse_request onward: template_redirect
+     * and its form handlers (WooCommerce's save_address and
+     * save_account_details among them) and the page render.
+     *
+     * It cannot reach anything earlier. plugins_loaded, init and wp_loaded
+     * fire before parse_request, so WooCommerce's WC_Form_Handler actions on
+     * wp_loaded (checkout, add to cart, cart update, order cancel and the
+     * process_* handlers) and any third-party code on those hooks still run
+     * as the token's user. Those WooCommerce handlers either require a nonce
+     * or only touch the cart, which the token already controls.
+     *
+     * Only the token's user is logged out. If a later determine_current_user
+     * callback replaced them with someone else, that user is left alone. The
+     * flag stays raised either way, so privileged endpoints keep rejecting.
+     *
+     * @param mixed $wp The WP instance.
+     */
+    public function drop_cart_token_user_outside_store_api( $wp ): void {
+        if ( ! self::$authenticated_via_cart_token ) {
+            return;
+        }
+
+        $route = ( is_object( $wp ) && isset( $wp->query_vars['rest_route'] ) ) ? $wp->query_vars['rest_route'] : null;
+        if ( self::is_store_api_route( $route ) ) {
+            return;
+        }
+
+        if ( self::$cart_token_user_id <= 0 || get_current_user_id() !== self::$cart_token_user_id ) {
+            return;
+        }
+
+        // phpcs:ignore Generic.PHP.ForbiddenFunctions.Discouraged, Generic.PHP.ForbiddenFunctions.Found -- Undo the cart-token login on a request WordPress did not route to the Store API cart.
+        wp_set_current_user( 0 );
     }
 
     /**
@@ -374,6 +427,7 @@ class GECX_Auth {
         }
 
         self::$authenticated_via_cart_token = false;
+        self::$cart_token_user_id           = 0;
         self::$resolving_cart_token         = false;
     }
 
@@ -487,6 +541,7 @@ class GECX_Auth {
         // keeping the flag raised is the safe direction: it only ever causes
         // privileged endpoints to reject.
         self::$authenticated_via_cart_token = true;
+        self::$cart_token_user_id           = $token_user_id;
         return $token_user_id;
     }
 
@@ -1031,16 +1086,29 @@ class GECX_Auth {
     /**
      * Extracts the REST route from a request path, as WordPress does.
      *
-     * The rewrite rule WordPress installs strips the home path and REST url
-     * prefix and hands the remainder to the server as the route, so the home path
-     * is stripped and the prefix is required at offset 0.
-     * A path with no prefix at the site root is not a pretty-permalink REST request
-     * at all.
+     * rest_api_register_rewrites() installs two pairs of rules, one for
+     * <prefix>/ and one for <index>/<prefix>/ (index.php/wp-json/ by default,
+     * which is what rest_url() produces under PATHINFO permalinks). Each strips
+     * the home path and that prefix and hands the remainder to the server as the
+     * route, so the home path is stripped and one of the two prefixes is
+     * required at offset 0. A path with neither is not a REST request at all.
      *
      * @param string $request_uri Raw request URI.
      * @return string Route with a leading slash, or '' when none was found.
      */
     private static function route_from_path( string $request_uri ): string {
+        // The path only names a REST route when WordPress's REST rewrite rules
+        // are live. WP::parse_request() applies rewrite rules only when a
+        // permalink structure is set; with plain permalinks it routes on the
+        // query string alone, so the path says nothing about what will be
+        // dispatched. Any non-empty structure, PATHINFO included, gets both
+        // rule pairs described above. Plain-permalink stores still reach the
+        // Store API through ?rest_route=, which the tiers above handle.
+        $structure = function_exists( 'get_option' ) ? (string) get_option( 'permalink_structure', '' ) : '';
+        if ( '' === $structure ) {
+            return '';
+        }
+
         // Strip query string first without using parse_url to preserve the leading
         // path structure and avoid treating //host as a protocol-relative authority.
         $path = explode( '?', $request_uri, 2 )[0];
@@ -1067,14 +1135,21 @@ class GECX_Auth {
             return '';
         }
 
-        $expected_prefix = '/' . $prefix . '/';
-        if ( strpos( $path, $expected_prefix ) !== 0 ) {
-            return '';
+        // WP_Rewrite may not exist yet when this runs during plugins_loaded;
+        // its index is 'index.php' unless something has replaced it.
+        $index = ( isset( $GLOBALS['wp_rewrite'] ) && is_object( $GLOBALS['wp_rewrite'] ) && is_string( $GLOBALS['wp_rewrite']->index ?? null ) && '' !== $GLOBALS['wp_rewrite']->index )
+            ? trim( $GLOBALS['wp_rewrite']->index, '/' )
+            : 'index.php';
+
+        foreach ( [ '/' . $prefix . '/', '/' . $index . '/' . $prefix . '/' ] as $expected_prefix ) {
+            if ( strpos( $path, $expected_prefix ) === 0 ) {
+                // Keep the separator's trailing slash so the route is returned
+                // in the '/wc/store/v1/cart' form WordPress resolves it to.
+                return substr( $path, strlen( $expected_prefix ) - 1 );
+            }
         }
 
-        // Keep the separator's trailing slash so the route is returned in the
-        // '/wc/store/v1/cart' form WordPress resolves it to.
-        return substr( $path, strlen( $expected_prefix ) - 1 );
+        return '';
     }
 
     /**
