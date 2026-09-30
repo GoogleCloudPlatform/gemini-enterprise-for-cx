@@ -1,5 +1,8 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-09-30 - version 0.3.32
+* Split the `GECX_Rest_API` and `GECX_Admin` classes into one class per job. No behavior changes.
+
 2026-09-29 - version 0.3.31
 * Refresh every cart surface once when the agent changes the cart. `chat-messenger-update-cart` is handled a single time even when it reaches both `document` and `window`, the cart is read from the Store API on every theme, and a stale nonce is replaced and the read retried once after a 401 or 403.
 * Dispatch the WooCommerce Blocks `wc-blocks_added_to_cart` or `wc-blocks_removed_from_cart` event, chosen by whether the item count went up or down, so the block mini-cart refreshes its cart. The jQuery `added_to_cart` event, which many themes answer by opening a side cart, is no longer triggered unless the `gecx_cart_refresh_legacy_events` filter returns true. When it does, `added_to_cart` or `removed_from_cart` is triggered in place of the native event, which the block mini-cart derives from it.
