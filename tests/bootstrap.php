@@ -170,8 +170,8 @@ function gecx_reset_test_globals(): void {
     if ( class_exists( 'GECX_Auth' ) ) {
         GECX_Auth::reset_cart_token_state();
     }
-    if ( class_exists( 'GECX_Rest_API' ) && method_exists( 'GECX_Rest_API', 'reset_wc_auth_state' ) ) {
-        GECX_Rest_API::reset_wc_auth_state();
+    if ( class_exists( 'GECX_Rest_Console_API' ) ) {
+        GECX_Rest_Console_API::reset_wc_auth_state();
     }
 }
 
