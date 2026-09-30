@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.1
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -131,6 +131,9 @@ After the agent changes the cart, the plugin refreshes WooCommerce cart fragment
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 1.0.1 =
+* Admin JWTs now last 60 minutes instead of 5, so a merchant who leaves the Gemini Enterprise for CX console to build an agent can still link it when they return.
 
 = 1.0.0 =
 * First public release.

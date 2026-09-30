@@ -1,5 +1,8 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-09-30 - version 1.0.1
+* Admin JWTs now last 60 minutes instead of 5, so a merchant who leaves the Gemini Enterprise for CX console to build an agent can still link it when they return.
+
 2026-09-30 - version 1.0.0
 * First public release.
 * Tighten how cart-token authentication decides that a request is for the WooCommerce Store API, and drop a cart-token login once WordPress has routed the request anywhere else.

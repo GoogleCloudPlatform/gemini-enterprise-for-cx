@@ -77,6 +77,17 @@ class GECX_Auth {
     private const GUEST_JWT_CACHE_TTL_SECONDS = 300;
 
     /**
+     * Default lifetime (60 minutes) of an admin JWT.
+     *
+     * The settings page mints one when it renders and puts it in the
+     * Connect with Google Cloud link, and the console keeps it for the link and
+     * unlink calls that follow. A merchant with no agent yet leaves the console
+     * to onboard and build one, which can take 10-20 minutes, and the token has
+     * to outlast that detour or the link call fails when they return.
+     */
+    public const ADMIN_JWT_TTL_SECONDS = 3600;
+
+    /**
      * Number of polls while waiting for a concurrent keypair generation.
      */
     private const KEYPAIR_WAIT_ATTEMPTS = 20;
@@ -1181,8 +1192,7 @@ class GECX_Auth {
      * POST /gecx/v1/auth-context and held in the DOM as a property of the
      * widget element, where any script on the page can read it, so it must not
      * carry a claim that grants anything. An operator who needs one calls
-     * generate_admin_jwt(), which gates on capability and lives for 300
-     * seconds rather than an hour.
+     * generate_admin_jwt(), which gates on capability.
      *
      * @param int|null $user_id Optional user ID. If null, resolved from current logged-in user or defaults to 0 (guest).
      * @param int $expiration Expiration duration in seconds (default 3600).
@@ -1197,11 +1207,11 @@ class GECX_Auth {
      * Generate a signed short-lived admin JWT with is_admin: true for management actions.
      *
      * @param int|null $user_id Optional user ID. If null, the current logged-in user ID is used.
-     * @param int $expiration Expiration duration in seconds (default 300).
+     * @param int $expiration Expiration duration in seconds (default ADMIN_JWT_TTL_SECONDS).
      * @param string|null $email Optional email. If null, resolved from user ID or current user.
      * @return string|null Signed JWT string, or null if the user is unauthorized or the store's RSA private key is unavailable.
      */
-    public static function generate_admin_jwt( ?int $user_id = null, int $expiration = 300, ?string $email = null ): ?string {
+    public static function generate_admin_jwt( ?int $user_id = null, int $expiration = self::ADMIN_JWT_TTL_SECONDS, ?string $email = null ): ?string {
         return self::build_admin_jwt( $user_id, $expiration, $email, true );
     }
 
@@ -1215,11 +1225,11 @@ class GECX_Auth {
      * accepts the signed unlink request.
      *
      * @param int|null    $user_id    Optional user ID.
-     * @param int         $expiration Expiration duration in seconds (default 300).
+     * @param int         $expiration Expiration duration in seconds (default ADMIN_JWT_TTL_SECONDS).
      * @param string|null $email      Optional email.
      * @return string|null Signed JWT string, or null if unavailable.
      */
-    public static function generate_existing_rs256_admin_jwt( ?int $user_id = null, int $expiration = 300, ?string $email = null ): ?string {
+    public static function generate_existing_rs256_admin_jwt( ?int $user_id = null, int $expiration = self::ADMIN_JWT_TTL_SECONDS, ?string $email = null ): ?string {
         if ( null === $user_id ) {
             $logged_in_id = ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() && function_exists( 'get_current_user_id' ) )
                 ? (int) get_current_user_id()
