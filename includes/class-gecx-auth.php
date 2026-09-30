@@ -221,6 +221,7 @@ class GECX_Auth {
             return;
         }
 
+        // phpcs:ignore Generic.PHP.ForbiddenFunctions.Discouraged, Generic.PHP.ForbiddenFunctions.Found -- Undo the cart-token login on a request WordPress did not route to the Store API cart.
         wp_set_current_user( 0 );
     }
 
