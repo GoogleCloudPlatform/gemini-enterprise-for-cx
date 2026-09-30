@@ -1386,6 +1386,7 @@ if ( ! function_exists( 'rest_get_url_prefix' ) ) {
 if ( ! function_exists( 'add_action' ) ) {
     function add_action( string $hook_name, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
         $GLOBALS['gecx_test_action_callbacks'][ $hook_name ] = $callback;
+        $GLOBALS['gecx_test_action_priorities'][ $hook_name ][] = [ $callback, $priority ];
         return true;
     }
 }

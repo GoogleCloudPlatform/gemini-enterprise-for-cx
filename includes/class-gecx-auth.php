@@ -170,6 +170,40 @@ class GECX_Auth {
         // Backstop, on the dispatch path rather than in individual permission
         // callbacks. See block_cart_token_off_store_api().
         add_filter( 'rest_pre_dispatch', [ $this, 'block_cart_token_off_store_api' ], 10, 3 );
+
+        // Priority 0: rest_api_loaded() dispatches REST requests on this hook
+        // at 10 and exits, so this has to run first. See
+        // drop_cart_token_user_outside_store_api().
+        add_action( 'parse_request', [ $this, 'drop_cart_token_user_outside_store_api' ], 0 );
+    }
+
+    /**
+     * Logs out a cart-token user once WordPress has resolved a route that is
+     * not a Store API cart route.
+     *
+     * authenticate_via_cart_token() has to decide from an inferred route,
+     * because 'determine_current_user' fires before WP::parse_request(). The
+     * rest_pre_dispatch backstop only reconciles that inference for requests
+     * WordPress goes on to dispatch as REST. A request it serves as an
+     * ordinary page never reaches it, and the token's user would otherwise
+     * stay current for the whole page render and its form handlers. This
+     * reconciles those.
+     *
+     * The flag stays raised, so privileged endpoints keep rejecting.
+     *
+     * @param mixed $wp The WP instance.
+     */
+    public function drop_cart_token_user_outside_store_api( $wp ): void {
+        if ( ! self::$authenticated_via_cart_token ) {
+            return;
+        }
+
+        $route = ( is_object( $wp ) && isset( $wp->query_vars['rest_route'] ) ) ? $wp->query_vars['rest_route'] : null;
+        if ( self::is_store_api_route( $route ) ) {
+            return;
+        }
+
+        wp_set_current_user( 0 );
     }
 
     /**
@@ -1041,6 +1075,18 @@ class GECX_Auth {
      * @return string Route with a leading slash, or '' when none was found.
      */
     private static function route_from_path( string $request_uri ): string {
+        // The path only names a REST route when WordPress's own REST rewrite
+        // rule is live, which needs pretty permalinks. With plain permalinks
+        // WordPress routes on the query string alone, so the path says
+        // nothing about what will be dispatched. PATHINFO structures are refused
+        // for the same reason: their REST base is /index.php/wp-json, and a
+        // bare /wp-json path is not routed there. Both still reach the Store
+        // API through ?rest_route=, which the tiers above handle.
+        $structure = function_exists( 'get_option' ) ? (string) get_option( 'permalink_structure', '' ) : '';
+        if ( '' === $structure || false !== strpos( $structure, 'index.php' ) ) {
+            return '';
+        }
+
         // Strip query string first without using parse_url to preserve the leading
         // path structure and avoid treating //host as a protocol-relative authority.
         $path = explode( '?', $request_uri, 2 )[0];
