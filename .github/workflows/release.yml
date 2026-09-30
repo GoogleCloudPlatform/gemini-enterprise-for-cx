@@ -79,3 +79,50 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: build/*.zip
+
+      # Uploads the same archive to the WooCommerce.com Marketplace listing
+      # (https://woocommerce.com/products/gemini-enterprise-for-cx/). The deploy
+      # endpoint only updates an existing product; Woo then runs its own QIT
+      # checks before publishing the version. A manual run with a v* tag as the
+      # ref redeploys that tag.
+      - name: Deploy to WooCommerce.com
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.event.inputs.ref, 'v')
+        env:
+          WOO_USER: ${{ secrets.WOO_DEPLOY_USER }}
+          WOO_PASS: ${{ secrets.WOO_DEPLOY_APP_PASSWORD }}
+          WOO_PRODUCT_ID: ${{ vars.WOO_PRODUCT_ID || secrets.WOO_PRODUCT_ID || '18734006901326' }}
+        run: |
+          if [ -z "${WOO_USER}" ] || [ -z "${WOO_PASS}" ]; then
+            echo "WOO_DEPLOY_USER and WOO_DEPLOY_APP_PASSWORD must be set to deploy to WooCommerce.com." >&2
+            exit 1
+          fi
+          version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
+          curl --silent --show-error --fail-with-body -X POST \
+            https://woocommerce.com/wp-json/wc/submission/runner/v1/product/deploy \
+            -F "file=@build/gemini-enterprise-for-cx-${version}.zip" \
+            -F "product_id=${WOO_PRODUCT_ID}" \
+            -F "username=${WOO_USER}" \
+            -F "password=${WOO_PASS}" \
+            -F "version=${version}"
+          echo
+
+      - name: Report WooCommerce.com deploy status
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.event.inputs.ref, 'v')
+        env:
+          WOO_USER: ${{ secrets.WOO_DEPLOY_USER }}
+          WOO_PASS: ${{ secrets.WOO_DEPLOY_APP_PASSWORD }}
+          WOO_PRODUCT_ID: ${{ vars.WOO_PRODUCT_ID || secrets.WOO_PRODUCT_ID || '18734006901326' }}
+        run: |
+          # Woo processes the upload asynchronously. Print the status a few
+          # times so the run log shows how the deploy is progressing; review
+          # results also arrive by email and in the vendor dashboard.
+          for attempt in 1 2 3 4 5 6; do
+            sleep 30
+            echo "Status check ${attempt}:"
+            curl --silent --show-error --fail-with-body -X POST \
+              https://woocommerce.com/wp-json/wc/submission/runner/v1/product/deploy/status \
+              -F "product_id=${WOO_PRODUCT_ID}" \
+              -F "username=${WOO_USER}" \
+              -F "password=${WOO_PASS}"
+            echo
+          done
