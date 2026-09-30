@@ -1,0 +1,7 @@
+# Every file needs a review from one of the maintainers. With "Require review
+# from Code Owners" on in the main branch ruleset, a pull request cannot merge
+# without one.
+#
+# Owners must have write access to the repository, or GitHub ignores the entry.
+
+* @rmoriar1 @arnavaroraGoogle @treyridley @forsonkelvin
