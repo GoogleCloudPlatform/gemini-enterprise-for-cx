@@ -4,13 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+  # Packages whatever "Use workflow from" names. Only a v* tag chosen there
+  # deploys: the deploy jobs test github.ref, which a run cannot choose freely
+  # the way it could a text input, and which the deploy environments' tag rules
+  # also check. There is deliberately no ref input.
   workflow_dispatch:
     inputs:
-      ref:
-        description: 'Tag or ref to package'
-        required: true
       wordpress_org_dry_run:
-        description: 'WordPress.org: check out SVN and show the diff without committing. Only a v* tag ref can commit.'
+        description: 'WordPress.org: check out SVN and show the diff without committing. Only a run from a v* tag can commit.'
         type: boolean
         default: true
 
@@ -19,7 +20,7 @@ permissions: {}
 # One release run per ref at a time. Never cancel a run in progress: it may be
 # partway through an SVN commit or a Marketplace upload.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.inputs.ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -28,13 +29,22 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # Creates the GitHub release and uploads the archive to it.
+    outputs:
+      # The commit this job verified and archived. Later jobs that need the
+      # source check out this, not the ref, so a tag or branch moved mid-run
+      # cannot put an unverified commit in front of a store.
+      sha: ${{ steps.source.outputs.sha }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
+
+      - name: Record the commit being released
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up PHP
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
@@ -104,13 +114,19 @@ jobs:
   # Uploads the same archive to the WooCommerce.com Marketplace listing
   # (https://woocommerce.com/products/gemini-enterprise-for-cx/). The deploy
   # endpoint only updates an existing product; Woo then runs its own QIT checks
-  # before publishing the version. A manual run with a v* tag as the ref
-  # redeploys that tag.
+  # before publishing the version. A manual run from a v* tag redeploys that
+  # tag.
+  #
+  # The woocommerce environment holds the deploy credentials and should require
+  # a reviewer and allow only v* tags. See "Releases" in CONTRIBUTING.md.
   woocommerce:
     name: Deploy to WooCommerce.com
     needs: package
-    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.event.inputs.ref, 'v')
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    environment:
+      name: woocommerce
+      url: https://woocommerce.com/products/gemini-enterprise-for-cx/
     permissions:
       contents: read # Reads the repository and the build artifact.
 
@@ -121,16 +137,26 @@ jobs:
           name: plugin-zip
           path: build
 
-      - name: Deploy to WooCommerce.com
+      # The credentials go to curl as files (-F name=<file), never as
+      # arguments, so they are not in the process list while curl runs.
+      # printf is a shell builtin, so writing them spawns no process either.
+      - name: Write the deploy credentials
         env:
           WOO_USER: ${{ secrets.WOO_DEPLOY_USER }}
           WOO_PASS: ${{ secrets.WOO_DEPLOY_APP_PASSWORD }}
-          WOO_PRODUCT_ID: ${{ vars.WOO_PRODUCT_ID || secrets.WOO_PRODUCT_ID || '18734006901326' }}
         run: |
           if [ -z "${WOO_USER}" ] || [ -z "${WOO_PASS}" ]; then
-            echo "WOO_DEPLOY_USER and WOO_DEPLOY_APP_PASSWORD must be set to deploy to WooCommerce.com." >&2
+            echo "WOO_DEPLOY_USER and WOO_DEPLOY_APP_PASSWORD must be set in the woocommerce environment to deploy to WooCommerce.com." >&2
             exit 1
           fi
+          umask 077
+          printf '%s' "${WOO_USER}" > "${RUNNER_TEMP}/woo-user"
+          printf '%s' "${WOO_PASS}" > "${RUNNER_TEMP}/woo-pass"
+
+      - name: Deploy to WooCommerce.com
+        env:
+          WOO_PRODUCT_ID: ${{ vars.WOO_PRODUCT_ID || secrets.WOO_PRODUCT_ID || '18734006901326' }}
+        run: |
           zip_path="$(ls build/gemini-enterprise-for-cx-*.zip)"
           version="$(basename "${zip_path}" .zip)"
           version="${version#gemini-enterprise-for-cx-}"
@@ -139,15 +165,13 @@ jobs:
             https://woocommerce.com/wp-json/wc/submission/runner/v1/product/deploy \
             -F "file=@${zip_path}" \
             -F "product_id=${WOO_PRODUCT_ID}" \
-            -F "username=${WOO_USER}" \
-            -F "password=${WOO_PASS}" \
+            -F "username=<${RUNNER_TEMP}/woo-user" \
+            -F "password=<${RUNNER_TEMP}/woo-pass" \
             -F "version=${version}"
           echo
 
       - name: Report WooCommerce.com deploy status
         env:
-          WOO_USER: ${{ secrets.WOO_DEPLOY_USER }}
-          WOO_PASS: ${{ secrets.WOO_DEPLOY_APP_PASSWORD }}
           WOO_PRODUCT_ID: ${{ vars.WOO_PRODUCT_ID || secrets.WOO_PRODUCT_ID || '18734006901326' }}
         run: |
           # Woo processes the upload asynchronously. Print the status a few
@@ -159,32 +183,43 @@ jobs:
             curl --silent --show-error --fail-with-body -X POST \
               https://woocommerce.com/wp-json/wc/submission/runner/v1/product/deploy/status \
               -F "product_id=${WOO_PRODUCT_ID}" \
-              -F "username=${WOO_USER}" \
-              -F "password=${WOO_PASS}"
+              -F "username=<${RUNNER_TEMP}/woo-user" \
+              -F "password=<${RUNNER_TEMP}/woo-pass"
             echo
           done
+
+      - name: Remove the deploy credentials
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/woo-user" "${RUNNER_TEMP}/woo-pass"
 
   # Commits the release to the WordPress.org Plugin Directory
   # (https://wordpress.org/plugins/gemini-enterprise-for-cx/): trunk, a
   # tags/<version> copy, and the listing assets in .wordpress-org/. Trunk is
-  # built with git archive, so the export-ignore rules in .gitattributes keep
-  # it identical to the release zip. The action skips versions already tagged
-  # in SVN.
+  # built with git archive from the commit the package job verified, so the
+  # export-ignore rules in .gitattributes keep it identical to the release zip.
+  # The action skips versions already tagged in SVN.
   #
-  # Tag pushes commit for real. Manual runs are dry runs (SVN checkout and diff,
-  # no commit) unless the ref is a v* tag and wordpress_org_dry_run is false.
+  # Runs for a tag push, and for a manual run from a v* tag with
+  # wordpress_org_dry_run unticked. Every other run gets wordpress-org-dry-run
+  # below instead. The wordpress-org environment holds the SVN credentials and
+  # should require a reviewer and allow only v* tags. See "Releases" in
+  # CONTRIBUTING.md.
   wordpress-org:
     name: Deploy to WordPress.org
     needs: package
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.wordpress_org_dry_run == false)
     runs-on: ubuntu-latest
+    environment:
+      name: wordpress-org
+      url: https://wordpress.org/plugins/gemini-enterprise-for-cx/
     permissions:
-      contents: read # Reads the repository and the build artifact.
+      contents: read # Reads the repository.
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ needs.package.outputs.sha }}
           persist-credentials: false
 
       - name: Read the plugin version
@@ -196,9 +231,44 @@ jobs:
       - name: Deploy to the WordPress.org SVN repository
         uses: 10up/action-wordpress-plugin-deploy@54bd289b8525fd23a5c365ec369185f2966529c2 # 2.3.0
         with:
-          dry-run: ${{ !(startsWith(github.ref, 'refs/tags/v') || (startsWith(github.event.inputs.ref, 'v') && github.event.inputs.wordpress_org_dry_run == 'false')) }}
+          dry-run: false
         env:
           SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
           SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+          SLUG: gemini-enterprise-for-cx
+          VERSION: ${{ steps.version.outputs.version }}
+
+  # Checks out SVN and shows what a deploy of this commit would change, without
+  # committing. Needs no environment and no secrets: the SVN checkout is
+  # anonymous, and the action only insists that the credential variables are
+  # non-empty, so placeholders stand in for them.
+  wordpress-org-dry-run:
+    name: WordPress.org dry run
+    needs: package
+    if: ${{ !(startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.wordpress_org_dry_run == false)) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Reads the repository.
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.package.outputs.sha }}
+          persist-credentials: false
+
+      - name: Read the plugin version
+        id: version
+        run: |
+          version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Show the WordPress.org SVN diff
+        uses: 10up/action-wordpress-plugin-deploy@54bd289b8525fd23a5c365ec369185f2966529c2 # 2.3.0
+        with:
+          dry-run: true
+        env:
+          SVN_USERNAME: dry-run
+          SVN_PASSWORD: dry-run
           SLUG: gemini-enterprise-for-cx
           VERSION: ${{ steps.version.outputs.version }}

@@ -68,18 +68,29 @@ archive is produced with `git archive`, so the `export-ignore` rules in
 workflow refuses to publish if the tag and the plugin version disagree, if the
 four version declarations disagree, or if development files reach the archive.
 
-Publishing to WordPress.org is a manual step, on purpose — it is the one action
-that is not reversible:
+Pushing a `v*` tag (`git tag v0.3.12 && git push origin v0.3.12`) builds the
+zip, attaches it to a GitHub release, and deploys it to WooCommerce.com and to
+the WordPress.org Plugin Directory (trunk, `tags/<version>` and the
+`.wordpress-org/` listing assets). A WordPress.org commit is the one step that
+cannot be taken back: stores with auto-updates install it within hours.
 
-1. Tag the release (`git tag v0.3.12 && git push origin v0.3.12`) and let the
-   workflow build and attach the zip.
-2. Download that zip. It is the exact artifact to publish; do not rebuild it.
-3. Copy its contents into the `trunk/` directory of the plugin's SVN checkout,
-   `svn cp trunk tags/<version>`, and `svn ci`.
-4. Copy WordPress.org directory assets (banners, icons, screenshots) from
-   `.wordpress-org/` into the top-level `assets/` directory of the SVN checkout
-   (alongside `trunk/` and `tags/`, not inside `trunk/`), and commit them with
-   `svn ci assets`.
-5. Confirm `Stable tag` in `trunk/readme.txt` names the tag you just created.
-   WordPress.org serves whichever release the stable tag names, regardless of
-   what else is in SVN.
+Only a tag deploys. A manual run packages whatever "Use workflow from" names
+and does a WordPress.org dry run; run it from a `v*` tag to redeploy that tag,
+and untick `wordpress_org_dry_run` to let it commit to WordPress.org.
+
+The deploy jobs run in two GitHub environments, which hold the credentials and
+keep a single compromised account from publishing to every store.
+Configure both under Settings > Environments:
+
+| Environment     | Secrets                                      | Protection                                                                 |
+|-----------------|----------------------------------------------|----------------------------------------------------------------------------|
+| `wordpress-org` | `SVN_USERNAME`, `SVN_PASSWORD`               | Required reviewers with "Prevent self-review"; deployment tags `v*` only |
+| `woocommerce`   | `WOO_DEPLOY_USER`, `WOO_DEPLOY_APP_PASSWORD` | Required reviewers with "Prevent self-review"; deployment tags `v*` only |
+
+Keep those secrets out of the repository-level secrets: any workflow on any
+branch can read repository secrets, so a write-access account could read them
+without going through a reviewer. Add a tag ruleset that limits creating `v*`
+tags to release managers.
+
+After a release, confirm `Stable tag` in `readme.txt` names the tag you just
+created. WordPress.org serves whichever release the stable tag names.
