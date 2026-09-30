@@ -854,7 +854,7 @@ class AuthTest extends GECX_TestCase {
         $this->assertTrue( $payload['is_admin'] );
         $this->assertEquals( 'example.com', $payload['iss'] );
         $this->assertTrue( isset( $payload['iat'] ) && isset( $payload['exp'] ) );
-        $this->assertEquals( $payload['iat'] + 300, $payload['exp'] );
+        $this->assertEquals( $payload['iat'] + 3600, $payload['exp'] );
     }
 
     public function test_generate_admin_jwt_custom_expiration(): void {
@@ -1057,9 +1057,9 @@ class AuthTest extends GECX_TestCase {
         $this->assertEquals( 'admin@example.com', $payload['user_email'] );
         $this->assertEquals( 'example.com', $payload['iss'] );
         $this->assertEquals( 'gecx.cloud.google.com', $payload['aud'] );
-        // The admin TTL is 300 seconds and nothing downstream caps it, so the
+        // The admin TTL is 3600 seconds and nothing downstream caps it, so the
         // token must not be able to outlive it.
-        $this->assertEquals( $payload['iat'] + 300, $payload['exp'] );
+        $this->assertEquals( $payload['iat'] + 3600, $payload['exp'] );
         $this->assertArrayNotHasKey( 'loyalty_tier', $payload );
     }
 
