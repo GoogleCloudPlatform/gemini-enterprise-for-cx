@@ -116,13 +116,10 @@ class GECX_Admin_Settings_Page {
             true
         );
 
-        if ( function_exists( 'wp_set_script_translations' ) ) {
-            wp_set_script_translations(
-                'gecx-admin-js',
-                'gemini-enterprise-for-cx',
-                plugin_dir_path( $this->plugin_file ) . 'languages'
-            );
-        }
+        wp_set_script_translations(
+            'gecx-admin-js',
+            'gemini-enterprise-for-cx'
+        );
 
         wp_localize_script( 'gecx-admin-js', 'gecx_admin_params', [
             'save_nonce'           => wp_create_nonce( 'gecx_save_agent_nonce' ),
@@ -686,11 +683,11 @@ class GECX_Admin_Settings_Page {
      */
     public function ajax_save_button_config(): void {
         if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
-            wp_send_json_error( [ 'message' => 'Invalid nonce' ], 403 );
+            wp_send_json_error( [ 'message' => __( 'Invalid nonce', 'gemini-enterprise-for-cx' ) ], 403 );
             return;
         }
         if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
+            wp_send_json_error( [ 'message' => __( 'Unauthorized', 'gemini-enterprise-for-cx' ) ], 403 );
             return;
         }
 
@@ -718,11 +715,11 @@ class GECX_Admin_Settings_Page {
      */
     public function ajax_toggle_app_embed(): void {
         if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
-            wp_send_json_error( [ 'message' => 'Invalid nonce' ], 403 );
+            wp_send_json_error( [ 'message' => __( 'Invalid nonce', 'gemini-enterprise-for-cx' ) ], 403 );
             return;
         }
         if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
+            wp_send_json_error( [ 'message' => __( 'Unauthorized', 'gemini-enterprise-for-cx' ) ], 403 );
             return;
         }
 
@@ -744,11 +741,11 @@ class GECX_Admin_Settings_Page {
      */
     public function ajax_toggle_pdp_prompts(): void {
         if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
-            wp_send_json_error( [ 'message' => 'Invalid nonce' ], 403 );
+            wp_send_json_error( [ 'message' => __( 'Invalid nonce', 'gemini-enterprise-for-cx' ) ], 403 );
             return;
         }
         if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
+            wp_send_json_error( [ 'message' => __( 'Unauthorized', 'gemini-enterprise-for-cx' ) ], 403 );
             return;
         }
 
@@ -807,11 +804,11 @@ class GECX_Admin_Settings_Page {
      */
     public function ajax_dismiss_notice(): void {
         if ( false === check_ajax_referer( 'gecx_dismiss_notice_nonce', 'nonce', false ) ) {
-            wp_send_json_error( [ 'message' => 'Invalid nonce' ], 403 );
+            wp_send_json_error( [ 'message' => __( 'Invalid nonce', 'gemini-enterprise-for-cx' ) ], 403 );
             return;
         }
         if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
+            wp_send_json_error( [ 'message' => __( 'Unauthorized', 'gemini-enterprise-for-cx' ) ], 403 );
             return;
         }
         update_option( 'gecx_dismiss_activation_notice', true );
