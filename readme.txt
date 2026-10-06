@@ -1,6 +1,6 @@
 === Gemini Enterprise for CX ===
 Contributors: google
-Tags: woocommerce, marketing, ai, agent, chatbot
+Tags: woocommerce, ai, chatbot, ai agent, shopping assistant
 Requires at least: 6.2
 WC requires at least: 7.1
 WC tested up to: 11.1
@@ -10,11 +10,11 @@ Stable tag: 1.0.1
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
-Add an AI shopping agent from Google Cloud to your WooCommerce store. It answers product questions, gives advice and adds items to the cart.
+AI shopping assistant and chatbot for your WooCommerce store, from Google Cloud. Answers product questions, gives advice and adds items to the cart.
 
 == Description ==
 
-Gemini Enterprise for CX connects your WooCommerce store to Google's Gemini Enterprise for CX (GECX) service. It adds a chat widget to your storefront where shoppers talk to an AI agent that knows your products and store policies and can add items to their cart.
+Gemini Enterprise for CX adds an AI shopping assistant to your WooCommerce store. Shoppers open a chat widget on your storefront and talk to an AI agent that knows your products and store policies, answers their questions and manages their cart. The agent runs on Google's Gemini Enterprise for CX (GECX) service.
 
 The plugin is an interface to the Gemini Enterprise for CX software as a service (SaaS) provided by Google Cloud. Connecting a store requires a Google account with access to Gemini Enterprise for CX.
 
