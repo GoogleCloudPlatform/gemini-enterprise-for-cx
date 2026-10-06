@@ -1083,6 +1083,15 @@ class AdminTest extends GECX_TestCase {
             (string) get_transient( 'gecx_admin_notice_error' )
         );
     }
+
+    public function test_enqueue_admin_assets_registers_script_translations(): void {
+        $admin = new GECX_Admin( '/path/to/gecx-agent.php' );
+        $admin->settings_page->add_settings_page();
+        $admin->settings_page->enqueue_admin_assets( 'marketing_page_gemini-enterprise-for-cx' );
+
+        $this->assertSame( 'gemini-enterprise-for-cx', $GLOBALS['gecx_test_script_translations']['gecx-admin-js']['domain'] );
+        $this->assertSame( '', $GLOBALS['gecx_test_script_translations']['gecx-admin-js']['path'] );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {

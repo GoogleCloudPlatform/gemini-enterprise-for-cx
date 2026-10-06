@@ -291,18 +291,16 @@ class GECX_Storefront {
             defined( 'GECX_VERSION' ) ? GECX_VERSION : null,
             true
         );
-        if ( function_exists( 'wp_set_script_translations' ) ) {
-            wp_set_script_translations(
-                'gecx-editor-blocks',
-                'gemini-enterprise-for-cx',
-                plugin_dir_path( $this->plugin_file ) . 'languages'
-            );
-        }
+        wp_set_script_translations(
+            'gecx-editor-blocks',
+            'gemini-enterprise-for-cx'
+        );
         register_block_type(
             'gecx/agent-button',
             [
                 'api_version'     => 2,
                 'title'           => __( 'Gemini Enterprise for CX Launcher', 'gemini-enterprise-for-cx' ),
+                'description'     => __( 'The AI shopping agent launcher button. Pair it with the "Manual" launcher placement.', 'gemini-enterprise-for-cx' ),
                 'category'        => 'widgets',
                 'editor_script'   => 'gecx-editor-blocks',
                 'render_callback' => [ $this, 'render_agent_button_shortcode' ],
@@ -317,6 +315,7 @@ class GECX_Storefront {
             [
                 'api_version'     => 2,
                 'title'           => __( 'Gemini Enterprise for CX Suggested Prompts', 'gemini-enterprise-for-cx' ),
+                'description'     => __( 'AI-generated questions about a product. In the Single Product template it uses the product being viewed; elsewhere, set a Product ID.', 'gemini-enterprise-for-cx' ),
                 'category'        => 'widgets',
                 'editor_script'   => 'gecx-editor-blocks',
                 'attributes'      => [
@@ -459,13 +458,10 @@ class GECX_Storefront {
             true
         );
 
-        if ( function_exists( 'wp_set_script_translations' ) ) {
-            wp_set_script_translations(
-                'gecx-storefront-js',
-                'gemini-enterprise-for-cx',
-                plugin_dir_path( $this->plugin_file ) . 'languages'
-            );
-        }
+        wp_set_script_translations(
+            'gecx-storefront-js',
+            'gemini-enterprise-for-cx'
+        );
 
         $is_cart     = function_exists( 'is_cart' ) && is_cart();
         $is_checkout = function_exists( 'is_checkout' ) && is_checkout();

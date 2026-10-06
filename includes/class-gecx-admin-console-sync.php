@@ -805,11 +805,11 @@ class GECX_Admin_Console_Sync {
      */
     public function ajax_unlink_agent(): void {
         if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
-            wp_send_json_error( [ 'message' => 'Invalid nonce' ], 403 );
+            wp_send_json_error( [ 'message' => __( 'Invalid nonce', 'gemini-enterprise-for-cx' ) ], 403 );
             return;
         }
         if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( [ 'message' => 'Unauthorized' ], 403 );
+            wp_send_json_error( [ 'message' => __( 'Unauthorized', 'gemini-enterprise-for-cx' ) ], 403 );
             return;
         }
 

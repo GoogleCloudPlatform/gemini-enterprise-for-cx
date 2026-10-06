@@ -26,6 +26,12 @@ const el = wp.element.createElement;
 const __ = (wp.i18n && wp.i18n.__) ? wp.i18n.__ : function(text) {
   return text;
 };
+const sprintf = (wp.i18n && wp.i18n.sprintf) ? wp.i18n.sprintf : function(format, ...args) {
+  let i = 0;
+  return format.replace(/%[sd]/g, function() {
+    return args[i++];
+  });
+};
 const blockEditor = wp.blockEditor || {};
 const useBlockProps = blockEditor.useBlockProps ?
     blockEditor.useBlockProps :
@@ -103,7 +109,11 @@ wp.blocks.registerBlockType('gecx/suggested-prompts', {
               }))) :
         null;
     const label = productId > 0 ?
-        __('Suggested prompts for product', 'gemini-enterprise-for-cx') + ' #' + productId :
+        sprintf(
+            /* translators: %d: Product ID. */
+            __('Suggested prompts for product #%d', 'gemini-enterprise-for-cx'),
+            productId
+        ) :
         __('Suggested prompts', 'gemini-enterprise-for-cx');
     return el(wp.element.Fragment, null, inspector, placeholder(label));
   },

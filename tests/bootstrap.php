@@ -1705,13 +1705,13 @@ if ( ! function_exists( 'check_ajax_referer' ) ) {
 }
 
 if ( ! function_exists( 'wp_send_json_success' ) ) {
-    function wp_send_json_success( $data = null, int $status_code = null ): void {
+    function wp_send_json_success( $data = null, ?int $status_code = null ): void {
         $GLOBALS['gecx_test_last_json_response'] = [ 'success' => true, 'data' => $data ];
     }
 }
 
 if ( ! function_exists( 'wp_send_json_error' ) ) {
-    function wp_send_json_error( $data = null, int $status_code = null ): void {
+    function wp_send_json_error( $data = null, ?int $status_code = null ): void {
         $GLOBALS['gecx_test_last_json_response'] = [ 'success' => false, 'data' => $data, 'status' => $status_code ];
     }
 }
@@ -2028,6 +2028,12 @@ if ( ! function_exists( 'wp_script_is' ) ) {
 if ( ! function_exists( 'wp_is_block_theme' ) ) {
     function wp_is_block_theme(): bool {
         return ! empty( $GLOBALS['gecx_test_is_block_theme'] );
+    }
+}
+
+if ( ! function_exists( 'wp_register_style' ) ) {
+    function wp_register_style( ...$args ): void {
+        $GLOBALS['gecx_test_registered_styles'][] = (string) ( $args[0] ?? '' );
     }
 }
 

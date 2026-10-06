@@ -534,6 +534,8 @@ class StorefrontTest extends GECX_TestCase {
 
         $this->assertContains( 'gecx-widget-script', $GLOBALS['gecx_test_enqueued_scripts'] );
         $this->assertContains( 'gecx-storefront-js', $GLOBALS['gecx_test_enqueued_scripts'] );
+        $this->assertSame( 'gemini-enterprise-for-cx', $GLOBALS['gecx_test_script_translations']['gecx-storefront-js']['domain'] );
+        $this->assertSame( '', $GLOBALS['gecx_test_script_translations']['gecx-storefront-js']['path'] );
     }
 
     public function test_agent_button_short_label_falls_back_to_a_translated_shop(): void {
@@ -1473,6 +1475,8 @@ JS;
         $this->assertIsArray( $block );
         $this->assertSame( 'gecx-editor-blocks', $block['editor_script'] );
         $this->assertSame( [ $storefront, 'render_agent_button_shortcode' ], $block['render_callback'] );
+        $this->assertSame( 'gemini-enterprise-for-cx', $GLOBALS['gecx_test_script_translations']['gecx-editor-blocks']['domain'] );
+        $this->assertSame( '', $GLOBALS['gecx_test_script_translations']['gecx-editor-blocks']['path'] );
     }
 
     public function test_suggested_prompts_block_is_server_rendered(): void {
