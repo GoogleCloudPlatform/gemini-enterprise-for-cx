@@ -5,8 +5,8 @@ on:
     tags:
       - 'v*'
   # Packages whatever "Use workflow from" names. Only a v* tag chosen there
-  # deploys: the deploy jobs test github.ref, which a run cannot choose freely
-  # the way it could a text input, and which the deploy environments' tag rules
+  # deploys: the deploy job tests github.ref, which a run cannot choose freely
+  # the way it could a text input, and which the deploy environment's tag rules
   # also check. There is deliberately no ref input.
   workflow_dispatch:
     inputs:
@@ -18,7 +18,7 @@ on:
 permissions: {}
 
 # One release run per ref at a time. Never cancel a run in progress: it may be
-# partway through an SVN commit or a Marketplace upload.
+# partway through an SVN commit.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -135,98 +135,21 @@ jobs:
             gh release create "${TAG}" build/*.zip --verify-tag --title "${TAG}" --notes-file build/notes.md
           fi
 
-  # Uploads the same archive to the WooCommerce.com Marketplace listing
-  # (https://woocommerce.com/products/gemini-enterprise-for-cx/). The deploy
-  # endpoint only updates an existing product; Woo then runs its own QIT checks
-  # before publishing the version. A manual run from a v* tag redeploys that
-  # tag.
+  # Commits the release to the WordPress.org Plugin Directory
+  # (https://wordpress.org/plugins/gemini-enterprise-for-cx/): trunk, a
+  # tags/<version> copy, and the listing assets in .wordpress-org/. Trunk is
+  # deployed from the verified release archive, keeping it identical to the
+  # release zip. The action skips versions already tagged in SVN.
   #
-  # The woocommerce environment holds the deploy credentials and should require
-  # a reviewer and allow only v* tags. See "Releases" in CONTRIBUTING.md.
-  woocommerce:
-    name: Deploy to WooCommerce.com
-    needs: package
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    environment:
-      name: woocommerce
-      url: https://woocommerce.com/products/gemini-enterprise-for-cx/
-    permissions:
-      contents: read # Reads the repository and the build artifact.
-
-    steps:
-      - name: Download the archive
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: plugin-zip
-          path: build
-
-      # The credentials go to curl as files (-F name=<file), never as
-      # arguments, so they are not in the process list while curl runs.
-      # printf is a shell builtin, so writing them spawns no process either.
-      - name: Write the deploy credentials
-        env:
-          WOO_USER: ${{ secrets.WOO_DEPLOY_USER }}
-          WOO_PASS: ${{ secrets.WOO_DEPLOY_APP_PASSWORD }}
-        run: |
-          if [ -z "${WOO_USER}" ] || [ -z "${WOO_PASS}" ]; then
-            echo "WOO_DEPLOY_USER and WOO_DEPLOY_APP_PASSWORD must be set in the woocommerce environment to deploy to WooCommerce.com." >&2
-            exit 1
-          fi
-          umask 077
-          printf '%s' "${WOO_USER}" > "${RUNNER_TEMP}/woo-user"
-          printf '%s' "${WOO_PASS}" > "${RUNNER_TEMP}/woo-pass"
-
-      - name: Deploy to WooCommerce.com
-        env:
-          WOO_PRODUCT_ID: ${{ vars.WOO_PRODUCT_ID || secrets.WOO_PRODUCT_ID || '18734006901326' }}
-        run: |
-          zip_path="$(ls build/gemini-enterprise-for-cx-*.zip)"
-          version="$(basename "${zip_path}" .zip)"
-          version="${version#gemini-enterprise-for-cx-}"
-          echo "Deploying ${zip_path} as version ${version}."
-          curl --silent --show-error --fail-with-body -X POST \
-            https://woocommerce.com/wp-json/wc/submission/runner/v1/product/deploy \
-            -F "file=@${zip_path}" \
-            -F "product_id=${WOO_PRODUCT_ID}" \
-            -F "username=<${RUNNER_TEMP}/woo-user" \
-            -F "password=<${RUNNER_TEMP}/woo-pass" \
-            -F "version=${version}"
-          echo
-
-      - name: Report WooCommerce.com deploy status
-        env:
-          WOO_PRODUCT_ID: ${{ vars.WOO_PRODUCT_ID || secrets.WOO_PRODUCT_ID || '18734006901326' }}
-        run: |
-          # Woo processes the upload asynchronously. Print the status a few
-          # times so the run log shows how the deploy is progressing; review
-          # results also arrive by email and in the vendor dashboard.
-          for attempt in 1 2 3 4 5 6; do
-            sleep 30
-            echo "Status check ${attempt}:"
-            curl --silent --show-error --fail-with-body -X POST \
-              https://woocommerce.com/wp-json/wc/submission/runner/v1/product/deploy/status \
-              -F "product_id=${WOO_PRODUCT_ID}" \
-              -F "username=<${RUNNER_TEMP}/woo-user" \
-              -F "password=<${RUNNER_TEMP}/woo-pass"
-            echo
-          done
-
-      - name: Remove the deploy credentials
-        if: always()
-        run: rm -f "${RUNNER_TEMP}/woo-user" "${RUNNER_TEMP}/woo-pass"
-
-        # Commits the release to the WordPress.org Plugin Directory
-        # (https://wordpress.org/plugins/gemini-enterprise-for-cx/): trunk, a
-        # tags/<version> copy, and the listing assets in .wordpress-org/. Trunk is
-        # deployed from the verified release archive, keeping it identical to the
-        # release zip. The action skips versions already tagged in SVN.
-        #
-        # Runs for a tag push, and for a manual run from a v* tag with
-        # wordpress_org_dry_run unticked. Every other run gets wordpress-org-dry-run
-        # below instead. The wordpress-org environment holds the SVN credentials and
-        # should require a reviewer and allow only v* tags. See "Releases" in
-        # CONTRIBUTING.md.
+  # The WooCommerce.com Marketplace listing
+  # (https://woocommerce.com/products/gemini-enterprise-for-cx/) syncs from this
+  # WordPress.org release, so there is no separate WooCommerce.com upload.
+  #
+  # Runs for a tag push, and for a manual run from a v* tag with
+  # wordpress_org_dry_run unticked. Every other run gets wordpress-org-dry-run
+  # below instead. The wordpress-org environment holds the SVN credentials and
+  # should require a reviewer and allow only v* tags. See "Releases" in
+  # CONTRIBUTING.md.
   wordpress-org:
     name: Deploy to WordPress.org
     needs: package

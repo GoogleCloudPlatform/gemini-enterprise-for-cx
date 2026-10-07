@@ -70,23 +70,23 @@ version disagree, if the four version declarations disagree, or if development
 files reach the archive.
 
 Pushing a `v*` tag (`git tag v0.3.12 && git push origin v0.3.12`) builds the
-zip, attaches it to a GitHub release, and deploys it to WooCommerce.com and to
-the WordPress.org Plugin Directory (trunk, `tags/<version>` and the
-`.wordpress-org/` listing assets). A WordPress.org commit is the one step that
+zip, attaches it to a GitHub release, and deploys it to the WordPress.org Plugin
+Directory (trunk, `tags/<version>` and the `.wordpress-org/` listing assets).
+The WooCommerce.com Marketplace listing syncs from WordPress.org, so there is no
+separate WooCommerce.com upload. A WordPress.org commit is the one step that
 cannot be taken back: stores with auto-updates install it within hours.
 
 Only a tag deploys. A manual run packages whatever "Use workflow from" names
 and does a WordPress.org dry run; run it from a `v*` tag to redeploy that tag,
 and untick `wordpress_org_dry_run` to let it commit to WordPress.org.
 
-The deploy jobs run in two GitHub environments, which hold the credentials and
-keep a single compromised account from publishing to every store.
-Configure both under Settings > Environments:
+The deploy job runs in a GitHub environment, which holds the SVN credentials
+and keeps a single compromised account from publishing to every store that
+installs the plugin. Configure it under Settings > Environments:
 
-| Environment     | Secrets                                      | Protection                                                                 |
-|-----------------|----------------------------------------------|----------------------------------------------------------------------------|
-| `wordpress-org` | `SVN_USERNAME`, `SVN_PASSWORD`               | Required reviewers with "Prevent self-review"; deployment tags `v*` only |
-| `woocommerce`   | `WOO_DEPLOY_USER`, `WOO_DEPLOY_APP_PASSWORD` | Required reviewers with "Prevent self-review"; deployment tags `v*` only |
+| Environment     | Secrets                        | Protection                                                               |
+|-----------------|--------------------------------|--------------------------------------------------------------------------|
+| `wordpress-org` | `SVN_USERNAME`, `SVN_PASSWORD` | Required reviewers with "Prevent self-review"; deployment tags `v*` only |
 
 Keep those secrets out of the repository-level secrets: any workflow on any
 branch can read repository secrets, so a write-access account could read them
