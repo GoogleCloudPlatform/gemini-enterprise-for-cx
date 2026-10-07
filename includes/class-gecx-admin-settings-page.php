@@ -108,11 +108,19 @@ class GECX_Admin_Settings_Page {
             . ' .gecx-info-tip:hover .gecx-info-tip__text, .gecx-info-tip:focus .gecx-info-tip__text { visibility: visible; opacity: 1; }'
         );
 
+        $admin_asset_file = dirname( $this->plugin_file ) . '/build/scripts/admin/index.min.asset.php';
+        $admin_asset      = file_exists( $admin_asset_file ) ? require $admin_asset_file : [
+            'dependencies' => [ 'jquery' ],
+            'version'      => $admin_js_ver,
+        ];
+        $admin_file       = defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ? 'build/scripts/admin/index.js' : 'build/scripts/admin/index.min.js';
+        $admin_url        = plugins_url( $admin_file, $this->plugin_file );
+
         wp_enqueue_script(
             'gecx-admin-js',
-            plugins_url( 'assets/js/admin.js', $this->plugin_file ),
-            [ 'jquery' ],
-            $admin_js_ver,
+            $admin_url,
+            $admin_asset['dependencies'],
+            $admin_asset['version'],
             true
         );
 

@@ -6,6 +6,7 @@
 
     <exclude-pattern>*/vendor/*</exclude-pattern>
     <exclude-pattern>*/node_modules/*</exclude-pattern>
+    <exclude-pattern>*/build/*</exclude-pattern>
     <exclude-pattern>*/tests/*</exclude-pattern>
     <!-- CI helper, runs under plain PHP CLI rather than inside WordPress. -->
     <exclude-pattern>*/.github/*</exclude-pattern>

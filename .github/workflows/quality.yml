@@ -41,6 +41,29 @@ jobs:
         if: always()
         run: cs2pr ./phpcs-report.xml
 
+  lint-js:
+    name: JavaScript linting and build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@0a44322309f9528d9a5e003102c73018ebc1b962 # v4.0.0
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run JS linter
+        run: npm run lint:js
+
+      - name: Build assets
+        run: npm run build
+
   plugin-check:
     name: WordPress Plugin Check
     runs-on: ubuntu-latest
@@ -53,6 +76,17 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@0a44322309f9528d9a5e003102c73018ebc1b962 # v4.0.0
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies and build assets
+        run: |
+          npm ci
+          npm run build
 
       - name: Export the plugin as it ships
         # Plugin Check has to see the artifact a store installs, not the
@@ -68,18 +102,18 @@ jobs:
         id: export
         run: |
           version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
-          mkdir -p build dist
+          mkdir -p artifacts dist
           git archive --format=tar --prefix=gemini-enterprise-for-cx/ HEAD \
-            | tar -x -C build
-          git archive --format=zip --prefix=gemini-enterprise-for-cx/ \
-            --output="dist/gemini-enterprise-for-cx-${version}.zip" HEAD
+            | tar -x -C artifacts
+          cp -r build artifacts/gemini-enterprise-for-cx/
+          (cd artifacts && zip -r -q "../dist/gemini-enterprise-for-cx-${version}.zip" gemini-enterprise-for-cx)
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          find build -type f | sort
+          find artifacts/gemini-enterprise-for-cx -type f | sort
 
       - name: Run plugin check
         uses: WordPress/plugin-check-action@10857da14b6c2246d15402b3e69f777edcf8c12e # v1.1.9
         with:
-          build-dir: './build/gemini-enterprise-for-cx'
+          build-dir: './artifacts/gemini-enterprise-for-cx'
           # 'ignore-warnings' already defaults to false, so setting it only
           # reports warnings; the job still passes. 'strict' is what promotes
           # them to errors and fails the build.

@@ -15,29 +15,11 @@
  * shows placeholders because the launcher and prompts are custom elements
  * from the Google-hosted widget bundle, which the editor does not load.
  */
-(function(wp) {
-'use strict';
-
-if (!wp || !wp.blocks || !wp.element) {
-  return;
-}
-
-const el = wp.element.createElement;
-const __ = (wp.i18n && wp.i18n.__) ? wp.i18n.__ : function(text) {
-  return text;
-};
-const sprintf = (wp.i18n && wp.i18n.sprintf) ? wp.i18n.sprintf : function(format, ...args) {
-  let i = 0;
-  return format.replace(/%[sd]/g, function() {
-    return args[i++];
-  });
-};
-const blockEditor = wp.blockEditor || {};
-const useBlockProps = blockEditor.useBlockProps ?
-    blockEditor.useBlockProps :
-    function(props) {
-      return props || {};
-    };
+import { registerBlockType } from '@wordpress/blocks';
+import { createElement as el, Fragment } from '@wordpress/element';
+import { __, sprintf } from '@wordpress/i18n';
+import { InspectorControls, useBlockProps } from '@wordpress/block-editor';
+import { PanelBody, TextControl } from '@wordpress/components';
 
 /**
  * A dashed placeholder standing in for storefront-only markup.
@@ -60,7 +42,7 @@ function placeholder(label) {
       label);
 }
 
-wp.blocks.registerBlockType('gecx/agent-button', {
+registerBlockType('gecx/agent-button', {
   apiVersion: 2,
   title: __('Gemini Enterprise for CX Launcher', 'gemini-enterprise-for-cx'),
   description: __(
@@ -77,7 +59,7 @@ wp.blocks.registerBlockType('gecx/agent-button', {
   }
 });
 
-wp.blocks.registerBlockType('gecx/suggested-prompts', {
+registerBlockType('gecx/suggested-prompts', {
   apiVersion: 2,
   title: __('Gemini Enterprise for CX Suggested Prompts', 'gemini-enterprise-for-cx'),
   description: __(
@@ -90,24 +72,24 @@ wp.blocks.registerBlockType('gecx/suggested-prompts', {
   supports: {html: false, multiple: false},
   edit: function(props) {
     const productId = props.attributes.productId || 0;
-    const inspector = (blockEditor.InspectorControls && wp.components &&
-                       wp.components.PanelBody && wp.components.TextControl) ?
-        el(blockEditor.InspectorControls, null,
-           el(wp.components.PanelBody,
-              {title: __('Product', 'gemini-enterprise-for-cx')},
-              el(wp.components.TextControl, {
-                label: __('Product ID (optional)', 'gemini-enterprise-for-cx'),
-                help: __(
-                    'Leave empty to use the product being viewed.',
-                    'gemini-enterprise-for-cx'),
-                type: 'number',
-                value: productId > 0 ? String(productId) : '',
-                onChange: function(value) {
-                  const id = parseInt(value, 10);
-                  props.setAttributes({productId: id > 0 ? id : 0});
-                }
-              }))) :
-        null;
+    const inspector = el(
+        InspectorControls,
+        null,
+        el(
+            PanelBody,
+            {title: __('Product', 'gemini-enterprise-for-cx')},
+            el(TextControl, {
+              label: __('Product ID (optional)', 'gemini-enterprise-for-cx'),
+              help: __(
+                  'Leave empty to use the product being viewed.',
+                  'gemini-enterprise-for-cx'),
+              type: 'number',
+              value: productId > 0 ? String(productId) : '',
+              onChange: function(value) {
+                const id = parseInt(value, 10);
+                props.setAttributes({productId: id > 0 ? id : 0});
+              }
+            })));
     const label = productId > 0 ?
         sprintf(
             /* translators: %d: Product ID. */
@@ -115,10 +97,9 @@ wp.blocks.registerBlockType('gecx/suggested-prompts', {
             productId
         ) :
         __('Suggested prompts', 'gemini-enterprise-for-cx');
-    return el(wp.element.Fragment, null, inspector, placeholder(label));
+    return el(Fragment, null, inspector, placeholder(label));
   },
   save: function() {
     return null;
   }
 });
-})(window.wp);

@@ -244,7 +244,8 @@ class GECX_Storefront {
         if ( ! is_array( $exclusions ) || ! $this->should_exclude_from_optimizers() ) {
             return $exclusions;
         }
-        $storefront_path = (string) wp_parse_url( plugins_url( 'assets/js/storefront.js', $this->plugin_file ), PHP_URL_PATH );
+        $storefront_file = defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ? 'build/scripts/storefront/index.js' : 'build/scripts/storefront/index.min.js';
+        $storefront_path = (string) wp_parse_url( plugins_url( $storefront_file, $this->plugin_file ), PHP_URL_PATH );
         $widget_host     = (string) wp_parse_url( (string) $this->resolve_widget_urls()['script'], PHP_URL_HOST );
         $widget_path     = (string) wp_parse_url( (string) $this->resolve_widget_urls()['script'], PHP_URL_PATH );
         foreach ( [ $storefront_path, $widget_host . $widget_path, 'gecxStorefrontConfig' ] as $pattern ) {
@@ -284,11 +285,19 @@ class GECX_Storefront {
         if ( ! function_exists( 'register_block_type' ) ) {
             return;
         }
+        $blocks_asset_file = dirname( $this->plugin_file ) . '/build/scripts/editor-blocks/index.min.asset.php';
+        $blocks_asset      = file_exists( $blocks_asset_file ) ? require $blocks_asset_file : [
+            'dependencies' => [ 'wp-blocks', 'wp-element', 'wp-i18n', 'wp-block-editor', 'wp-components' ],
+            'version'      => defined( 'GECX_VERSION' ) ? GECX_VERSION : null,
+        ];
+        $blocks_file       = defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ? 'build/scripts/editor-blocks/index.js' : 'build/scripts/editor-blocks/index.min.js';
+        $blocks_url        = plugins_url( $blocks_file, $this->plugin_file );
+
         wp_register_script(
             'gecx-editor-blocks',
-            plugins_url( 'assets/js/editor-blocks.js', $this->plugin_file ),
-            [ 'wp-blocks', 'wp-element', 'wp-i18n', 'wp-block-editor', 'wp-components' ],
-            defined( 'GECX_VERSION' ) ? GECX_VERSION : null,
+            $blocks_url,
+            $blocks_asset['dependencies'],
+            $blocks_asset['version'],
             true
         );
         wp_set_script_translations(
@@ -450,11 +459,19 @@ class GECX_Storefront {
             wp_enqueue_script( 'gecx-widget-script', $urls['script'], [], $version, true );
         }
 
+        $storefront_asset_file = dirname( $this->plugin_file ) . '/build/scripts/storefront/index.min.asset.php';
+        $storefront_asset      = file_exists( $storefront_asset_file ) ? require $storefront_asset_file : [
+            'dependencies' => [],
+            'version'      => $version,
+        ];
+        $storefront_file       = defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ? 'build/scripts/storefront/index.js' : 'build/scripts/storefront/index.min.js';
+        $storefront_url        = plugins_url( $storefront_file, $this->plugin_file );
+
         wp_enqueue_script(
             'gecx-storefront-js',
-            plugins_url( 'assets/js/storefront.js', $this->plugin_file ),
-            [],
-            $version,
+            $storefront_url,
+            $storefront_asset['dependencies'],
+            $storefront_asset['version'],
             true
         );
 

@@ -1,0 +1,20 @@
+{
+  "ignorePatterns": [
+    "build/**",
+    "packages/*/build/**",
+    "packages/*/build-module/**",
+    "vendor/**",
+    "node_modules/**",
+    "dist/**",
+    "assets/**"
+  ],
+  "rules": {
+    "no-unused-vars": [
+      "warn",
+      {
+        "caughtErrors": "none"
+      }
+    ]
+  }
+}
+

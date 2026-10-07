@@ -38,6 +38,9 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
+      - name: Build JS assets
+        run: npm run build
+
       - name: Run placement tests
         run: npm run test:e2e
 
@@ -69,6 +72,9 @@ jobs:
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
+
+      - name: Build JS assets
+        run: npm run build
 
       - name: Run theme tests
         env:
