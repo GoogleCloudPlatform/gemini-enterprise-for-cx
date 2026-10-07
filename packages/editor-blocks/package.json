@@ -2,7 +2,7 @@
   "name": "@gecx/editor-blocks",
   "version": "0.3.32",
   "private": true,
-  "main": "src/index.js",
+  "main": "src/index.jsx",
   "wpScript": true,
   "dependencies": {
     "@wordpress/block-editor": "^18.1.0",

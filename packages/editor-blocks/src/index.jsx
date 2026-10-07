@@ -16,30 +16,34 @@
  * from the Google-hosted widget bundle, which the editor does not load.
  */
 import { registerBlockType } from '@wordpress/blocks';
-import { createElement as el, Fragment } from '@wordpress/element';
+import '@wordpress/element';
 import { __, sprintf } from '@wordpress/i18n';
 import { InspectorControls, useBlockProps } from '@wordpress/block-editor';
 import { PanelBody, TextControl } from '@wordpress/components';
 
 /**
  * A dashed placeholder standing in for storefront-only markup.
- * @param {string} label
- * @return {!Object}
+ * @param {Object} props
+ * @param {string} props.label
+ * @return {JSX.Element}
  */
-function placeholder(label) {
-  return el(
-      'span',
-      useBlockProps({
-        style: {
-          display: 'inline-flex',
-          alignItems: 'center',
-          padding: '6px 14px',
-          border: '1px dashed currentColor',
-          borderRadius: '999px',
-          fontSize: '14px'
-        }
-      }),
-      label);
+function Placeholder({ label }) {
+  const blockProps = useBlockProps({
+    style: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      padding: '6px 14px',
+      border: '1px dashed currentColor',
+      borderRadius: '999px',
+      fontSize: '14px',
+    },
+  });
+
+  return (
+    <span {...blockProps}>
+      {label}
+    </span>
+  );
 }
 
 registerBlockType('gecx/agent-button', {
@@ -52,7 +56,7 @@ registerBlockType('gecx/agent-button', {
   icon: 'format-chat',
   supports: {html: false, multiple: false},
   edit: function() {
-    return placeholder(__('AI shopping agent', 'gemini-enterprise-for-cx'));
+    return <Placeholder label={__('AI shopping agent', 'gemini-enterprise-for-cx')} />;
   },
   save: function() {
     return null;
@@ -72,24 +76,6 @@ registerBlockType('gecx/suggested-prompts', {
   supports: {html: false, multiple: false},
   edit: function(props) {
     const productId = props.attributes.productId || 0;
-    const inspector = el(
-        InspectorControls,
-        null,
-        el(
-            PanelBody,
-            {title: __('Product', 'gemini-enterprise-for-cx')},
-            el(TextControl, {
-              label: __('Product ID (optional)', 'gemini-enterprise-for-cx'),
-              help: __(
-                  'Leave empty to use the product being viewed.',
-                  'gemini-enterprise-for-cx'),
-              type: 'number',
-              value: productId > 0 ? String(productId) : '',
-              onChange: function(value) {
-                const id = parseInt(value, 10);
-                props.setAttributes({productId: id > 0 ? id : 0});
-              }
-            })));
     const label = productId > 0 ?
         sprintf(
             /* translators: %d: Product ID. */
@@ -97,7 +83,28 @@ registerBlockType('gecx/suggested-prompts', {
             productId
         ) :
         __('Suggested prompts', 'gemini-enterprise-for-cx');
-    return el(Fragment, null, inspector, placeholder(label));
+
+    return (
+      <>
+        <InspectorControls>
+          <PanelBody title={__('Product', 'gemini-enterprise-for-cx')}>
+            <TextControl
+              label={__('Product ID (optional)', 'gemini-enterprise-for-cx')}
+              help={__(
+                  'Leave empty to use the product being viewed.',
+                  'gemini-enterprise-for-cx')}
+              type="number"
+              value={productId > 0 ? String(productId) : ''}
+              onChange={function(value) {
+                const id = parseInt(value, 10);
+                props.setAttributes({productId: id > 0 ? id : 0});
+              }}
+            />
+          </PanelBody>
+        </InspectorControls>
+        <Placeholder label={label} />
+      </>
+    );
   },
   save: function() {
     return null;
