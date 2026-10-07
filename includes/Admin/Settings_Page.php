@@ -14,6 +14,13 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX\Admin;
+
+use Google\Gemini_Enterprise_For_CX\Admin;
+use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\Storefront;
+use Google\Gemini_Enterprise_For_CX\REST\Order_Webhook;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
@@ -23,7 +30,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * assets and AJAX actions, and the activation redirect and notice that lead
  * to it.
  */
-class GECX_Admin_Settings_Page {
+class Settings_Page {
 
     /**
      * Path to the main plugin file.
@@ -38,15 +45,15 @@ class GECX_Admin_Settings_Page {
     /**
      * Syncs agent state when the settings page loads.
      */
-    private GECX_Admin_Console_Sync $console_sync;
+    private Console_Sync $console_sync;
 
     /**
      * Constructor.
      *
-     * @param string                  $plugin_file  Main plugin file.
-     * @param GECX_Admin_Console_Sync $console_sync Syncs agent state when the page loads.
+     * @param string       $plugin_file  Main plugin file.
+     * @param Console_Sync $console_sync Syncs agent state when the page loads.
      */
-    public function __construct( string $plugin_file, GECX_Admin_Console_Sync $console_sync ) {
+    public function __construct( string $plugin_file, Console_Sync $console_sync ) {
         $this->plugin_file  = $plugin_file;
         $this->console_sync = $console_sync;
     }
@@ -202,7 +209,7 @@ class GECX_Admin_Settings_Page {
      */
     public function register_settings(): void {
         register_setting( 'gecx_agent_group', 'gecx_agent_name', [
-            'sanitize_callback' => [ GECX_Admin::class, 'sanitize_agent_name' ],
+            'sanitize_callback' => [ Admin::class, 'sanitize_agent_name' ],
         ] );
         register_setting( 'gecx_agent_group', 'gecx_agent_enabled', [
             'sanitize_callback' => 'absint',
@@ -211,16 +218,16 @@ class GECX_Admin_Settings_Page {
             'sanitize_callback' => 'absint',
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_placement', [
-            'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_button_placement' ],
+            'sanitize_callback' => [ Storefront::class, 'sanitize_button_placement' ],
         ] );
         register_setting( 'gecx_agent_group', 'gecx_nav_menu_target', [
-            'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_nav_menu_target' ],
+            'sanitize_callback' => [ Storefront::class, 'sanitize_nav_menu_target' ],
         ] );
         register_setting( 'gecx_agent_group', 'gecx_floating_position', [
-            'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_floating_position' ],
+            'sanitize_callback' => [ Storefront::class, 'sanitize_floating_position' ],
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_display_style', [
-            'sanitize_callback' => [ GECX_Storefront::class, 'sanitize_button_display_style' ],
+            'sanitize_callback' => [ Storefront::class, 'sanitize_button_display_style' ],
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_label', [
             'sanitize_callback' => 'sanitize_text_field',
@@ -260,7 +267,7 @@ class GECX_Admin_Settings_Page {
         $embed_enabled         = (bool) get_option( 'gecx_agent_enabled', 0 );
         $pdp_prompts_enabled   = (bool) get_option( 'gecx_pdp_prompts_enabled', 1 );
         $button_placement      = (string) get_option( 'gecx_button_placement', 'nav_menu' );
-        $nav_menu_target       = GECX_Storefront::sanitize_nav_menu_target( get_option( 'gecx_nav_menu_target', '' ) );
+        $nav_menu_target       = Storefront::sanitize_nav_menu_target( get_option( 'gecx_nav_menu_target', '' ) );
         $nav_menu_locations    = function_exists( 'get_registered_nav_menus' ) ? (array) get_registered_nav_menus() : [];
         $nav_menus             = function_exists( 'wp_get_nav_menus' ) ? (array) wp_get_nav_menus() : [];
         $floating_position     = (string) get_option( 'gecx_floating_position', 'bottom_center' );
@@ -269,14 +276,14 @@ class GECX_Admin_Settings_Page {
         $button_short_label    = (string) get_option( 'gecx_button_short_label', '' );
         $button_enable_shimmer = (bool) get_option( 'gecx_button_enable_shimmer', 1 );
 
-        $console_base  = GECX_Auth::get_console_base_url();
+        $console_base  = Auth::get_console_base_url();
         $console_ready = '' !== $console_base;
 
         // SyncState can report that Google can no longer use this store's
         // credentials. Treat that as unauthorized so the merchant is offered
         // the authorize step again instead of a dead end.
-        $is_authorized  = (bool) get_option( GECX_Admin::AUTH_COMPLETE_OPTION, false ) && ! get_option( GECX_Admin::STORE_AUTH_INVALID_OPTION, false );
-        $rest_api_ready = GECX_Admin::is_standard_rest_api_enabled();
+        $is_authorized  = (bool) get_option( Admin::AUTH_COMPLETE_OPTION, false ) && ! get_option( Admin::STORE_AUTH_INVALID_OPTION, false );
+        $rest_api_ready = Admin::is_standard_rest_api_enabled();
         // The wc-auth callback_url receives the consumer key and secret, so the
         // authorize and connect buttons stay disabled unless the console base
         // URL is on the allowlist.
@@ -290,10 +297,10 @@ class GECX_Admin_Settings_Page {
                 ],
                 admin_url( 'admin.php?page=gemini-enterprise-for-cx' )
             );
-            $oauth_callback_url = $console_base . GECX_Admin_Connection::CONSOLE_WOO_AUTH_WEBHOOK_PATH;
+            $oauth_callback_url = $console_base . Connection::CONSOLE_WOO_AUTH_WEBHOOK_PATH;
             $oauth_url = add_query_arg(
                 [
-                    'app_name'     => rawurlencode( GECX_Auth::WC_AUTH_APP_NAME ),
+                    'app_name'     => rawurlencode( Auth::WC_AUTH_APP_NAME ),
                     'scope'        => 'read_write',
                     'user_id'      => rawurlencode( home_url() ),
                     'return_url'   => rawurlencode( $oauth_return_url ),
@@ -452,7 +459,7 @@ class GECX_Admin_Settings_Page {
                                 <?php echo $embed_enabled ? esc_html__( 'Connection Status: Active', 'gemini-enterprise-for-cx' ) : esc_html__( 'Connection Status: Inactive', 'gemini-enterprise-for-cx' ); ?>
                             </span>
                         </h2>
-                        <a href="<?php echo esc_url( $console_ready ? $console_base : GECX_Auth::DEFAULT_CONSOLE_BASE_URL ); ?>" target="_blank" class="button button-secondary">
+                        <a href="<?php echo esc_url( $console_ready ? $console_base : Auth::DEFAULT_CONSOLE_BASE_URL ); ?>" target="_blank" class="button button-secondary">
                             <?php esc_html_e( 'Open Google Cloud Console', 'gemini-enterprise-for-cx' ); ?>
                         </a>
                     </div>
@@ -691,13 +698,13 @@ class GECX_Admin_Settings_Page {
             return;
         }
 
-        $placement      = GECX_Storefront::sanitize_button_placement( isset( $_POST['placement'] ) ? sanitize_text_field( wp_unslash( $_POST['placement'] ) ) : null );
-        $floating_pos   = GECX_Storefront::sanitize_floating_position( isset( $_POST['floating_position'] ) ? sanitize_text_field( wp_unslash( $_POST['floating_position'] ) ) : null );
-        $display_style  = GECX_Storefront::sanitize_button_display_style( isset( $_POST['display_style'] ) ? sanitize_text_field( wp_unslash( $_POST['display_style'] ) ) : null );
+        $placement      = Storefront::sanitize_button_placement( isset( $_POST['placement'] ) ? sanitize_text_field( wp_unslash( $_POST['placement'] ) ) : null );
+        $floating_pos   = Storefront::sanitize_floating_position( isset( $_POST['floating_position'] ) ? sanitize_text_field( wp_unslash( $_POST['floating_position'] ) ) : null );
+        $display_style  = Storefront::sanitize_button_display_style( isset( $_POST['display_style'] ) ? sanitize_text_field( wp_unslash( $_POST['display_style'] ) ) : null );
         $label          = isset( $_POST['label'] ) ? sanitize_text_field( wp_unslash( $_POST['label'] ) ) : '';
         $short_label    = isset( $_POST['short_label'] ) ? sanitize_text_field( wp_unslash( $_POST['short_label'] ) ) : '';
         $enable_shimmer = isset( $_POST['enable_shimmer'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enable_shimmer'] ) ) ? 1 : 0;
-        $menu_target    = GECX_Storefront::sanitize_nav_menu_target( isset( $_POST['nav_menu_target'] ) ? sanitize_text_field( wp_unslash( $_POST['nav_menu_target'] ) ) : '' );
+        $menu_target    = Storefront::sanitize_nav_menu_target( isset( $_POST['nav_menu_target'] ) ? sanitize_text_field( wp_unslash( $_POST['nav_menu_target'] ) ) : '' );
 
         update_option( 'gecx_button_placement', $placement );
         update_option( 'gecx_floating_position', $floating_pos );
@@ -726,13 +733,11 @@ class GECX_Admin_Settings_Page {
         $enabled = isset( $_POST['enabled'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enabled'] ) ) ? 1 : 0;
         update_option( 'gecx_agent_enabled', $enabled );
         if ( 1 === $enabled ) {
-            delete_option( GECX_Admin::MERCHANT_DISABLED_OPTION );
+            delete_option( Admin::MERCHANT_DISABLED_OPTION );
         } else {
-            update_option( GECX_Admin::MERCHANT_DISABLED_OPTION, 1, false );
+            update_option( Admin::MERCHANT_DISABLED_OPTION, 1, false );
         }
-        if ( class_exists( 'GECX_Rest_Order_Webhook' ) ) {
-            GECX_Rest_Order_Webhook::set_order_webhook_status( 1 === $enabled ? 'active' : 'paused' );
-        }
+        Order_Webhook::set_order_webhook_status( 1 === $enabled ? 'active' : 'paused' );
         wp_send_json_success( [ 'enabled' => $enabled ] );
     }
 

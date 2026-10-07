@@ -40,6 +40,17 @@
         <exclude name="WordPress.Arrays.MultipleStatementAlignment"/>
         <exclude name="PEAR.Functions.FunctionCallSignature"/>
         <exclude name="Squiz.Functions.MultiLineFunctionDeclaration"/>
+        <!-- PSR-4 class filenames differ from WordPress hyphenated lowercase class-*.php naming. -->
+        <exclude name="WordPress.Files.FileName"/>
+    </rule>
+
+    <rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+        <properties>
+            <property name="prefixes" type="array">
+                <element value="google\gemini_enterprise_for_cx"/>
+                <element value="gecx"/>
+            </property>
+        </properties>
     </rule>
 
     <!-- manage_woocommerce is registered by WooCommerce, not by WordPress core. -->

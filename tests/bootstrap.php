@@ -10,6 +10,11 @@
 
 declare(strict_types=1);
 
+use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\REST\Console_API;
+
+require_once dirname( __DIR__ ) . '/vendor/autoload.php';
+
 if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', '/var/www/html/' );
 }
@@ -167,11 +172,11 @@ function gecx_reset_test_globals(): void {
         array_intersect_key( $_SERVER, [ 'argv' => 1, 'argc' => 1, 'HTTP_HOST' => 1, 'REQUEST_METHOD' => 1 ] )
     );
 
-    if ( class_exists( 'GECX_Auth' ) ) {
-        GECX_Auth::reset_cart_token_state();
+    if ( class_exists( Auth::class ) ) {
+        Auth::reset_cart_token_state();
     }
-    if ( class_exists( 'GECX_Rest_Console_API' ) ) {
-        GECX_Rest_Console_API::reset_wc_auth_state();
+    if ( class_exists( Console_API::class ) ) {
+        Console_API::reset_wc_auth_state();
     }
 }
 
@@ -315,6 +320,16 @@ if ( ! function_exists( 'maybe_unserialize' ) ) {
     }
 }
 
+
+// Real WooCommerce always defines WC_Cache_Helper. Without this stub the
+// tests only exercise the fallback cache-prefix branch.
+if ( ! class_exists( 'WC_Cache_Helper' ) ) {
+    class WC_Cache_Helper {
+        public static function get_cache_prefix( $group ) {
+            return 'wc_cache_' . $group . '_';
+        }
+    }
+}
 
 if ( ! class_exists( 'WC_Session_Handler' ) ) {
     class WC_Session_Handler {
@@ -2176,12 +2191,6 @@ if ( ! function_exists( 'wp_unslash' ) ) {
         return is_string( $value ) ? stripslashes( $value ) : $value;
     }
 }
-
-// Load core classes
-require_once dirname( __DIR__ ) . '/includes/class-gecx-auth.php';
-require_once dirname( __DIR__ ) . '/includes/class-gecx-rest-api.php';
-require_once dirname( __DIR__ ) . '/includes/class-gecx-admin.php';
-require_once dirname( __DIR__ ) . '/includes/class-gecx-storefront.php';
 
 /**
  * Mints tokens shaped like WooCommerce Store API cart tokens.

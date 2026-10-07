@@ -14,6 +14,10 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX\REST;
+
+use Google\Gemini_Enterprise_For_CX\Auth;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
@@ -22,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Gives the storefront widget a REST nonce and a signed customer JWT (the
  * auth-context and refresh-token routes), only for same-origin requests.
  */
-class GECX_Rest_Auth_Context {
+class Auth_Context {
 
     /**
      * Registers this component's hooks.
@@ -40,7 +44,7 @@ class GECX_Rest_Auth_Context {
         register_rest_route( 'gecx/v1', '/refresh-token', [
             'methods'             => 'POST',
             'callback'            => [ $this, 'refresh_token_handler' ],
-            'permission_callback' => [ 'GECX_Rest_Session_Attribution', 'check_session_permissions' ],
+            'permission_callback' => [ Session_Attribution::class, 'check_session_permissions' ],
         ] );
     }
 
@@ -55,7 +59,7 @@ class GECX_Rest_Auth_Context {
      */
     // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- WP_REST_Server route callback signature.
     public function refresh_token_handler( \WP_REST_Request $request ) {
-        $customer_jwt = GECX_Auth::generate_customer_jwt();
+        $customer_jwt = Auth::generate_customer_jwt();
         if ( empty( $customer_jwt ) ) {
             return new \WP_Error( 'jwt_generation_failed', __( 'Unable to generate customer JWT; secret is missing.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
         }
@@ -104,7 +108,7 @@ class GECX_Rest_Auth_Context {
      * @return true|\WP_Error
      */
     public function check_auth_context_permissions( \WP_REST_Request $request ) {
-        if ( GECX_Auth::is_cart_token_request() ) {
+        if ( Auth::is_cart_token_request() ) {
             return new \WP_Error( 'rest_forbidden', __( 'Unauthorized.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
 
@@ -386,7 +390,7 @@ class GECX_Rest_Auth_Context {
      * logged_in cookie (after check_auth_context_permissions() has verified
      * same-origin isolation), supplies that user ID to wp_create_nonce() via
      * the core nonce_user_logged_out filter and directly to
-     * GECX_Auth::generate_customer_jwt(), and never mutates global user state.
+     * Auth::generate_customer_jwt(), and never mutates global user state.
      *
      * The response always carries a nonce and a 'customer_jwt' key. That key
      * is null when no signing secret is configured, which is a 200 rather than
@@ -453,7 +457,7 @@ class GECX_Rest_Auth_Context {
             }
 
             $nonce        = function_exists( 'wp_create_nonce' ) ? (string) wp_create_nonce( 'wp_rest' ) : '';
-            $customer_jwt = GECX_Auth::generate_customer_jwt( $effective_user_id );
+            $customer_jwt = Auth::generate_customer_jwt( $effective_user_id );
         } finally {
             if ( null !== $nonce_user_filter && function_exists( 'remove_filter' ) ) {
                 remove_filter( 'nonce_user_logged_out', $nonce_user_filter, 999 );

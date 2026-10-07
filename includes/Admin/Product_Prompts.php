@@ -14,6 +14,8 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX\Admin;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
@@ -21,7 +23,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * The Suggested Prompts override field in the WooCommerce product editor.
  */
-class GECX_Admin_Product_Prompts {
+class Product_Prompts {
 
     /**
      * Product IDs already processed by save_product_prompts_override_field()

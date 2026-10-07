@@ -9,17 +9,17 @@
  */
 
 require dirname( __DIR__, 2 ) . '/bootstrap.php';
-require_once dirname( __DIR__, 3 ) . '/includes/class-gecx-auth.php';
-require_once dirname( __DIR__, 3 ) . '/includes/class-gecx-storefront.php';
+
+use Google\Gemini_Enterprise_For_CX\Storefront;
 
 update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/e2e' );
 update_option( 'gecx_agent_enabled', 1 );
 
-$storefront = new GECX_Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
+$storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 $storefront->enqueue_storefront_assets();
 
 $floating = [];
-foreach ( GECX_Storefront::ALLOWED_FLOATING_POSITIONS as $position ) {
+foreach ( Storefront::ALLOWED_FLOATING_POSITIONS as $position ) {
     $floating[ $position ] = $storefront->get_floating_container_style( $position );
 }
 

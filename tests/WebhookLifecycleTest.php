@@ -10,21 +10,22 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
-require_once dirname( __DIR__ ) . '/includes/class-gecx-auth.php';
-require_once dirname( __DIR__ ) . '/includes/class-gecx-rest-api.php';
-require_once dirname( __DIR__ ) . '/includes/class-gecx-admin.php';
 
+use Google\Gemini_Enterprise_For_CX\Admin;
+use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\REST\Order_Webhook;
+use Google\Gemini_Enterprise_For_CX\REST\REST_API;
 use PHPUnit\Framework\TestCase;
 
 class WebhookLifecycleTest extends TestCase {
 
-    private GECX_Rest_API $rest_api;
-    private GECX_Admin $admin;
+    private REST_API $rest_api;
+    private Admin $admin;
 
     protected function setUp(): void {
         gecx_reset_test_globals();
-        $this->rest_api = new GECX_Rest_API();
-        $this->admin    = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $this->rest_api = new REST_API();
+        $this->admin    = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
     }
 
     private function create_gecx_webhook( string $status = 'active', string $secret = 'wh_secret_abc' ): int {
@@ -223,7 +224,7 @@ class WebhookLifecycleTest extends TestCase {
     public function test_deactivation_pauses_webhook(): void {
         $webhook_id = $this->create_gecx_webhook( 'active' );
 
-        GECX_Admin::deactivate_plugin();
+        Admin::deactivate_plugin();
 
         $webhook = new WC_Webhook( $webhook_id );
         $this->assertSame( 'paused', $webhook->get_status() );
@@ -234,7 +235,7 @@ class WebhookLifecycleTest extends TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        GECX_Admin::activate_plugin();
+        Admin::activate_plugin();
 
         $webhook = new WC_Webhook( $webhook_id );
         $this->assertSame( 'active', $webhook->get_status() );
@@ -244,7 +245,7 @@ class WebhookLifecycleTest extends TestCase {
         $webhook->set_status( 'active' );
         $webhook->save();
 
-        GECX_Admin::activate_plugin();
+        Admin::activate_plugin();
 
         $webhook = new WC_Webhook( $webhook_id );
         $this->assertSame( 'paused', $webhook->get_status() );
@@ -259,7 +260,7 @@ class WebhookLifecycleTest extends TestCase {
         $orphan->set_topic( 'order.created' );
         $orphan_id = $orphan->save();
 
-        GECX_Admin::activate_plugin();
+        Admin::activate_plugin();
 
         $this->assertArrayNotHasKey( $orphan_id, $GLOBALS['gecx_test_webhooks'] );
         $this->assertFalse( get_option( 'gecx_webhook_id' ) );
@@ -316,30 +317,30 @@ class WebhookLifecycleTest extends TestCase {
 
     public function test_webhook_registration_does_not_end_merchant_unlink(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+        update_option( Admin::MERCHANT_UNLINKED_OPTION, 1 );
 
         $request = new WP_REST_Request( 'POST', '/gecx/v1/webhooks/order-created' );
         $request->set_param( 'consumer_secret', 'cs_' . str_repeat( 'a', 40 ) );
-        $response = ( new GECX_Rest_API() )->order_webhook->order_created_webhooks_handler( $request );
+        $response = ( new REST_API() )->order_webhook->order_created_webhooks_handler( $request );
 
         $this->assertInstanceOf( WP_REST_Response::class, $response );
         // The WooCommerce keys survive an unlink, so this call is not evidence
         // that the merchant chose to re-link.
-        $this->assertSame( 1, (int) get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
+        $this->assertSame( 1, (int) get_option( Admin::MERCHANT_UNLINKED_OPTION ) );
     }
 
     public function test_link_agent_ends_unlink_but_respects_merchant_disable(): void {
         $webhook_id = $this->create_gecx_webhook( 'paused' );
-        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
-        update_option( GECX_Admin::MERCHANT_DISABLED_OPTION, 1 );
+        update_option( Admin::MERCHANT_UNLINKED_OPTION, 1 );
+        update_option( Admin::MERCHANT_DISABLED_OPTION, 1 );
         update_option( 'gecx_agent_enabled', 0 );
 
         $request = new WP_REST_Request( 'POST', '/gecx/v1/link-agent' );
         $request->set_param( 'agent_name', 'projects/123/locations/global/agents/agent-2' );
-        ( new GECX_Rest_API() )->console->link_agent_handler( $request );
+        ( new REST_API() )->console->link_agent_handler( $request );
 
         $this->assertSame( 'projects/123/locations/global/agents/agent-2', get_option( 'gecx_agent_name' ) );
-        $this->assertFalse( get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
+        $this->assertFalse( get_option( Admin::MERCHANT_UNLINKED_OPTION ) );
         $this->assertSame( 0, (int) get_option( 'gecx_agent_enabled' ) );
         $this->assertSame( 'paused', ( new WC_Webhook( $webhook_id ) )->get_status() );
     }
@@ -348,7 +349,7 @@ class WebhookLifecycleTest extends TestCase {
         delete_option( 'gecx_webhook_id' );
         update_option( 'gecx_console_base_url', 'https://attacker.example' );
 
-        $result = GECX_Rest_Order_Webhook::ensure_order_webhook( 'cs_' . str_repeat( 'b', 40 ) );
+        $result = Order_Webhook::ensure_order_webhook( 'cs_' . str_repeat( 'b', 40 ) );
 
         $this->assertInstanceOf( WP_Error::class, $result );
         $this->assertSame( 'console_url_refused', $result->get_error_code() );
@@ -381,7 +382,7 @@ class WebhookLifecycleTest extends TestCase {
     public function test_uninstall_does_not_notify_store_that_only_holds_a_keypair(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         // Activation generates a keypair on every site, connected or not.
-        GECX_Auth::get_or_generate_keypair();
+        Auth::get_or_generate_keypair();
         delete_option( 'gecx_webhook_id' );
         delete_option( 'gecx_agent_name' );
         delete_option( 'gecx_auth_complete' );
@@ -399,7 +400,7 @@ class WebhookLifecycleTest extends TestCase {
 
     public function test_uninstall_does_not_notify_disallowed_console_host(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        GECX_Auth::get_or_generate_keypair();
+        Auth::get_or_generate_keypair();
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_console_base_url', 'https://attacker.example' );
         $GLOBALS['gecx_test_http_requests'] = [];
@@ -418,7 +419,7 @@ class WebhookLifecycleTest extends TestCase {
         delete_option( 'gecx_agent_name' );
         update_option( 'gecx_auth_complete', 1 );
 
-        GECX_Admin::activate_plugin();
+        Admin::activate_plugin();
 
         $this->assertArrayHasKey( $webhook_id, $GLOBALS['gecx_test_webhooks'] );
         $webhook = new WC_Webhook( $webhook_id );
@@ -428,7 +429,7 @@ class WebhookLifecycleTest extends TestCase {
 
     public function test_uninstall_deletes_row_and_notifies_with_bearer_without_woocommerce(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        GECX_Auth::get_or_generate_keypair();
+        Auth::get_or_generate_keypair();
         $webhook_id = $this->create_gecx_webhook( 'active', 'wh_db_secret_789' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         delete_option( 'gecx_api_secret' );
@@ -455,7 +456,7 @@ class WebhookLifecycleTest extends TestCase {
 
     public function test_uninstall_sends_bearer_jwt_without_hmac_signature(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        GECX_Auth::get_or_generate_keypair();
+        Auth::get_or_generate_keypair();
         $this->create_gecx_webhook( 'active', 'wh_db_secret_789' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
 
@@ -477,11 +478,11 @@ class WebhookLifecycleTest extends TestCase {
         $parts = explode( '.', $jwt );
         $this->assertCount( 3, $parts );
 
-        $header = json_decode( GECX_Auth::from_base_64_url( $parts[0] ), true );
+        $header = json_decode( Auth::from_base_64_url( $parts[0] ), true );
         $this->assertSame( 'RS256', $header['alg'] );
 
-        $claims = json_decode( GECX_Auth::from_base_64_url( $parts[1] ), true );
-        $this->assertSame( GECX_Auth::get_sanitized_store_domain(), $claims['iss'] );
+        $claims = json_decode( Auth::from_base_64_url( $parts[1] ), true );
+        $this->assertSame( Auth::get_sanitized_store_domain(), $claims['iss'] );
         $this->assertSame( 'gecx.cloud.google.com', $claims['aud'] );
         $this->assertTrue( $claims['is_admin'] );
         $this->assertTrue( $claims['exp'] > $claims['iat'] );
@@ -489,7 +490,7 @@ class WebhookLifecycleTest extends TestCase {
 
     public function test_uninstall_notifies_with_the_jwt_when_the_api_secret_is_gone(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        GECX_Auth::get_or_generate_keypair();
+        Auth::get_or_generate_keypair();
         delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_webhook_id' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
@@ -584,7 +585,7 @@ class WebhookLifecycleTest extends TestCase {
         set_transient( 'woocommerce_webhook_ids_status_active', [ 1 ] );
 
         $GLOBALS['gecx_test_disable_wc_webhook'] = true;
-        GECX_Rest_Order_Webhook::delete_order_webhook();
+        Order_Webhook::delete_order_webhook();
 
         $this->assertFalse( get_transient( 'woocommerce_webhook_ids' ) );
         $this->assertFalse( get_transient( 'woocommerce_webhook_ids_status_active' ) );
@@ -610,7 +611,7 @@ class WebhookLifecycleTest extends TestCase {
         $real_id = $real_gecx->save();
 
         // Pause webhooks
-        GECX_Rest_Order_Webhook::set_order_webhook_status( 'paused' );
+        Order_Webhook::set_order_webhook_status( 'paused' );
 
         // Foreign webhook must be completely untouched
         $foreign_reloaded = new WC_Webhook( $foreign_id );

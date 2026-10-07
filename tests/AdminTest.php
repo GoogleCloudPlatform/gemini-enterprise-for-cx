@@ -10,7 +10,10 @@
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once dirname( __DIR__ ) . '/includes/class-gecx-admin.php';
+
+use Google\Gemini_Enterprise_For_CX\Admin;
+use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\Storefront;
 
 class AdminTest extends GECX_TestCase {
 
@@ -26,7 +29,7 @@ class AdminTest extends GECX_TestCase {
             'nav_menu_target' => 'location:primary_navigation',
         ];
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->settings_page->ajax_save_button_config();
 
         $this->assertSame( 'manual', get_option( 'gecx_button_placement' ) );
@@ -50,7 +53,7 @@ class AdminTest extends GECX_TestCase {
             'enable_shimmer'    => '1',
         ];
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->settings_page->ajax_save_button_config();
 
         $this->assertEquals( 'floating', get_option( 'gecx_button_placement' ) );
@@ -102,7 +105,7 @@ class AdminTest extends GECX_TestCase {
             'enabled' => '1',
         ];
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->settings_page->ajax_toggle_app_embed();
 
         $this->assertEquals( 1, get_option( 'gecx_agent_enabled' ) );
@@ -119,7 +122,7 @@ class AdminTest extends GECX_TestCase {
         update_option( 'gecx_agent_enabled', 1 );
         $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 200, '' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->console_sync->ajax_unlink_agent();
 
         $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
@@ -146,7 +149,7 @@ class AdminTest extends GECX_TestCase {
         update_option( 'gecx_agent_enabled', 1 );
         $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 404, '' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->console_sync->ajax_unlink_agent();
 
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
@@ -165,7 +168,7 @@ class AdminTest extends GECX_TestCase {
         update_option( 'gecx_agent_enabled', 1 );
         $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 500, '' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->console_sync->ajax_unlink_agent();
 
         $this->assertEquals( 'projects/123/locations/global/agents/agent-1', get_option( 'gecx_agent_name' ) );
@@ -185,7 +188,7 @@ class AdminTest extends GECX_TestCase {
         ];
         delete_option( 'gecx_agent_name' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->connection->handle_connection_callback();
 
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
@@ -206,7 +209,7 @@ class AdminTest extends GECX_TestCase {
             'token_broker_name' => 'projects/123/locations/global/tokenBrokers/tb-456',
         ];
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->connection->handle_connection_callback();
 
         // The agent arrives over gecx/v1/link-agent, not from this request.
@@ -237,7 +240,7 @@ class AdminTest extends GECX_TestCase {
             'agent_name'  => 'projects/999/locations/global/agents/attacker-agent',
         ];
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->connection->handle_connection_callback();
 
         $this->assertSame( 'projects/123/locations/global/agents/legitimate', get_option( 'gecx_agent_name' ) );
@@ -259,7 +262,7 @@ class AdminTest extends GECX_TestCase {
             'token_broker' => 'invalid token broker with spaces <script>',
         ];
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->connection->handle_connection_callback();
 
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
@@ -279,7 +282,7 @@ class AdminTest extends GECX_TestCase {
             'state'       => $state,
         ];
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->connection->handle_connection_callback();
 
         $this->assertFalse( get_option( 'gecx_sync_last_attempt' ) );
@@ -296,7 +299,7 @@ class AdminTest extends GECX_TestCase {
             'gecx_action' => 'linked',
             'state'       => $state,
         ];
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->connection->handle_connection_callback();
         $this->assertSame( 'https://example.com/wp-admin/admin.php?page=gemini-enterprise-for-cx', $GLOBALS['gecx_test_last_redirect'] );
         $this->assertTrue( ! empty( get_transient( 'gecx_admin_notice_error' ) ) );
@@ -312,7 +315,7 @@ class AdminTest extends GECX_TestCase {
             'gecx_action' => 'linked',
             'oauth_state' => $state,
         ];
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->connection->handle_connection_callback();
         $this->assertFalse( get_transient( 'gecx_oauth_state_' . $state ) );
         $this->assertSame( 'https://example.com/wp-admin/admin.php?page=gemini-enterprise-for-cx&connected=1', $GLOBALS['gecx_test_last_redirect'] );
@@ -396,7 +399,7 @@ class AdminTest extends GECX_TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-123' );
         // The uninstall notification is authenticated with the store's own
         // keypair now, so the connected site needs one.
-        GECX_Auth::get_or_generate_keypair();
+        Auth::get_or_generate_keypair();
         // A store upgraded from a version that stored the shared secret keeps
         // the row until uninstall clears it. It must not sign anything.
         update_option( 'gecx_api_secret', 'legacy_secret123' );
@@ -455,7 +458,7 @@ class AdminTest extends GECX_TestCase {
         update_option( 'gecx_webhook_id', 4242 );
         update_option( 'gecx_auth_complete', 1 );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
 
         ob_start();
         try {
@@ -489,7 +492,7 @@ class AdminTest extends GECX_TestCase {
         delete_option( 'gecx_webhook_id' );
         delete_option( 'gecx_auth_complete' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
 
         ob_start();
         try {
@@ -517,7 +520,7 @@ class AdminTest extends GECX_TestCase {
         $GLOBALS['gecx_test_doing_ajax']   = true;
         $GLOBALS['gecx_test_last_redirect'] = null;
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->settings_page->redirect_on_activation();
 
         $this->assertTrue( (bool) get_option( 'gecx_do_activation_redirect' ) );
@@ -537,7 +540,7 @@ class AdminTest extends GECX_TestCase {
         $_GET['activate-multi']             = '1';
         $GLOBALS['gecx_test_last_redirect'] = null;
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->settings_page->redirect_on_activation();
 
         $this->assertFalse( get_option( 'gecx_do_activation_redirect' ) );
@@ -553,14 +556,14 @@ class AdminTest extends GECX_TestCase {
         delete_option( 'gecx_do_activation_redirect' );
         $GLOBALS['gecx_test_last_redirect'] = null;
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->settings_page->redirect_on_activation();
 
         $this->assertNull( $GLOBALS['gecx_test_last_redirect'] );
     }
 
     public function test_uninstall_via_wp_cli_without_current_user_sends_rs256_admin_jwt_and_queries_wpdb(): void {
-        GECX_Auth::get_or_generate_keypair();
+        Auth::get_or_generate_keypair();
         $GLOBALS['gecx_test_current_user'] = null;
         $GLOBALS['gecx_test_users'][3]     = new WP_User( 3, 'cli-admin@example.com', [ 'administrator' ] );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-cli' );
@@ -586,7 +589,7 @@ class AdminTest extends GECX_TestCase {
         update_option( 'gecx_webhook_id', 4242 );
         update_option( 'gecx_auth_complete', 1 );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->connection->handle_connect_agent_redirect();
 
         $states = (array) get_option( 'gecx_pending_oauth_states', [] );
@@ -606,7 +609,7 @@ class AdminTest extends GECX_TestCase {
         $_POST['_gecx_suggested_prompts_override'] = "Prompt A\nPrompt B";
 
         $product = new WC_Product( 505 );
-        $admin   = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin   = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
 
         $admin->product_prompts->save_product_prompts_override_field( $product );
         $this->assertSame( "Prompt A\nPrompt B", $product->get_meta( '_gecx_suggested_prompts_override' ) );
@@ -623,7 +626,7 @@ class AdminTest extends GECX_TestCase {
         delete_option( 'gecx_dismiss_activation_notice' );
         delete_option( 'gecx_agent_name' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         ob_start();
         $admin->settings_page->show_activation_notice();
         $output = ob_get_clean();
@@ -640,7 +643,7 @@ class AdminTest extends GECX_TestCase {
         delete_option( 'gecx_agent_name' );
         $_GET['page'] = 'gemini-enterprise-for-cx';
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         ob_start();
         $admin->settings_page->show_activation_notice();
         $output = ob_get_clean();
@@ -653,7 +656,7 @@ class AdminTest extends GECX_TestCase {
         delete_option( 'gecx_dismiss_activation_notice' );
         delete_option( 'gecx_agent_name' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->settings_page->add_settings_page();
         set_current_screen( 'marketing_page_gemini-enterprise-for-cx' );
 
@@ -669,7 +672,7 @@ class AdminTest extends GECX_TestCase {
         update_option( 'gecx_dismiss_activation_notice', true );
         delete_option( 'gecx_agent_name' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         ob_start();
         $admin->settings_page->show_activation_notice();
         $output = ob_get_clean();
@@ -682,7 +685,7 @@ class AdminTest extends GECX_TestCase {
         delete_option( 'gecx_dismiss_activation_notice' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         ob_start();
         $admin->settings_page->show_activation_notice();
         $output = ob_get_clean();
@@ -695,7 +698,7 @@ class AdminTest extends GECX_TestCase {
         delete_option( 'gecx_dismiss_activation_notice' );
         delete_option( 'gecx_agent_name' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         ob_start();
         $admin->settings_page->show_activation_notice();
         $output = ob_get_clean();
@@ -743,14 +746,14 @@ class AdminTest extends GECX_TestCase {
             )
         );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->console_sync->ajax_unlink_agent();
 
         $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertSame( $webhook_id, get_option( 'gecx_webhook_id' ) );
         $this->assertSame( 1, get_option( 'gecx_auth_complete' ) );
-        $this->assertSame( 1, get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
+        $this->assertSame( 1, get_option( Admin::MERCHANT_UNLINKED_OPTION ) );
         // Unlinking is not disconnecting: the WooCommerce API keys stay.
         $this->assertSame( [ 1, 2, 3 ], array_keys( $GLOBALS['gecx_test_wc_api_keys'] ) );
 
@@ -778,14 +781,14 @@ class AdminTest extends GECX_TestCase {
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_console_base_url', 'https://attacker.example' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->console_sync->ajax_unlink_agent();
 
         $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertSame( 0, (int) get_option( 'gecx_agent_enabled' ) );
-        $this->assertSame( 1, (int) get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
+        $this->assertSame( 1, (int) get_option( Admin::MERCHANT_UNLINKED_OPTION ) );
     }
 
     public function test_failed_remote_unlink_changes_nothing(): void {
@@ -795,12 +798,12 @@ class AdminTest extends GECX_TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 500, '' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->console_sync->ajax_unlink_agent();
 
         $this->assertFalse( $GLOBALS['gecx_test_last_json_response']['success'] );
         $this->assertSame( 'projects/123/locations/global/agents/agent-1', get_option( 'gecx_agent_name' ) );
-        $this->assertFalse( get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
+        $this->assertFalse( get_option( Admin::MERCHANT_UNLINKED_OPTION ) );
     }
 
     public function test_revoke_woocommerce_api_keys_tolerates_missing_table(): void {
@@ -809,7 +812,7 @@ class AdminTest extends GECX_TestCase {
             1 => [ 'description' => 'Gemini Enterprise For CX - API (2026-09-01 10:00:00)' ],
         ];
         try {
-            $this->assertSame( 0, GECX_Auth::revoke_woocommerce_api_keys() );
+            $this->assertSame( 0, Auth::revoke_woocommerce_api_keys() );
             $this->assertCount( 1, $GLOBALS['gecx_test_wc_api_keys'] );
         } finally {
             unset( $GLOBALS['gecx_test_wc_api_keys_table_missing'] );
@@ -823,7 +826,7 @@ class AdminTest extends GECX_TestCase {
         update_option( 'gecx_console_base_url', 'https://attacker.example' );
         $_POST = [ 'gecx_connect_nonce' => wp_create_nonce( 'gecx_connect_agent_action' ) ];
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $this->assertSame( '', $admin->connection->build_connect_agent_url() );
         $this->assertSame( [], (array) get_option( 'gecx_pending_oauth_states', [] ) );
 
@@ -836,7 +839,7 @@ class AdminTest extends GECX_TestCase {
         update_option( 'permalink_structure', '/%postname%/' );
         update_option( 'gecx_console_base_url', 'https://attacker.example' );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         ob_start();
         try {
             $admin->settings_page->render_settings_page();
@@ -861,7 +864,7 @@ class AdminTest extends GECX_TestCase {
         update_option( 'gecx_button_placement', $placement );
         update_option( 'gecx_pdp_prompts_enabled', $prompts_enabled );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         ob_start();
         try {
             $admin->settings_page->render_settings_page();
@@ -888,19 +891,19 @@ class AdminTest extends GECX_TestCase {
 
     public function test_toggle_app_embed_records_merchant_intent(): void {
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
 
         $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ), 'enabled' => '0' ];
         $admin->settings_page->ajax_toggle_app_embed();
-        $this->assertSame( 1, get_option( GECX_Admin::MERCHANT_DISABLED_OPTION ) );
+        $this->assertSame( 1, get_option( Admin::MERCHANT_DISABLED_OPTION ) );
 
         $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ), 'enabled' => '1' ];
         $admin->settings_page->ajax_toggle_app_embed();
-        $this->assertFalse( get_option( GECX_Admin::MERCHANT_DISABLED_OPTION ) );
+        $this->assertFalse( get_option( Admin::MERCHANT_DISABLED_OPTION ) );
     }
 
     public function test_ajax_handlers_reject_invalid_nonce_and_unauthorized_subscriber(): void {
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
 
         // 1. Forged nonces are rejected even for an administrator.
         $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
@@ -980,63 +983,63 @@ class AdminTest extends GECX_TestCase {
     }
 
     public function test_is_standard_rest_api_enabled_requires_pretty_permalinks_and_wp_json(): void {
-        $this->assertTrue( GECX_Admin::is_standard_rest_api_enabled() );
+        $this->assertTrue( Admin::is_standard_rest_api_enabled() );
 
         $GLOBALS['gecx_test_rest_url_prefix'] = 'api';
-        $this->assertFalse( GECX_Admin::is_standard_rest_api_enabled() );
+        $this->assertFalse( Admin::is_standard_rest_api_enabled() );
         $GLOBALS['gecx_test_rest_url_prefix'] = 'wp-json';
 
         $GLOBALS['gecx_test_rest_plain_permalinks'] = true;
-        $this->assertFalse( GECX_Admin::is_standard_rest_api_enabled() );
+        $this->assertFalse( Admin::is_standard_rest_api_enabled() );
         $GLOBALS['gecx_test_rest_plain_permalinks'] = false;
 
         update_option( 'permalink_structure', '/index.php/%postname%/' );
-        $this->assertFalse( GECX_Admin::is_standard_rest_api_enabled() );
+        $this->assertFalse( Admin::is_standard_rest_api_enabled() );
 
         update_option( 'permalink_structure', '' );
-        $this->assertFalse( GECX_Admin::is_standard_rest_api_enabled() );
+        $this->assertFalse( Admin::is_standard_rest_api_enabled() );
 
         delete_option( 'permalink_structure' );
-        $this->assertFalse( GECX_Admin::is_standard_rest_api_enabled() );
+        $this->assertFalse( Admin::is_standard_rest_api_enabled() );
 
         update_option( 'permalink_structure', '/%postname%/' );
-        $this->assertTrue( GECX_Admin::is_standard_rest_api_enabled() );
+        $this->assertTrue( Admin::is_standard_rest_api_enabled() );
     }
 
     public function test_register_settings_enforces_enum_and_resource_name_sanitize_callbacks(): void {
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->settings_page->register_settings();
 
         $registered = $GLOBALS['gecx_test_registered_settings'] ?? [];
         $this->assertSame(
-            [ GECX_Admin::class, 'sanitize_agent_name' ],
+            [ Admin::class, 'sanitize_agent_name' ],
             $registered['gecx_agent_name']['args']['sanitize_callback'] ?? null
         );
         $this->assertSame(
-            [ GECX_Storefront::class, 'sanitize_button_placement' ],
+            [ Storefront::class, 'sanitize_button_placement' ],
             $registered['gecx_button_placement']['args']['sanitize_callback'] ?? null
         );
         $this->assertSame(
-            [ GECX_Storefront::class, 'sanitize_button_display_style' ],
+            [ Storefront::class, 'sanitize_button_display_style' ],
             $registered['gecx_button_display_style']['args']['sanitize_callback'] ?? null
         );
 
         $valid_agent = 'projects/my-proj/locations/us-central1/agents/agent-123';
-        $this->assertSame( $valid_agent, GECX_Admin::sanitize_agent_name( $valid_agent ) );
-        $this->assertSame( '', GECX_Admin::sanitize_agent_name( 'invalid agent?foo=bar' ) );
-        $this->assertSame( '', GECX_Admin::sanitize_agent_name( [ 'array' ] ) );
+        $this->assertSame( $valid_agent, Admin::sanitize_agent_name( $valid_agent ) );
+        $this->assertSame( '', Admin::sanitize_agent_name( 'invalid agent?foo=bar' ) );
+        $this->assertSame( '', Admin::sanitize_agent_name( [ 'array' ] ) );
 
-        $this->assertSame( 'floating', GECX_Storefront::sanitize_button_placement( 'floating' ) );
-        $this->assertSame( 'nav_menu', GECX_Storefront::sanitize_button_placement( 'arbitrary' ) );
-        $this->assertSame( 'icon-only', GECX_Storefront::sanitize_button_display_style( 'icon-only' ) );
-        $this->assertSame( 'responsive', GECX_Storefront::sanitize_button_display_style( 'arbitrary' ) );
+        $this->assertSame( 'floating', Storefront::sanitize_button_placement( 'floating' ) );
+        $this->assertSame( 'nav_menu', Storefront::sanitize_button_placement( 'arbitrary' ) );
+        $this->assertSame( 'icon-only', Storefront::sanitize_button_display_style( 'icon-only' ) );
+        $this->assertSame( 'responsive', Storefront::sanitize_button_display_style( 'arbitrary' ) );
     }
 
     public function test_render_settings_page_disables_authorize_and_connect_when_rest_api_non_standard(): void {
         $GLOBALS['gecx_test_current_user']    = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $GLOBALS['gecx_test_rest_url_prefix'] = 'custom-api';
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
 
         ob_start();
         $admin->settings_page->render_settings_page();
@@ -1051,7 +1054,7 @@ class AdminTest extends GECX_TestCase {
         // Step 2 (authorized, unlinked) also disables Connect and Re-authorize buttons under plain permalinks.
         $GLOBALS['gecx_test_rest_url_prefix']       = 'wp-json';
         $GLOBALS['gecx_test_rest_plain_permalinks'] = true;
-        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( Admin::AUTH_COMPLETE_OPTION, 1 );
         update_option( 'gecx_sync_last_attempt', time() . ':' . GECX_VERSION );
 
         ob_start();
@@ -1071,7 +1074,7 @@ class AdminTest extends GECX_TestCase {
             'gecx_connect_nonce' => wp_create_nonce( 'gecx_connect_agent_action' ),
         ];
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->connection->handle_connect_agent_redirect();
 
         $this->assertSame(
@@ -1085,7 +1088,7 @@ class AdminTest extends GECX_TestCase {
     }
 
     public function test_enqueue_admin_assets_registers_script_translations(): void {
-        $admin = new GECX_Admin( '/path/to/gecx-agent.php' );
+        $admin = new Admin( '/path/to/gecx-agent.php' );
         $admin->settings_page->add_settings_page();
         $admin->settings_page->enqueue_admin_assets( 'marketing_page_gemini-enterprise-for-cx' );
 

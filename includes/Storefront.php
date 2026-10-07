@@ -14,11 +14,13 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
 
-class GECX_Storefront {
+class Storefront {
 
     /**
      * Path to the main plugin file.

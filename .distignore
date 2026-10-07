@@ -1,0 +1,33 @@
+# Version control and repository configuration
+.git
+.github
+.wordpress-org
+
+# Tests and development tools
+tests
+phpunit.xml.dist
+phpcs.xml.dist
+playwright.config.js
+
+# Build and package manager configuration
+.distignore
+.gitattributes
+.gitignore
+composer.lock
+package.json
+package-lock.json
+build
+dist
+vendor/bin
+
+# Temporary and local environment files
+.phpunit.result.cache
+.wp-env.json
+clover.xml
+coverage.txt
+test-results
+playwright-report
+node_modules
+
+# Documentation for repository only
+README.md

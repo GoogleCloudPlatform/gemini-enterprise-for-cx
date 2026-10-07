@@ -14,6 +14,10 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX\REST;
+
+use Google\Gemini_Enterprise_For_CX\Auth;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
@@ -24,7 +28,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * and the order webhook route share, and the scoped widening of WooCommerce
  * API key authentication to those routes.
  */
-class GECX_Rest_Console_API {
+class Console_API {
 
     /**
      * The plugin routes that WooCommerce consumer key/secret authentication is
@@ -107,7 +111,7 @@ class GECX_Rest_Console_API {
                     'required'          => true,
                     'validate_callback' => static function( $value ): bool {
                         $trimmed = is_string( $value ) ? trim( $value ) : '';
-                        return '' !== $trimmed && 1 === preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, $trimmed );
+                        return '' !== $trimmed && 1 === preg_match( Auth::RESOURCE_NAME_PATTERN, $trimmed );
                     },
                 ],
                 'token_broker_name' => [
@@ -118,7 +122,7 @@ class GECX_Rest_Console_API {
                         if ( null === $value || '' === trim( (string) $value ) ) {
                             return true;
                         }
-                        return is_string( $value ) && 1 === preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, trim( $value ) );
+                        return is_string( $value ) && 1 === preg_match( Auth::RESOURCE_NAME_PATTERN, trim( $value ) );
                     },
                 ],
             ],
@@ -129,7 +133,7 @@ class GECX_Rest_Console_API {
      * Apply an agent link reported by Google Cloud.
      */
     public function link_agent_handler( \WP_REST_Request $request ) {
-        // Both values are validated raw against GECX_Auth::RESOURCE_NAME_PATTERN,
+        // Both values are validated raw against Auth::RESOURCE_NAME_PATTERN,
         // a strict allowlist. sanitize_text_field() would run first and can only
         // delete characters the allowlist rejects, so it turns a malformed name
         // into a plausible one: "projects/123/agents/<script>alert(1)</script>"
@@ -137,12 +141,12 @@ class GECX_Rest_Console_API {
         // and would be written to gecx_agent_name.
         $agent_name = trim( (string) $request->get_param( 'agent_name' ) );
 
-        if ( '' === $agent_name || ! preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, $agent_name ) ) {
+        if ( '' === $agent_name || ! preg_match( Auth::RESOURCE_NAME_PATTERN, $agent_name ) ) {
             return new \WP_Error( 'gecx_invalid_agent_name', __( 'Missing or malformed agent_name.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 
         $token_broker = trim( (string) $request->get_param( 'token_broker_name' ) );
-        if ( '' !== $token_broker && ! preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, $token_broker ) ) {
+        if ( '' !== $token_broker && ! preg_match( Auth::RESOURCE_NAME_PATTERN, $token_broker ) ) {
             return new \WP_Error( 'gecx_invalid_token_broker', __( 'Malformed token_broker_name.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 
@@ -155,13 +159,13 @@ class GECX_Rest_Console_API {
 
         // An explicit link ends the merchant's earlier unlink: from here on
         // SyncState reconciles this binding again.
-        delete_option( GECX_Auth::MERCHANT_UNLINKED_OPTION );
+        delete_option( Auth::MERCHANT_UNLINKED_OPTION );
 
         // A widget the merchant switched off stays off until they switch it
         // back on, and so does the order webhook.
-        if ( ! get_option( GECX_Auth::MERCHANT_DISABLED_OPTION, false ) ) {
+        if ( ! get_option( Auth::MERCHANT_DISABLED_OPTION, false ) ) {
             update_option( 'gecx_agent_enabled', 1 );
-            GECX_Rest_Order_Webhook::set_order_webhook_status( 'active' );
+            Order_Webhook::set_order_webhook_status( 'active' );
         }
 
         return new \WP_REST_Response( [
@@ -178,10 +182,10 @@ class GECX_Rest_Console_API {
      */
     public static function check_admin_permissions( \WP_REST_Request $request ) {
         // A Cart-Token identifies a shopper session, never a store operator.
-        // GECX_Auth::block_cart_token_off_store_api() already refuses this on
+        // Auth::block_cart_token_off_store_api() already refuses this on
         // 'rest_pre_dispatch'; this is deliberately redundant, so the endpoint
         // stays closed even if that filter is unhooked or reordered.
-        if ( GECX_Auth::is_cart_token_request() ) {
+        if ( Auth::is_cart_token_request() ) {
             return new \WP_Error( 'rest_forbidden', __( 'Unauthorized.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
 
@@ -236,7 +240,7 @@ class GECX_Rest_Console_API {
      */
     // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- WP_REST_Server route callback signature.
     public function get_public_key_handler( \WP_REST_Request $request ) {
-        $public_key = GECX_Auth::get_public_key();
+        $public_key = Auth::get_public_key();
         if ( empty( $public_key ) ) {
             return new \WP_Error( 'rest_cannot_retrieve_key', __( 'Failed to retrieve public key.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
         }
@@ -261,7 +265,7 @@ class GECX_Rest_Console_API {
      * scope, so a read-only key issued for an administrator reached every core
      * route as that administrator.
      *
-     * GECX_Auth::is_request_to_route() resolves the route in the order
+     * Auth::is_request_to_route() resolves the route in the order
      * WordPress does. A request that cannot name a route yet is left to
      * WooCommerce's own answer rather than being granted one.
      */
@@ -277,7 +281,7 @@ class GECX_Rest_Console_API {
             self::$wc_auth_verified_for_dispatch = false;
             return true;
         }
-        if ( GECX_Auth::is_request_to_route( self::WC_AUTHENTICATED_ROUTES ) ) {
+        if ( Auth::is_request_to_route( self::WC_AUTHENTICATED_ROUTES ) ) {
             self::$wc_auth_widened_by_gecx       = true;
             self::$wc_auth_verified_for_dispatch = false;
             return true;

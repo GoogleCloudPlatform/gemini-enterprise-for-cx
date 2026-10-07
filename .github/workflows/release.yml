@@ -66,28 +66,37 @@ jobs:
           fi
           echo "Tag and plugin version both ${version}."
 
+      - name: Install production dependencies
+        run: composer install --no-dev --optimize-autoloader --classmap-authoritative
+
       - name: Build the archive
-        # git archive honours the export-ignore rules in .gitattributes, so the
-        # zip contains only what a store should install. Zipping the working
-        # tree by hand does not, and ships tests/ and the CI config.
+        # Builds the zip from the workspace using .distignore so that production
+        # vendor/autoload.php is included while development, CI, and test files are excluded.
         run: |
           version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
-          mkdir -p build
-          git archive --format=zip \
-            --prefix=gemini-enterprise-for-cx/ \
-            --output="build/gemini-enterprise-for-cx-${version}.zip" \
-            HEAD
+          mkdir -p build/staging/gemini-enterprise-for-cx
+          rsync -rc --exclude-from=.distignore ./ build/staging/gemini-enterprise-for-cx/
+          (cd build/staging && zip -q -r "../gemini-enterprise-for-cx-${version}.zip" gemini-enterprise-for-cx)
           unzip -l "build/gemini-enterprise-for-cx-${version}.zip"
 
-      - name: Fail if the archive contains development files
+      - name: Verify archive contents
         run: |
           version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
-          if unzip -l "build/gemini-enterprise-for-cx-${version}.zip" \
-            | grep -E 'tests/|\.github/|phpunit\.xml|phpcs\.xml|composer\.(json|lock)|package(-lock)?\.json|playwright\.config'; then
+          zip_path="build/gemini-enterprise-for-cx-${version}.zip"
+          if unzip -l "${zip_path}" \
+            | grep -E 'tests/|\.github/|phpunit\.xml|phpcs\.xml|composer\.lock|package(-lock)?\.json|playwright\.config'; then
             echo "Development files leaked into the release archive." >&2
             exit 1
           fi
-          echo "Archive contains plugin files only."
+          if ! unzip -l "${zip_path}" | grep -q 'composer\.json'; then
+            echo "composer.json is missing from the release archive." >&2
+            exit 1
+          fi
+          if ! unzip -l "${zip_path}" | grep -q 'vendor/autoload\.php'; then
+            echo "vendor/autoload.php is missing from the release archive." >&2
+            exit 1
+          fi
+          echo "Archive contains plugin files, composer.json, and vendor/autoload.php only."
 
       - name: Upload the archive as a build artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -195,9 +204,8 @@ jobs:
   # Commits the release to the WordPress.org Plugin Directory
   # (https://wordpress.org/plugins/gemini-enterprise-for-cx/): trunk, a
   # tags/<version> copy, and the listing assets in .wordpress-org/. Trunk is
-  # built with git archive from the commit the package job verified, so the
-  # export-ignore rules in .gitattributes keep it identical to the release zip.
-  # The action skips versions already tagged in SVN.
+  # synced using .distignore from the commit the package job verified, including
+  # the production Composer autoloader. The action skips versions already tagged in SVN.
   #
   # Runs for a tag push, and for a manual run from a v* tag with
   # wordpress_org_dry_run unticked. Every other run gets wordpress-org-dry-run
@@ -221,6 +229,15 @@ jobs:
         with:
           ref: ${{ needs.package.outputs.sha }}
           persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '7.4'
+          coverage: none
+
+      - name: Install production dependencies
+        run: composer install --no-dev --optimize-autoloader --classmap-authoritative
 
       - name: Read the plugin version
         id: version
@@ -256,6 +273,15 @@ jobs:
         with:
           ref: ${{ needs.package.outputs.sha }}
           persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '7.4'
+          coverage: none
+
+      - name: Install production dependencies
+        run: composer install --no-dev --optimize-autoloader --classmap-authoritative
 
       - name: Read the plugin version
         id: version
