@@ -3,6 +3,9 @@
   "private": true,
   "license": "GPL-3.0-or-later",
   "description": "Development tooling only. Nothing here ships in the plugin.",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build": "wp-build",
     "dev": "wp-build --watch",
