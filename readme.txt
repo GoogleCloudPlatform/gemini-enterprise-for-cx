@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.0.1
+Stable tag: 1.1.0
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -131,6 +131,13 @@ After the agent changes the cart, the plugin refreshes WooCommerce cart fragment
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 1.1.0 =
+* Load the plugin's classes with a Composer autoloader, shipped in `vendor/`, under the `Google\Gemini_Enterprise_For_CX` namespace. The global `GECX_*` classes are removed without aliases, so code that referenced them must use the namespaced classes. No behavior changes.
+* Build the admin, storefront and block editor scripts with the WordPress build tooling. They now load minified from `build/scripts/` instead of `assets/js/` (unminified when `SCRIPT_DEBUG` is on), with dependencies and versions taken from the generated asset files. Script handles are unchanged; if a caching or optimization plugin excludes `assets/js/storefront.js` by path, exclude `build/scripts/storefront/` instead.
+* Make the settings page's error messages and the descriptions of the Launcher and Suggested Prompts blocks translatable, and translate the Suggested Prompts block label as a single string.
+* Load translations for the admin, storefront and block editor scripts from WordPress.org language packs, and drop the bundled `languages/` folder and the `Domain Path` header.
+* Declare compatibility with WooCommerce 11.2.
 
 = 1.0.1 =
 * Admin JWTs now last 60 minutes instead of 5, so a merchant who leaves the Gemini Enterprise for CX console to build an agent can still link it when they return.
