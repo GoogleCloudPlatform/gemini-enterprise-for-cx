@@ -84,15 +84,19 @@ jobs:
           version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
           zip_path="build/gemini-enterprise-for-cx-${version}.zip"
           if unzip -l "${zip_path}" \
-            | grep -E 'tests/|\.github/|phpunit\.xml|phpcs\.xml|composer\.(json|lock)|package(-lock)?\.json|playwright\.config'; then
+            | grep -E 'tests/|\.github/|phpunit\.xml|phpcs\.xml|composer\.lock|package(-lock)?\.json|playwright\.config'; then
             echo "Development files leaked into the release archive." >&2
+            exit 1
+          fi
+          if ! unzip -l "${zip_path}" | grep -q 'composer\.json'; then
+            echo "composer.json is missing from the release archive." >&2
             exit 1
           fi
           if ! unzip -l "${zip_path}" | grep -q 'vendor/autoload\.php'; then
             echo "vendor/autoload.php is missing from the release archive." >&2
             exit 1
           fi
-          echo "Archive contains plugin files and vendor/autoload.php only."
+          echo "Archive contains plugin files, composer.json, and vendor/autoload.php only."
 
       - name: Upload the archive as a build artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
