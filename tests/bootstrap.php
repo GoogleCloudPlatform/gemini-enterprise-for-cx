@@ -321,6 +321,16 @@ if ( ! function_exists( 'maybe_unserialize' ) ) {
 }
 
 
+// Real WooCommerce always defines WC_Cache_Helper. Without this stub the
+// tests only exercise the fallback cache-prefix branch.
+if ( ! class_exists( 'WC_Cache_Helper' ) ) {
+    class WC_Cache_Helper {
+        public static function get_cache_prefix( $group ) {
+            return 'wc_cache_' . $group . '_';
+        }
+    }
+}
+
 if ( ! class_exists( 'WC_Session_Handler' ) ) {
     class WC_Session_Handler {
         private array $data = [];

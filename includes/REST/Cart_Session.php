@@ -610,10 +610,10 @@ class Cart_Session {
                     // Invalidate WooCommerce session object cache to force browser reload from database
                     $cache_group = defined( 'WC_SESSION_CACHE_GROUP' )
                         ? WC_SESSION_CACHE_GROUP
-                        : ( defined( 'WC_Cache_Helper::WC_SESSION_CACHE_GROUP' ) ? WC_Cache_Helper::WC_SESSION_CACHE_GROUP : 'wc_sessions' );
+                        : ( defined( 'WC_Cache_Helper::WC_SESSION_CACHE_GROUP' ) ? \WC_Cache_Helper::WC_SESSION_CACHE_GROUP : 'wc_sessions' );
 
                     $cache_prefix = ( class_exists( 'WC_Cache_Helper' ) && method_exists( 'WC_Cache_Helper', 'get_cache_prefix' ) )
-                        ? WC_Cache_Helper::get_cache_prefix( $cache_group )
+                        ? \WC_Cache_Helper::get_cache_prefix( $cache_group )
                         : 'wc_session_';
 
                     wp_cache_delete( $cache_prefix . $session_key, $cache_group );
