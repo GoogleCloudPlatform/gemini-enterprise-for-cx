@@ -14,6 +14,10 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX\REST;
+
+use Google\Gemini_Enterprise_For_CX\Auth;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
@@ -23,7 +27,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Store API: Cart-Token headers on batch responses, the WooCommerce session
  * cookie for a Cart-Token cart, and cart cookies and caches after a change.
  */
-class GECX_Rest_Cart_Session {
+class Cart_Session {
 
     /**
      * Registers this component's hooks.
@@ -455,7 +459,7 @@ class GECX_Rest_Cart_Session {
             ? strtoupper( (string) $request->get_method() )
             : ( isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ) : 'GET' );
 
-        $has_cart_token = ( class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'is_cart_token_request' ) && GECX_Auth::is_cart_token_request() )
+        $has_cart_token = ( Auth::is_cart_token_request() )
             || ! empty( $_SERVER['HTTP_CART_TOKEN'] )
             || '' !== (string) $request->get_header( 'Cart-Token' );
 
@@ -498,7 +502,7 @@ class GECX_Rest_Cart_Session {
             }
 
             // Persist through WC()->session API so custom session handlers (Redis/Memcached) stay in sync.
-            $bound_session_id = GECX_Rest_Session_Attribution::get_gecx_session_id_safely();
+            $bound_session_id = Session_Attribution::get_gecx_session_id_safely();
             if ( isset( WC()->session ) ) {
                 if ( method_exists( WC()->session, 'set' ) ) {
                     WC()->session->set( 'cart', $cart_for_session );
@@ -522,8 +526,8 @@ class GECX_Rest_Cart_Session {
                 if ( '' === $raw_cart_token ) {
                     $raw_cart_token = self::read_cart_token_from_server();
                 }
-                if ( '' !== $raw_cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
-                    $session_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
+                if ( '' !== $raw_cart_token ) {
+                    $session_key = Auth::get_cart_token_customer_id( $raw_cart_token );
                 }
             }
 

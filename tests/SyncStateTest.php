@@ -6,13 +6,15 @@
  *
  * SyncState reconciliation tests for Gemini Enterprise for CX (GECX).
  *
- * Covers GECX_Admin_Console_Sync::sync_agent_state() and the state changes it applies.
+ * Covers Console_Sync::sync_agent_state() and the state changes it applies.
  *
  * @package GECX
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once dirname( __DIR__ ) . '/includes/class-gecx-admin.php';
+
+use Google\Gemini_Enterprise_For_CX\Admin;
+use Google\Gemini_Enterprise_For_CX\Auth;
 
 class SyncStateTest extends GECX_TestCase {
 
@@ -36,7 +38,7 @@ class SyncStateTest extends GECX_TestCase {
      * @return string Status reported by the backend, or ''.
      */
     private function sync( string $current_agent ): string {
-        $admin  = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin  = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         return $admin->console_sync->sync_agent_state( $current_agent );
     }
 
@@ -249,7 +251,7 @@ class SyncStateTest extends GECX_TestCase {
 
 
     public function test_link_required_recovers_binding_when_nothing_is_stored_locally(): void {
-        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( Admin::AUTH_COMPLETE_OPTION, 1 );
         $this->queue(
             gecx_test_http_response(
                 200,
@@ -577,14 +579,14 @@ class SyncStateTest extends GECX_TestCase {
             // the authorize step.
             $this->assert_still_linked();
             $this->assertEquals( 42, get_option( 'gecx_webhook_id' ) );
-            $this->assertEquals( 1, get_option( GECX_Admin::STORE_AUTH_INVALID_OPTION ) );
+            $this->assertEquals( 1, get_option( Admin::STORE_AUTH_INVALID_OPTION ) );
             $this->assert_notice_code( $notice_code );
         }
     }
 
     public function test_synced_clears_a_previous_authorization_failure(): void {
         $this->seed_linked_store();
-        update_option( GECX_Admin::STORE_AUTH_INVALID_OPTION, 1 );
+        update_option( Admin::STORE_AUTH_INVALID_OPTION, 1 );
         $this->queue(
             gecx_test_http_response(
                 200,
@@ -599,7 +601,7 @@ class SyncStateTest extends GECX_TestCase {
 
         $this->sync( 'agents/agent_a' );
 
-        $this->assertFalse( get_option( GECX_Admin::STORE_AUTH_INVALID_OPTION ) );
+        $this->assertFalse( get_option( Admin::STORE_AUTH_INVALID_OPTION ) );
     }
 
     public function test_second_call_inside_the_throttle_window_is_skipped(): void {
@@ -748,7 +750,7 @@ class SyncStateTest extends GECX_TestCase {
         $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
         $this->queue( gecx_test_http_response( 200, '' ) );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->console_sync->ajax_unlink_agent();
 
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
@@ -762,7 +764,7 @@ class SyncStateTest extends GECX_TestCase {
         $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
         $this->queue( gecx_test_http_response( 200, '' ) );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->console_sync->ajax_unlink_agent();
 
         // The agent has to be named in the request, so the call must happen
@@ -781,7 +783,7 @@ class SyncStateTest extends GECX_TestCase {
     public function test_explicit_unlink_without_an_agent_issues_no_request(): void {
         $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->console_sync->ajax_unlink_agent();
 
         // There is nothing to name in the request, and the backend rejects a
@@ -816,7 +818,6 @@ class SyncStateTest extends GECX_TestCase {
             )
         );
 
-        require_once dirname( __DIR__ ) . '/includes/class-gecx-rest-api.php';
         $this->sync( '' );
 
         $this->assertEquals( 1, (int) get_option( 'gecx_agent_enabled' ) );
@@ -838,7 +839,7 @@ class SyncStateTest extends GECX_TestCase {
                 ]
             );
 
-            $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+            $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
             $admin->console_sync->ajax_unlink_agent();
 
             $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
@@ -852,13 +853,13 @@ class SyncStateTest extends GECX_TestCase {
      */
     private function seed_upgraded_store(): void {
         $this->seed_linked_store();
-        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
-        update_option( GECX_Admin::PLUGIN_VERSION_OPTION, '0.9.0' );
+        update_option( Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( Admin::PLUGIN_VERSION_OPTION, '0.9.0' );
     }
 
     /** Run the upgrade check through a fresh admin instance. */
     private function run_version_check(): void {
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->console_sync->maybe_sync_on_version_change();
     }
 
@@ -879,7 +880,7 @@ class SyncStateTest extends GECX_TestCase {
 
         $this->run_version_check();
 
-        $this->assertEquals( GECX_VERSION, get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+        $this->assertEquals( GECX_VERSION, get_option( Admin::PLUGIN_VERSION_OPTION ) );
         $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
         // The window is re-stamped rather than deleted, so the settings page
         // does not sync again on the next load.
@@ -888,8 +889,8 @@ class SyncStateTest extends GECX_TestCase {
 
     public function test_matching_version_does_not_trigger_sync_on_admin_init(): void {
         $this->seed_linked_store();
-        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
-        update_option( GECX_Admin::PLUGIN_VERSION_OPTION, GECX_VERSION );
+        update_option( Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( Admin::PLUGIN_VERSION_OPTION, GECX_VERSION );
 
         $this->run_version_check();
 
@@ -899,12 +900,12 @@ class SyncStateTest extends GECX_TestCase {
     public function test_version_change_records_version_without_sync_before_auth_complete(): void {
         delete_option( 'gecx_agent_name' );
         delete_option( 'gecx_webhook_id' );
-        delete_option( GECX_Admin::AUTH_COMPLETE_OPTION );
-        delete_option( GECX_Admin::PLUGIN_VERSION_OPTION );
+        delete_option( Admin::AUTH_COMPLETE_OPTION );
+        delete_option( Admin::PLUGIN_VERSION_OPTION );
 
         $this->run_version_check();
 
-        $this->assertEquals( GECX_VERSION, get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+        $this->assertEquals( GECX_VERSION, get_option( Admin::PLUGIN_VERSION_OPTION ) );
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
     }
 
@@ -916,7 +917,7 @@ class SyncStateTest extends GECX_TestCase {
 
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
         // Still pending, so the next real admin page load reconciles.
-        $this->assertEquals( '0.9.0', get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+        $this->assertEquals( '0.9.0', get_option( Admin::PLUGIN_VERSION_OPTION ) );
     }
 
     public function test_version_change_does_not_sync_without_manage_options(): void {
@@ -926,7 +927,7 @@ class SyncStateTest extends GECX_TestCase {
         $this->run_version_check();
 
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
-        $this->assertEquals( '0.9.0', get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+        $this->assertEquals( '0.9.0', get_option( Admin::PLUGIN_VERSION_OPTION ) );
     }
 
     public function test_version_change_does_not_sync_for_a_logged_out_request(): void {
@@ -936,7 +937,7 @@ class SyncStateTest extends GECX_TestCase {
         $this->run_version_check();
 
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
-        $this->assertEquals( '0.9.0', get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+        $this->assertEquals( '0.9.0', get_option( Admin::PLUGIN_VERSION_OPTION ) );
     }
 
     public function test_failed_upgrade_sync_leaves_the_version_pending_for_a_retry(): void {
@@ -947,7 +948,7 @@ class SyncStateTest extends GECX_TestCase {
         $this->run_version_check();
 
         $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
-        $this->assertEquals( '0.9.0', get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+        $this->assertEquals( '0.9.0', get_option( Admin::PLUGIN_VERSION_OPTION ) );
         // The retry is rate limited by the window the failed attempt claimed:
         // a second admin page load inside the window makes no HTTP call.
         $this->assertTrue( false !== get_option( 'gecx_sync_last_attempt' ) );
@@ -977,13 +978,13 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertCount( 0, $GLOBALS['gecx_test_settings_errors'] );
         $this->assertEquals(
             [ 'gecx_agent_unlinked' ],
-            get_option( GECX_Admin::PENDING_NOTICES_OPTION )
+            get_option( Admin::PENDING_NOTICES_OPTION )
         );
     }
 
     public function test_deferred_notices_render_once_for_an_administrator(): void {
-        update_option( GECX_Admin::PENDING_NOTICES_OPTION, [ 'gecx_agent_unlinked' ] );
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        update_option( Admin::PENDING_NOTICES_OPTION, [ 'gecx_agent_unlinked' ] );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
 
         ob_start();
         $admin->console_sync->show_pending_sync_notices();
@@ -995,13 +996,13 @@ class SyncStateTest extends GECX_TestCase {
 
         $this->assertStringContainsString( 'automatically unlinked', $first );
         $this->assertEquals( '', $second );
-        $this->assertFalse( get_option( GECX_Admin::PENDING_NOTICES_OPTION ) );
+        $this->assertFalse( get_option( Admin::PENDING_NOTICES_OPTION ) );
     }
 
     public function test_deferred_notices_are_kept_until_an_administrator_sees_them(): void {
-        update_option( GECX_Admin::PENDING_NOTICES_OPTION, [ 'gecx_agent_unlinked' ] );
+        update_option( Admin::PENDING_NOTICES_OPTION, [ 'gecx_agent_unlinked' ] );
         $GLOBALS['gecx_test_current_user'] = new WP_User( 2, 'manager@example.com', [ 'shop_manager' ] );
-        $admin                             = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin                             = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
 
         ob_start();
         $admin->console_sync->show_pending_sync_notices();
@@ -1010,7 +1011,7 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertEquals( '', $output );
         $this->assertEquals(
             [ 'gecx_agent_unlinked' ],
-            get_option( GECX_Admin::PENDING_NOTICES_OPTION )
+            get_option( Admin::PENDING_NOTICES_OPTION )
         );
     }
 
@@ -1032,12 +1033,12 @@ class SyncStateTest extends GECX_TestCase {
         $this->sync( 'agents/agent_a' );
 
         $this->assert_notice_code( 'gecx_agent_unlinked' );
-        $this->assertFalse( get_option( GECX_Admin::PENDING_NOTICES_OPTION ) );
+        $this->assertFalse( get_option( Admin::PENDING_NOTICES_OPTION ) );
     }
 
     public function test_version_change_schedules_async_wp_cron_sync_without_blocking_admin_init(): void {
         $this->seed_linked_store();
-        update_option( GECX_Admin::PLUGIN_VERSION_OPTION, '0.3.13' );
+        update_option( Admin::PLUGIN_VERSION_OPTION, '0.3.13' );
         $GLOBALS['gecx_test_defer_cron'] = true;
 
         $this->queue(
@@ -1053,23 +1054,23 @@ class SyncStateTest extends GECX_TestCase {
             )
         );
 
-        $admin = new GECX_Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->console_sync->maybe_sync_on_version_change();
 
         // No HTTP request is made synchronously during admin_init when cron is deferred.
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
         $this->assertCount( 1, $GLOBALS['gecx_test_scheduled_events'] );
-        $this->assertSame( GECX_Admin::VERSION_SYNC_CRON_HOOK, $GLOBALS['gecx_test_scheduled_events'][0]['hook'] );
+        $this->assertSame( Admin::VERSION_SYNC_CRON_HOOK, $GLOBALS['gecx_test_scheduled_events'][0]['hook'] );
 
         // Executing the scheduled cron callback performs the SyncState call and updates the stored version.
         $admin->console_sync->run_scheduled_version_sync( 1 );
         $this->assertCount( 1, $GLOBALS['gecx_test_http_requests'] );
-        $this->assertSame( GECX_VERSION, get_option( GECX_Admin::PLUGIN_VERSION_OPTION ) );
+        $this->assertSame( GECX_VERSION, get_option( Admin::PLUGIN_VERSION_OPTION ) );
     }
 
     public function test_unlinked_store_does_not_adopt_reported_agent(): void {
-        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
-        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+        update_option( Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( Admin::MERCHANT_UNLINKED_OPTION, 1 );
         update_option( 'gecx_agent_enabled', 0 );
         $this->queue(
             gecx_test_http_response(
@@ -1094,8 +1095,8 @@ class SyncStateTest extends GECX_TestCase {
     }
 
     public function test_unlinked_store_ignores_agent_on_synced(): void {
-        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
-        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+        update_option( Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( Admin::MERCHANT_UNLINKED_OPTION, 1 );
         $this->queue(
             gecx_test_http_response(
                 200,
@@ -1117,8 +1118,8 @@ class SyncStateTest extends GECX_TestCase {
     }
 
     public function test_unlinked_store_still_reports_invalid_credentials(): void {
-        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
-        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+        update_option( Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( Admin::MERCHANT_UNLINKED_OPTION, 1 );
         $this->queue(
             gecx_test_http_response(
                 200,
@@ -1133,13 +1134,13 @@ class SyncStateTest extends GECX_TestCase {
 
         $this->sync( '' );
 
-        $this->assertSame( 1, (int) get_option( GECX_Admin::STORE_AUTH_INVALID_OPTION ) );
+        $this->assertSame( 1, (int) get_option( Admin::STORE_AUTH_INVALID_OPTION ) );
         $this->assert_notice_code( 'gecx_sync_api_keys_invalid' );
     }
 
     public function test_unlink_flag_clears_once_backend_reports_no_link(): void {
-        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
-        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1 );
+        update_option( Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( Admin::MERCHANT_UNLINKED_OPTION, 1 );
         $this->queue(
             gecx_test_http_response(
                 200,
@@ -1152,7 +1153,7 @@ class SyncStateTest extends GECX_TestCase {
             )
         );
         $this->sync( '' );
-        $this->assertFalse( get_option( GECX_Admin::MERCHANT_UNLINKED_OPTION ) );
+        $this->assertFalse( get_option( Admin::MERCHANT_UNLINKED_OPTION ) );
         delete_option( 'gecx_sync_last_attempt' );
 
         // The merchant links again from the console and the best-effort
@@ -1183,7 +1184,7 @@ class SyncStateTest extends GECX_TestCase {
         update_option( 'gecx_webhook_id', $wh_id );
         update_option( 'gecx_auth_complete', 1 );
         update_option( 'gecx_agent_enabled', 0 );
-        update_option( GECX_Admin::MERCHANT_DISABLED_OPTION, 1 );
+        update_option( Admin::MERCHANT_DISABLED_OPTION, 1 );
 
         $this->queue(
             gecx_test_http_response(
@@ -1199,7 +1200,6 @@ class SyncStateTest extends GECX_TestCase {
             )
         );
 
-        require_once dirname( __DIR__ ) . '/includes/class-gecx-rest-api.php';
         $this->sync( '' );
 
         $this->assertSame( 'agents/agent_recovered', get_option( 'gecx_agent_name' ) );
@@ -1209,7 +1209,7 @@ class SyncStateTest extends GECX_TestCase {
 
     public function test_sync_refuses_disallowed_console_host(): void {
         $this->seed_linked_store();
-        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( Admin::AUTH_COMPLETE_OPTION, 1 );
         update_option( 'gecx_console_base_url', 'https://attacker.example' );
 
         $this->sync( 'agents/agent_a' );
@@ -1234,7 +1234,7 @@ class SyncStateTest extends GECX_TestCase {
             ''                                                 => false,
         ];
         foreach ( $cases as $url => $expected ) {
-            $this->assertSame( $expected, GECX_Auth::is_allowed_console_base_url( (string) $url ), 'URL: ' . $url );
+            $this->assertSame( $expected, Auth::is_allowed_console_base_url( (string) $url ), 'URL: ' . $url );
         }
     }
 }

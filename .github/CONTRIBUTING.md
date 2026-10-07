@@ -63,10 +63,11 @@ disclosed, and an out-of-date disclosure is grounds for removal.
 ## Releases
 
 Releases are built by `.github/workflows/release.yml` from a `v*` tag. The
-archive is produced with `git archive`, so the `export-ignore` rules in
-`.gitattributes` decide what ships; never hand-zip the working tree. The
-workflow refuses to publish if the tag and the plugin version disagree, if the
-four version declarations disagree, or if development files reach the archive.
+archive is produced from the workspace using `.distignore` and includes the
+production Composer classmap autoloader (`vendor/autoload.php`); never hand-zip
+the working tree. The workflow refuses to publish if the tag and the plugin
+version disagree, if the four version declarations disagree, or if development
+files reach the archive.
 
 Pushing a `v*` tag (`git tag v0.3.12 && git push origin v0.3.12`) builds the
 zip, attaches it to a GitHub release, and deploys it to WooCommerce.com and to

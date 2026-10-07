@@ -41,9 +41,14 @@ jobs:
         id: build
         run: |
           version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
-          mkdir -p dist
+          mkdir -p build/staging/gemini-enterprise-for-cx dist
+          rsync -rc --exclude-from=.distignore --exclude='vendor/*' ./ build/staging/gemini-enterprise-for-cx/
+          mkdir -p build/staging/gemini-enterprise-for-cx/vendor
+          composer dump-autoload -o --classmap-authoritative --no-dev
+          cp -r vendor/composer vendor/autoload.php build/staging/gemini-enterprise-for-cx/vendor/
+          composer dump-autoload -o
           zip_path="dist/gemini-enterprise-for-cx-${version}.zip"
-          git archive --format=zip --prefix=gemini-enterprise-for-cx/ --output="${zip_path}" HEAD
+          (cd build/staging && zip -q -r "../../${zip_path}" gemini-enterprise-for-cx)
           echo "zip=${zip_path}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 

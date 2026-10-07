@@ -14,11 +14,9 @@
 
 declare(strict_types=1);
 
-if ( ! defined( 'ABSPATH' ) ) {
-    exit; // Exit if accessed directly.
-}
+namespace Google\Gemini_Enterprise_For_CX;
 
-class GECX_Auth {
+class Auth {
 
     /**
      * Allowlist pattern for GCP agent and token broker resource names.

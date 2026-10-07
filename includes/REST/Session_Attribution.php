@@ -14,6 +14,10 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX\REST;
+
+use Google\Gemini_Enterprise_For_CX\Auth;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
@@ -22,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Records which chat session a shopper is in (the /session route and the
  * gecx_session_id cookie) and copies it onto the orders they place.
  */
-class GECX_Rest_Session_Attribution {
+class Session_Attribution {
 
     /**
      * First-party cookie name used to persist the GECX session ID for uncookied
@@ -177,10 +181,10 @@ class GECX_Rest_Session_Attribution {
         $session_key    = '';
         $raw_cart_token = (string) $request->get_header( 'Cart-Token' );
         if ( '' === $raw_cart_token && method_exists( $request, 'get_headers' ) ) {
-            $raw_cart_token = GECX_Rest_Cart_Session::find_cart_token( $request->get_headers() );
+            $raw_cart_token = Cart_Session::find_cart_token( $request->get_headers() );
         }
         if ( '' === $raw_cart_token ) {
-            $raw_cart_token = GECX_Rest_Cart_Session::read_cart_token_from_server();
+            $raw_cart_token = Cart_Session::read_cart_token_from_server();
         }
         if ( '' === $raw_cart_token ) {
             foreach ( [ 'cart_token', 'cartId', 'cart_id' ] as $param_name ) {
@@ -193,7 +197,7 @@ class GECX_Rest_Session_Attribution {
         }
         $cart_token_verified = false;
         if ( '' !== $raw_cart_token ) {
-            $candidate_key = GECX_Auth::get_cart_token_customer_id( $raw_cart_token );
+            $candidate_key = Auth::get_cart_token_customer_id( $raw_cart_token );
             if ( '' !== $candidate_key ) {
                 $is_numeric_user_id = ctype_digit( $candidate_key );
                 $matches_user       = $is_numeric_user_id && '' !== $current_user_key && $candidate_key === $current_user_key;
@@ -213,7 +217,7 @@ class GECX_Rest_Session_Attribution {
             $session_key = $wc_customer_key;
         }
 
-        $has_active_session = GECX_Rest_Cart_Session::has_woocommerce_session_cookie()
+        $has_active_session = Cart_Session::has_woocommerce_session_cookie()
             || ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() )
             || ( method_exists( WC()->session, 'has_session' ) && WC()->session->has_session() )
             || ( isset( WC()->cart ) && method_exists( WC()->cart, 'is_empty' ) && ! WC()->cart->is_empty() );
@@ -237,7 +241,7 @@ class GECX_Rest_Session_Attribution {
         // logged-out wp_rest nonce insert an unbounded number of rows. Such a
         // guest's attribution is carried by the gecx_session_id cookie set
         // above instead.
-        $cookie_customer_key     = GECX_Rest_Cart_Session::get_verified_session_cookie_customer_id();
+        $cookie_customer_key     = Cart_Session::get_verified_session_cookie_customer_id();
         $may_persist_session_row = ( '' !== $cookie_customer_key && $cookie_customer_key === $session_key )
             || $cart_token_verified
             || '' !== $current_user_key;
@@ -387,13 +391,13 @@ class GECX_Rest_Session_Attribution {
         if ( empty( $session_id ) ) {
             $cart_token = (string) $request->get_header( 'Cart-Token' );
             if ( '' === $cart_token && method_exists( $request, 'get_headers' ) ) {
-                $cart_token = GECX_Rest_Cart_Session::find_cart_token( $request->get_headers() );
+                $cart_token = Cart_Session::find_cart_token( $request->get_headers() );
             }
             if ( '' === $cart_token ) {
-                $cart_token = GECX_Rest_Cart_Session::read_cart_token_from_server();
+                $cart_token = Cart_Session::read_cart_token_from_server();
             }
-            if ( '' !== $cart_token && class_exists( 'GECX_Auth' ) && method_exists( 'GECX_Auth', 'get_cart_token_customer_id' ) ) {
-                $customer_id = GECX_Auth::get_cart_token_customer_id( $cart_token );
+            if ( '' !== $cart_token ) {
+                $customer_id = Auth::get_cart_token_customer_id( $cart_token );
                 if ( '' !== $customer_id ) {
                     global $wpdb;
                     if ( isset( $wpdb ) ) {

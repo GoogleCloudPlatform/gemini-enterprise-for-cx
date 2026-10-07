@@ -14,20 +14,23 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX;
+
+use Google\Gemini_Enterprise_For_CX\Admin\Connection;
+use Google\Gemini_Enterprise_For_CX\Admin\Console_Sync;
+use Google\Gemini_Enterprise_For_CX\Admin\Product_Prompts;
+use Google\Gemini_Enterprise_For_CX\Admin\Settings_Page;
+use Google\Gemini_Enterprise_For_CX\REST\Order_Webhook;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
-
-require_once __DIR__ . '/class-gecx-admin-console-sync.php';
-require_once __DIR__ . '/class-gecx-admin-connection.php';
-require_once __DIR__ . '/class-gecx-admin-settings-page.php';
-require_once __DIR__ . '/class-gecx-admin-product-prompts.php';
 
 /**
  * Creates the admin components, and holds the option names, activation hooks
  * and helpers they share.
  */
-class GECX_Admin {
+class Admin {
 
     /**
      * Option set when Google reports that it can no longer use this store's
@@ -58,7 +61,7 @@ class GECX_Admin {
      * binding until the merchant reconnects or an agent is linked again.
      * That is deliberate: it fails closed.
      */
-    public const MERCHANT_UNLINKED_OPTION = GECX_Auth::MERCHANT_UNLINKED_OPTION;
+    public const MERCHANT_UNLINKED_OPTION = Auth::MERCHANT_UNLINKED_OPTION;
 
     /**
      * Option set when the merchant switches the storefront widget off.
@@ -68,7 +71,7 @@ class GECX_Admin {
      * is set. It is cleared when the merchant switches the widget back on, and
      * by an explicit unlink.
      */
-    public const MERCHANT_DISABLED_OPTION = GECX_Auth::MERCHANT_DISABLED_OPTION;
+    public const MERCHANT_DISABLED_OPTION = Auth::MERCHANT_DISABLED_OPTION;
 
     /**
      * Option set once the merchant has authorized or connected the store.
@@ -105,25 +108,25 @@ class GECX_Admin {
     public const VERSION_SYNC_USER_OPTION = 'gecx_version_sync_user_id';
 
     /** Agent state sync with the console. */
-    public GECX_Admin_Console_Sync $console_sync;
+    public Console_Sync $console_sync;
 
     /** The store connection flow. */
-    public GECX_Admin_Connection $connection;
+    public Connection $connection;
 
     /** The settings page. */
-    public GECX_Admin_Settings_Page $settings_page;
+    public Settings_Page $settings_page;
 
     /** The product editor's prompt override field. */
-    public GECX_Admin_Product_Prompts $product_prompts;
+    public Product_Prompts $product_prompts;
 
     /**
      * Creates the admin components and registers their hooks.
      */
     public function __construct( string $plugin_file ) {
-        $this->console_sync    = new GECX_Admin_Console_Sync();
-        $this->connection      = new GECX_Admin_Connection();
-        $this->settings_page   = new GECX_Admin_Settings_Page( $plugin_file, $this->console_sync );
-        $this->product_prompts = new GECX_Admin_Product_Prompts();
+        $this->console_sync    = new Console_Sync();
+        $this->connection      = new Connection();
+        $this->settings_page   = new Settings_Page( $plugin_file, $this->console_sync );
+        $this->product_prompts = new Product_Prompts();
 
         // In this order so callbacks sharing a hook (admin_init,
         // admin_notices) keep the order they ran in as one class.
@@ -139,10 +142,8 @@ class GECX_Admin {
     public static function activate_plugin(): void {
         update_option( 'gecx_do_activation_redirect', true );
         delete_option( 'gecx_dismiss_activation_notice' );
-        GECX_Auth::get_or_generate_keypair();
-        if ( class_exists( 'GECX_Rest_Order_Webhook' ) ) {
-            GECX_Rest_Order_Webhook::reconcile_webhook_on_activation();
-        }
+        Auth::get_or_generate_keypair();
+        Order_Webhook::reconcile_webhook_on_activation();
     }
 
     /**
@@ -156,9 +157,7 @@ class GECX_Admin {
         if ( function_exists( 'as_unschedule_all_actions' ) ) {
             as_unschedule_all_actions( self::VERSION_SYNC_CRON_HOOK, [], 'gecx' );
         }
-        if ( class_exists( 'GECX_Rest_Order_Webhook' ) ) {
-            GECX_Rest_Order_Webhook::set_order_webhook_status( 'paused' );
-        }
+        Order_Webhook::set_order_webhook_status( 'paused' );
     }
 
     /**
@@ -179,7 +178,7 @@ class GECX_Admin {
             return '';
         }
         $sanitized = sanitize_text_field( (string) $agent_name );
-        if ( '' === $sanitized || 1 !== preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, $sanitized ) ) {
+        if ( '' === $sanitized || 1 !== preg_match( Auth::RESOURCE_NAME_PATTERN, $sanitized ) ) {
             return '';
         }
         return $sanitized;

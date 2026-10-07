@@ -14,6 +14,12 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX\Admin;
+
+use Google\Gemini_Enterprise_For_CX\Admin;
+use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\REST\Order_Webhook;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
@@ -23,7 +29,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * console: SyncState calls (throttled, and after a plugin update), the state
  * changes and admin notices they lead to, and unlinking the agent.
  */
-class GECX_Admin_Console_Sync {
+class Console_Sync {
 
     /**
      * Console path that serves the SyncState reconciliation API.
@@ -56,7 +62,7 @@ class GECX_Admin_Console_Sync {
      */
     public function register_hooks(): void {
         add_action( 'admin_init', [ $this, 'maybe_sync_on_version_change' ] );
-        add_action( GECX_Admin::VERSION_SYNC_CRON_HOOK, [ $this, 'run_scheduled_version_sync' ], 10, 1 );
+        add_action( Admin::VERSION_SYNC_CRON_HOOK, [ $this, 'run_scheduled_version_sync' ], 10, 1 );
         add_action( 'admin_notices', [ $this, 'show_pending_sync_notices' ] );
         add_action( 'wp_ajax_gecx_unlink_agent', [ $this, 'ajax_unlink_agent' ] );
     }
@@ -88,18 +94,18 @@ class GECX_Admin_Console_Sync {
         }
 
         $current_version  = (string) GECX_VERSION;
-        $recorded_version = (string) get_option( GECX_Admin::PLUGIN_VERSION_OPTION, '' );
+        $recorded_version = (string) get_option( Admin::PLUGIN_VERSION_OPTION, '' );
         if ( $recorded_version === $current_version ) {
             return;
         }
 
         $current_agent = (string) get_option( 'gecx_agent_name', '' );
-        $auth_complete = (bool) get_option( GECX_Admin::AUTH_COMPLETE_OPTION, false );
+        $auth_complete = (bool) get_option( Admin::AUTH_COMPLETE_OPTION, false );
         if ( ! $auth_complete && ! $this->has_existing_state( $current_agent ) ) {
             // There is nothing to reconcile yet. Record the version anyway so
             // the store's first authorization is not also treated as an
             // upgrade.
-            update_option( GECX_Admin::PLUGIN_VERSION_OPTION, $current_version, false );
+            update_option( Admin::PLUGIN_VERSION_OPTION, $current_version, false );
             return;
         }
 
@@ -121,22 +127,22 @@ class GECX_Admin_Console_Sync {
 
         $admin_user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
         if ( $admin_user_id > 0 ) {
-            update_option( GECX_Admin::VERSION_SYNC_USER_OPTION, $admin_user_id, false );
+            update_option( Admin::VERSION_SYNC_USER_OPTION, $admin_user_id, false );
         }
 
         // Prefer WooCommerce Action Scheduler when available so async version
         // sync still drains on admin requests even if DISABLE_WP_CRON is true.
         if ( function_exists( 'as_enqueue_async_action' ) ) {
-            if ( ! function_exists( 'as_has_scheduled_action' ) || ! as_has_scheduled_action( GECX_Admin::VERSION_SYNC_CRON_HOOK, [], 'gecx' ) ) {
-                as_enqueue_async_action( GECX_Admin::VERSION_SYNC_CRON_HOOK, [], 'gecx' );
+            if ( ! function_exists( 'as_has_scheduled_action' ) || ! as_has_scheduled_action( Admin::VERSION_SYNC_CRON_HOOK, [], 'gecx' ) ) {
+                as_enqueue_async_action( Admin::VERSION_SYNC_CRON_HOOK, [], 'gecx' );
             }
             return;
         }
 
         $cron_disabled = defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON;
         if ( ! $cron_disabled && function_exists( 'wp_schedule_single_event' ) ) {
-            if ( ! function_exists( 'wp_next_scheduled' ) || ! wp_next_scheduled( GECX_Admin::VERSION_SYNC_CRON_HOOK ) ) {
-                wp_schedule_single_event( time(), GECX_Admin::VERSION_SYNC_CRON_HOOK );
+            if ( ! function_exists( 'wp_next_scheduled' ) || ! wp_next_scheduled( Admin::VERSION_SYNC_CRON_HOOK ) ) {
+                wp_schedule_single_event( time(), Admin::VERSION_SYNC_CRON_HOOK );
             }
             return;
         }
@@ -156,21 +162,21 @@ class GECX_Admin_Console_Sync {
         }
 
         $current_version  = (string) GECX_VERSION;
-        $recorded_version = (string) get_option( GECX_Admin::PLUGIN_VERSION_OPTION, '' );
+        $recorded_version = (string) get_option( Admin::PLUGIN_VERSION_OPTION, '' );
         if ( $recorded_version === $current_version ) {
             return;
         }
 
         $current_agent = (string) get_option( 'gecx_agent_name', '' );
-        $auth_complete = (bool) get_option( GECX_Admin::AUTH_COMPLETE_OPTION, false );
+        $auth_complete = (bool) get_option( Admin::AUTH_COMPLETE_OPTION, false );
         if ( ! $auth_complete && ! $this->has_existing_state( $current_agent ) ) {
-            update_option( GECX_Admin::PLUGIN_VERSION_OPTION, $current_version, false );
-            delete_option( GECX_Admin::VERSION_SYNC_USER_OPTION );
+            update_option( Admin::PLUGIN_VERSION_OPTION, $current_version, false );
+            delete_option( Admin::VERSION_SYNC_USER_OPTION );
             return;
         }
 
         if ( $user_id <= 0 ) {
-            $user_id = (int) get_option( GECX_Admin::VERSION_SYNC_USER_OPTION, 0 );
+            $user_id = (int) get_option( Admin::VERSION_SYNC_USER_OPTION, 0 );
         }
 
         $last_stamp = (string) get_option( self::SYNC_THROTTLE_OPTION, '' );
@@ -188,8 +194,8 @@ class GECX_Admin_Console_Sync {
             return;
         }
 
-        update_option( GECX_Admin::PLUGIN_VERSION_OPTION, $current_version, false );
-        delete_option( GECX_Admin::VERSION_SYNC_USER_OPTION );
+        update_option( Admin::PLUGIN_VERSION_OPTION, $current_version, false );
+        delete_option( Admin::VERSION_SYNC_USER_OPTION );
     }
 
     /**
@@ -273,7 +279,7 @@ class GECX_Admin_Console_Sync {
             return;
         }
 
-        $pending = get_option( GECX_Admin::PENDING_NOTICES_OPTION, [] );
+        $pending = get_option( Admin::PENDING_NOTICES_OPTION, [] );
         if ( ! is_array( $pending ) ) {
             $pending = [];
         }
@@ -282,14 +288,14 @@ class GECX_Admin_Console_Sync {
         }
 
         $pending[] = $code;
-        update_option( GECX_Admin::PENDING_NOTICES_OPTION, $pending, false );
+        update_option( Admin::PENDING_NOTICES_OPTION, $pending, false );
     }
 
     /**
      * Render notices left behind by a sync that ran outside the settings page.
      */
     public function show_pending_sync_notices(): void {
-        $pending = get_option( GECX_Admin::PENDING_NOTICES_OPTION, [] );
+        $pending = get_option( Admin::PENDING_NOTICES_OPTION, [] );
         if ( ! is_array( $pending ) || empty( $pending ) ) {
             return;
         }
@@ -299,7 +305,7 @@ class GECX_Admin_Console_Sync {
             return;
         }
 
-        delete_option( GECX_Admin::PENDING_NOTICES_OPTION );
+        delete_option( Admin::PENDING_NOTICES_OPTION );
 
         foreach ( $pending as $code ) {
             $notice = $this->sync_notice( (string) $code );
@@ -372,7 +378,7 @@ class GECX_Admin_Console_Sync {
         if ( ! defined( 'WP_DEBUG' ) || ! WP_DEBUG ) {
             return;
         }
-        GECX_Auth::log( 'sync-state: ' . $message, 'debug' );
+        Auth::log( 'sync-state: ' . $message, 'debug' );
     }
 
     /**
@@ -438,9 +444,9 @@ class GECX_Admin_Console_Sync {
      *                response was obtained.
      */
     public function sync_agent_state( string $current_agent, bool $force = false, ?int $user_id = null ): string {
-        $auth_complete = (bool) get_option( GECX_Admin::AUTH_COMPLETE_OPTION, false );
+        $auth_complete = (bool) get_option( Admin::AUTH_COMPLETE_OPTION, false );
         if ( ! $auth_complete && $this->has_existing_state( $current_agent ) ) {
-            update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1, 'no' );
+            update_option( Admin::AUTH_COMPLETE_OPTION, 1, 'no' );
             $auth_complete = true;
         }
 
@@ -449,8 +455,8 @@ class GECX_Admin_Console_Sync {
             return '';
         }
 
-        $admin_jwt = GECX_Auth::generate_admin_jwt( $user_id )
-            ?? GECX_Auth::generate_existing_rs256_admin_jwt( $user_id );
+        $admin_jwt = Auth::generate_admin_jwt( $user_id )
+            ?? Auth::generate_existing_rs256_admin_jwt( $user_id );
         if ( empty( $admin_jwt ) ) {
             $this->log_sync( 'skipped, admin JWT unavailable' );
             return '';
@@ -459,7 +465,7 @@ class GECX_Admin_Console_Sync {
         // get_console_base_url() returns '' unless the configured value is an
         // https origin on an allowed host. sslverify is intentionally left at
         // its default and must stay there.
-        $console_base = GECX_Auth::get_console_base_url();
+        $console_base = Auth::get_console_base_url();
         if ( '' === $console_base ) {
             $this->log_sync( 'skipped, console base URL refused' );
             return '';
@@ -524,9 +530,9 @@ class GECX_Admin_Console_Sync {
 
         $this->apply_sync_status( $status, $data, $current_agent );
         if ( defined( 'GECX_VERSION' ) && '' !== (string) GECX_VERSION ) {
-            update_option( GECX_Admin::PLUGIN_VERSION_OPTION, (string) GECX_VERSION, false );
+            update_option( Admin::PLUGIN_VERSION_OPTION, (string) GECX_VERSION, false );
         }
-        delete_option( GECX_Admin::VERSION_SYNC_USER_OPTION );
+        delete_option( Admin::VERSION_SYNC_USER_OPTION );
         return $status;
     }
 
@@ -541,7 +547,7 @@ class GECX_Admin_Console_Sync {
         // The response echoes the shop the backend resolved from the JWT
         // issuer. Refuse to mutate local state if it is not this store.
         $shop_domain = (string) ( $data['shopDomain'] ?? $data['shop_domain'] ?? '' );
-        $this_store  = GECX_Auth::get_sanitized_store_domain();
+        $this_store  = Auth::get_sanitized_store_domain();
         if ( '' !== $shop_domain && '' !== $this_store
             && 0 !== strcasecmp( $shop_domain, $this_store ) ) {
             $this->log_sync( 'response shop domain does not match this store, ignoring' );
@@ -552,13 +558,13 @@ class GECX_Admin_Console_Sync {
             // Re-running the WooCommerce authorization issues fresh API keys,
             // which is also how Google re-reads this store's public key, so
             // send the merchant back to that step instead of only warning.
-            update_option( GECX_Admin::STORE_AUTH_INVALID_OPTION, 1 );
+            update_option( Admin::STORE_AUTH_INVALID_OPTION, 1 );
             $this->add_sync_notice( 'gecx_sync_jwt_invalid' );
             return;
         }
 
         if ( 'WOOCOMMERCE_SYNC_STATUS_WOOCOMMERCE_API_KEYS_INVALID' === $status ) {
-            update_option( GECX_Admin::STORE_AUTH_INVALID_OPTION, 1 );
+            update_option( Admin::STORE_AUTH_INVALID_OPTION, 1 );
             $this->add_sync_notice( 'gecx_sync_api_keys_invalid' );
             return;
         }
@@ -573,11 +579,11 @@ class GECX_Admin_Console_Sync {
         // same thing. Validated raw and rejected, never sanitized into shape:
         // stripping characters would turn a name this store should refuse into
         // one it silently adopts.
-        if ( '' !== $actual && ! preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, $actual ) ) {
+        if ( '' !== $actual && ! preg_match( Auth::RESOURCE_NAME_PATTERN, $actual ) ) {
             $this->log_sync( 'response agent id is not a valid resource name, ignoring' );
             return;
         }
-        if ( '' !== $actual_broker && ! preg_match( GECX_Auth::RESOURCE_NAME_PATTERN, $actual_broker ) ) {
+        if ( '' !== $actual_broker && ! preg_match( Auth::RESOURCE_NAME_PATTERN, $actual_broker ) ) {
             $this->log_sync( 'response token broker is not a valid resource name, ignoring' );
             return;
         }
@@ -588,15 +594,15 @@ class GECX_Admin_Console_Sync {
         // from the console; LinkAgent pushes link-agent to this store only
         // best-effort and relies on SyncState when that push fails, so the
         // flag must not outlive the unlink it guards.
-        if ( '' === $actual && GECX_Admin::is_merchant_unlinked()
+        if ( '' === $actual && Admin::is_merchant_unlinked()
             && in_array( $status, [ 'WOOCOMMERCE_SYNC_STATUS_SYNCED', 'WOOCOMMERCE_SYNC_STATUS_LINK_REQUIRED' ], true ) ) {
-            delete_option( GECX_Admin::MERCHANT_UNLINKED_OPTION );
+            delete_option( Admin::MERCHANT_UNLINKED_OPTION );
             $this->log_sync( 'backend confirms no linked agent, clearing unlink flag' );
         }
 
         if ( 'WOOCOMMERCE_SYNC_STATUS_SYNCED' === $status ) {
             // Whatever the backend objected to before is resolved.
-            delete_option( GECX_Admin::STORE_AUTH_INVALID_OPTION );
+            delete_option( Admin::STORE_AUTH_INVALID_OPTION );
 
             // SYNCED is decided by comparing the bare agent id, so a store that
             // was linked before the backend started returning canonical
@@ -604,7 +610,7 @@ class GECX_Admin_Console_Sync {
             // locally. The backend reports the canonical name and the broker on
             // this path too, and a SYNCED store never reaches the adopt branch
             // below, so this is the only chance to pick them up.
-            if ( GECX_Admin::is_merchant_unlinked() ) {
+            if ( Admin::is_merchant_unlinked() ) {
                 return;
             }
             if ( '' !== $actual && $actual !== $current_agent ) {
@@ -624,12 +630,12 @@ class GECX_Admin_Console_Sync {
         // backend, not that the store is unlinked. Reaching this point means
         // the backend already accepted the JWT and the API keys, so whatever it
         // objected to previously is resolved.
-        delete_option( GECX_Admin::STORE_AUTH_INVALID_OPTION );
+        delete_option( Admin::STORE_AUTH_INVALID_OPTION );
 
         // The merchant unlinked this store and the backend has not yet
         // confirmed it holds no link, so what it reports is the stale binding,
         // not consent to link again.
-        if ( '' !== $actual && GECX_Admin::is_merchant_unlinked() ) {
+        if ( '' !== $actual && Admin::is_merchant_unlinked() ) {
             $this->log_sync( 'backend reports an agent the merchant unlinked, not adopting' );
             return;
         }
@@ -639,7 +645,7 @@ class GECX_Admin_Console_Sync {
         if ( '' !== $actual ) {
             $current_broker    = (string) get_option( 'gecx_token_broker_name', '' );
             $current_enabled   = (int) get_option( 'gecx_agent_enabled', 0 );
-            $merchant_disabled = (bool) get_option( GECX_Admin::MERCHANT_DISABLED_OPTION, false );
+            $merchant_disabled = (bool) get_option( Admin::MERCHANT_DISABLED_OPTION, false );
             if ( $actual === $current_agent && $actual_broker === $current_broker
                 && ( 1 === $current_enabled || $merchant_disabled ) ) {
                 return;
@@ -656,9 +662,7 @@ class GECX_Admin_Console_Sync {
             // orders.
             if ( ! $merchant_disabled ) {
                 update_option( 'gecx_agent_enabled', 1 );
-                if ( class_exists( 'GECX_Rest_Order_Webhook' ) ) {
-                    GECX_Rest_Order_Webhook::set_order_webhook_status( 'active' );
-                }
+                Order_Webhook::set_order_webhook_status( 'active' );
             }
             delete_option( 'gecx_dismiss_activation_notice' );
 
@@ -703,14 +707,12 @@ class GECX_Admin_Console_Sync {
      * left in place so a re-link does not lose their customization.
      */
     private function unlink_agent_internal(): void {
-        if ( class_exists( 'GECX_Rest_Order_Webhook' ) ) {
-            GECX_Rest_Order_Webhook::set_order_webhook_status( 'paused' );
-        }
+        Order_Webhook::set_order_webhook_status( 'paused' );
         // Legacy shared secret, retired in favour of the store's RSA keypair.
         // Still deleted so a store upgraded from an older version does not keep
         // the row around after disconnecting.
         delete_option( 'gecx_api_secret' );
-        delete_option( GECX_Admin::STORE_AUTH_INVALID_OPTION );
+        delete_option( Admin::STORE_AUTH_INVALID_OPTION );
         delete_option( 'gecx_agent_name' );
         delete_option( 'gecx_token_broker_name' );
         update_option( 'gecx_agent_enabled', 0 );
@@ -734,13 +736,13 @@ class GECX_Admin_Console_Sync {
      *              when the console base URL is refused.
      */
     private function unlink_agent_remotely( string $agent_id ): bool {
-        $console_base = GECX_Auth::get_console_base_url();
+        $console_base = Auth::get_console_base_url();
         if ( '' === $console_base ) {
             $this->log_sync( 'unlink not sent, console base URL refused; unlinking locally' );
             return true;
         }
 
-        $admin_jwt = GECX_Auth::generate_admin_jwt();
+        $admin_jwt = Auth::generate_admin_jwt();
         if ( empty( $admin_jwt ) ) {
             $this->log_sync( 'unlink skipped, admin JWT unavailable' );
             return false;
@@ -828,8 +830,8 @@ class GECX_Admin_Console_Sync {
         }
 
         $this->unlink_agent_internal();
-        delete_option( GECX_Admin::MERCHANT_DISABLED_OPTION );
-        update_option( GECX_Admin::MERCHANT_UNLINKED_OPTION, 1, false );
+        delete_option( Admin::MERCHANT_DISABLED_OPTION );
+        update_option( Admin::MERCHANT_UNLINKED_OPTION, 1, false );
 
         // Re-linking right after an unlink must reconcile immediately.
         self::clear_sync_window();

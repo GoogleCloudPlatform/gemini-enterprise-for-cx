@@ -34,6 +34,9 @@ jobs:
           tools: phpunit:9.6.36
           coverage: ${{ matrix.php-version == '8.2' && 'pcov' || 'none' }}
 
+      - name: Generate autoloader
+        run: composer dump-autoload -o
+
       - name: Run PHPUnit tests with coverage
         if: matrix.php-version == '8.2'
         run: |

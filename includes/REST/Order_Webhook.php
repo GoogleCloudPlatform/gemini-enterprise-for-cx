@@ -14,6 +14,11 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX\REST;
+
+use Google\Gemini_Enterprise_For_CX\Admin;
+use Google\Gemini_Enterprise_For_CX\Auth;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
@@ -23,7 +28,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * about attributed orders: its secret, creation, status and removal, which
  * orders it is delivered for, and what its payload contains.
  */
-class GECX_Rest_Order_Webhook {
+class Order_Webhook {
 
     /**
      * Longest accepted value for a WooCommerce consumer secret.
@@ -61,7 +66,7 @@ class GECX_Rest_Order_Webhook {
         register_rest_route( 'gecx/v1', '/webhooks/order-created', [
             'methods'             => 'POST',
             'callback'            => [ $this, 'order_created_webhooks_handler' ],
-            'permission_callback' => [ 'GECX_Rest_Console_API', 'check_admin_permissions' ],
+            'permission_callback' => [ Console_API::class, 'check_admin_permissions' ],
             'args'                => [
                 'consumer_secret' => [
                     'description'       => __( 'Optional WooCommerce consumer secret used to sign order.created webhook deliveries.', 'gemini-enterprise-for-cx' ),
@@ -120,7 +125,7 @@ class GECX_Rest_Order_Webhook {
             return new \WP_Error( 'missing_secret', __( 'No webhook secret configured.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 
-        $console_url = GECX_Auth::get_console_base_url();
+        $console_url = Auth::get_console_base_url();
         if ( '' === $console_url ) {
             return new \WP_Error( 'console_url_refused', __( 'The configured Google Cloud console URL is not allowed, so no webhook was registered.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
@@ -212,7 +217,7 @@ class GECX_Rest_Order_Webhook {
             }
             return $webhook;
         } catch ( \Exception $e ) {
-            GECX_Auth::log( 'Failed to register WooCommerce order webhook: ' . $e->getMessage(), 'error' );
+            Auth::log( 'Failed to register WooCommerce order webhook: ' . $e->getMessage(), 'error' );
             return new \WP_Error(
                 'webhook_registration_failed',
                 __( 'Failed to register WooCommerce order webhook.', 'gemini-enterprise-for-cx' ),
@@ -251,9 +256,7 @@ class GECX_Rest_Order_Webhook {
         // New credentials are in place, so clear any invalidation recorded by
         // a previous SyncState reconciliation and mark store auth complete.
         update_option( 'gecx_auth_complete', 1, 'no' );
-        if ( class_exists( 'GECX_Admin' ) ) {
-            delete_option( GECX_Admin::STORE_AUTH_INVALID_OPTION );
-        }
+        delete_option( Admin::STORE_AUTH_INVALID_OPTION );
 
         return new \WP_REST_Response( [
             'success'    => true,
@@ -306,14 +309,14 @@ class GECX_Rest_Order_Webhook {
                                 } catch ( \Throwable $e ) {
                                     // A duplicate webhook that cannot be deleted is not worth
                                     // failing the request over, but it should be visible.
-                                    GECX_Auth::log( 'Failed to delete duplicate order webhook: ' . $e->getMessage(), 'debug' );
+                                    Auth::log( 'Failed to delete duplicate order webhook: ' . $e->getMessage(), 'debug' );
                                 }
                             }
                         }
                     }
                 }
             } catch ( \Throwable $e ) {
-                GECX_Auth::log( 'Failed to query order webhooks: ' . $e->getMessage(), 'debug' );
+                Auth::log( 'Failed to query order webhooks: ' . $e->getMessage(), 'debug' );
             }
         }
 
@@ -324,7 +327,7 @@ class GECX_Rest_Order_Webhook {
                     $primary->save();
                 } catch ( \Throwable $e ) {
                     // Raising here would fatal inside an activation or deactivation hook.
-                    GECX_Auth::log( 'Failed to save order webhook status: ' . $e->getMessage(), 'debug' );
+                    Auth::log( 'Failed to save order webhook status: ' . $e->getMessage(), 'debug' );
                 }
             }
         }
@@ -347,7 +350,7 @@ class GECX_Rest_Order_Webhook {
                     }
                 } catch ( \Throwable $e ) {
                     // Cleanup continues with the remaining webhooks either way.
-                    GECX_Auth::log( 'Failed to delete order webhook by stored id: ' . $e->getMessage(), 'debug' );
+                    Auth::log( 'Failed to delete order webhook by stored id: ' . $e->getMessage(), 'debug' );
                 }
             }
             if ( function_exists( 'wc_get_webhooks' ) ) {
@@ -363,13 +366,13 @@ class GECX_Rest_Order_Webhook {
                                 try {
                                     $candidate->delete( true );
                                 } catch ( \Throwable $e ) {
-                                    GECX_Auth::log( 'Failed to delete order webhook candidate: ' . $e->getMessage(), 'debug' );
+                                    Auth::log( 'Failed to delete order webhook candidate: ' . $e->getMessage(), 'debug' );
                                 }
                             }
                         }
                     }
                 } catch ( \Throwable $e ) {
-                    GECX_Auth::log( 'Failed to query order webhooks during cleanup: ' . $e->getMessage(), 'debug' );
+                    Auth::log( 'Failed to query order webhooks during cleanup: ' . $e->getMessage(), 'debug' );
                 }
             }
         } else {
@@ -505,7 +508,7 @@ class GECX_Rest_Order_Webhook {
         }
 
         $session_id = (string) $order->get_meta( '_gecx_session_id' );
-        return GECX_Rest_Session_Attribution::is_valid_session_id( $session_id, true );
+        return Session_Attribution::is_valid_session_id( $session_id, true );
     }
 
     /**
