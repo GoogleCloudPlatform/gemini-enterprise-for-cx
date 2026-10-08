@@ -9,19 +9,19 @@
  * @package Gemini_Enterprise_For_CX
  */
 
+use Google\Gemini_Enterprise_For_CX\Auth;
+
 // If run outside of WordPress uninstallation, die.
 if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
-    die;
+	die;
 }
 
 global $wpdb;
 
 // WordPress loads uninstall.php standalone, so none of the plugin's classes are
-// autoloaded here. The uninstall notification is authenticated with a JWT signed
-// by the store's own private key, which means the auth class has to be pulled in
-// by hand before that key is deleted further down.
-if ( ! class_exists( 'GECX_Auth' ) && file_exists( __DIR__ . '/includes/class-gecx-auth.php' ) ) {
-    require_once __DIR__ . '/includes/class-gecx-auth.php';
+// autoloaded by default. Load Composer autoloader to access plugin classes.
+if ( file_exists( __DIR__ . '/vendor/autoload.php' ) ) {
+	require_once __DIR__ . '/vendor/autoload.php';
 }
 
 // Options, webhooks and post meta all live in per-site tables, so on a network
@@ -68,7 +68,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
     try {
         $gecx_agent_name  = get_option( 'gecx_agent_name', '' );
         // Same allowlist as every other outbound call; '' means do not notify.
-        $gecx_console_url = class_exists( 'GECX_Auth' ) ? GECX_Auth::get_console_base_url() : '';
+        $gecx_console_url = class_exists( Auth::class ) ? Auth::get_console_base_url() : '';
         $gecx_store_url   = function_exists( 'home_url' ) ? home_url() : '';
 
         // 1. Delete the order.created webhook if present.
@@ -84,8 +84,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                     }
                 } catch ( \Exception $e ) {
                     // Uninstall must finish regardless, but record why the webhook survived.
-                    if ( class_exists( 'GECX_Auth' ) ) {
-                        GECX_Auth::log( 'Uninstall could not delete the stored webhook: ' . $e->getMessage(), 'debug' );
+                    if ( class_exists( Auth::class ) ) {
+                        Auth::log( 'Uninstall could not delete the stored webhook: ' . $e->getMessage(), 'debug' );
                     }
                 }
             }
@@ -105,8 +105,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                         }
                     }
                 } catch ( \Throwable $e ) {
-                    if ( class_exists( 'GECX_Auth' ) ) {
-                        GECX_Auth::log( 'Uninstall could not query webhooks: ' . $e->getMessage(), 'debug' );
+                    if ( class_exists( Auth::class ) ) {
+                        Auth::log( 'Uninstall could not query webhooks: ' . $e->getMessage(), 'debug' );
                     }
                 }
             }
@@ -172,8 +172,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             || ! empty( get_option( 'gecx_auth_complete', 0 ) );
 
         $gecx_jwt = '';
-        if ( $gecx_was_connected && '' !== $gecx_console_url && class_exists( 'GECX_Auth' ) ) {
-            $gecx_jwt = (string) GECX_Auth::generate_existing_rs256_admin_jwt();
+        if ( $gecx_was_connected && '' !== $gecx_console_url && class_exists( Auth::class ) ) {
+            $gecx_jwt = (string) Auth::generate_existing_rs256_admin_jwt();
         }
 
         if ( $gecx_was_connected && '' !== $gecx_console_url && ! empty( $gecx_jwt ) && ! empty( $gecx_store_url ) ) {
@@ -197,8 +197,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             $gecx_budget_spent   = ( $gecx_notify_elapsed + $gecx_notify_timeout_seconds ) > $gecx_notify_budget_seconds;
 
             if ( $gecx_budget_spent ) {
-                if ( class_exists( 'GECX_Auth' ) ) {
-                    GECX_Auth::log( 'Uninstall notification skipped for ' . $gecx_store_url . ': too little of the notification time budget remains to complete a request.', 'warning' );
+                if ( class_exists( Auth::class ) ) {
+                    Auth::log( 'Uninstall notification skipped for ' . $gecx_store_url . ': too little of the notification time budget remains to complete a request.', 'warning' );
                 }
             } elseif ( 'https' === $gecx_scheme && ( function_exists( 'wp_http_validate_url' ) ? wp_http_validate_url( $gecx_webhook_url ) : filter_var( $gecx_webhook_url, FILTER_VALIDATE_URL ) ) ) {
                 // Bounded at $gecx_notify_timeout_seconds for this site, and at
@@ -206,7 +206,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                 // sites that hold a store-signed RS256 JWT reach this.
                 //
                 // wp_safe_remote_post() rather than wp_remote_post(), matching
-                // the two GECX_Admin_Console_Sync call sites: the destination comes from an
+                // the two Admin\Console_Sync call sites: the destination comes from an
                 // option, so the resolved host is validated against the private
                 // and loopback ranges. redirection 0 because the request
                 // carries the webhook HMAC signature and, on stores that have
@@ -230,10 +230,10 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         // full REST access to orders and customers after the plugin is gone.
         // Done after the notification above, which the backend may verify by
         // fetching /wp-json/gecx/v1/public-key with those keys.
-        if ( class_exists( 'GECX_Auth' ) ) {
-            GECX_Auth::revoke_woocommerce_api_keys();
+        if ( class_exists( Auth::class ) ) {
+            Auth::revoke_woocommerce_api_keys();
         }
-        // Literal names: GECX_Auth is not guaranteed to be loaded here.
+        // Literal names: Auth is not guaranteed to be loaded here.
         delete_option( 'gecx_merchant_unlinked' );
         delete_option( 'gecx_merchant_disabled' );
         if ( function_exists( 'wp_clear_scheduled_hook' ) ) {
@@ -280,7 +280,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
 
         if ( function_exists( 'delete_transient' ) ) {
             delete_transient( 'gecx_admin_notice_error' );
-            delete_transient( class_exists( 'GECX_Auth' ) && defined( 'GECX_Auth::GUEST_JWT_CACHE_TRANSIENT' ) ? GECX_Auth::GUEST_JWT_CACHE_TRANSIENT : 'gecx_guest_jwt_cache' );
+            delete_transient( class_exists( Auth::class ) && defined( Auth::class . '::GUEST_JWT_CACHE_TRANSIENT' ) ? Auth::GUEST_JWT_CACHE_TRANSIENT : 'gecx_guest_jwt_cache' );
         }
 
         if ( isset( $wpdb ) && is_object( $wpdb ) && method_exists( $wpdb, 'query' ) && method_exists( $wpdb, 'prepare' ) ) {

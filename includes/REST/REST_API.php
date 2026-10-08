@@ -14,45 +14,41 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX\REST;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
-
-require_once __DIR__ . '/class-gecx-rest-console-api.php';
-require_once __DIR__ . '/class-gecx-rest-cart-session.php';
-require_once __DIR__ . '/class-gecx-rest-session-attribution.php';
-require_once __DIR__ . '/class-gecx-rest-auth-context.php';
-require_once __DIR__ . '/class-gecx-rest-order-webhook.php';
 
 /**
  * Creates the components that make up the plugin's REST API. Each registers
  * its own routes and hooks.
  */
-class GECX_Rest_API {
+class REST_API {
 
     /** Console routes and WooCommerce API key authentication. */
-    public GECX_Rest_Console_API $console;
+    public Console_API $console;
 
     /** Cart session sync for carts the agent changes. */
-    public GECX_Rest_Cart_Session $cart_session;
+    public Cart_Session $cart_session;
 
     /** Chat session to order attribution. */
-    public GECX_Rest_Session_Attribution $session_attribution;
+    public Session_Attribution $session_attribution;
 
     /** Shopper auth context for the storefront widget. */
-    public GECX_Rest_Auth_Context $auth_context;
+    public Auth_Context $auth_context;
 
     /** The order webhook. */
-    public GECX_Rest_Order_Webhook $order_webhook;
+    public Order_Webhook $order_webhook;
 
     /**
      * Creates the components.
      */
     public function __construct() {
-        $this->console             = new GECX_Rest_Console_API();
-        $this->cart_session        = new GECX_Rest_Cart_Session();
-        $this->session_attribution = new GECX_Rest_Session_Attribution();
-        $this->auth_context        = new GECX_Rest_Auth_Context();
-        $this->order_webhook       = new GECX_Rest_Order_Webhook();
+        $this->console             = new Console_API();
+        $this->cart_session        = new Cart_Session();
+        $this->session_attribution = new Session_Attribution();
+        $this->auth_context        = new Auth_Context();
+        $this->order_webhook       = new Order_Webhook();
     }
 }

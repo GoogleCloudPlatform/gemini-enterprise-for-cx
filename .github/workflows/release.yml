@@ -65,7 +65,6 @@ jobs:
             exit 1
           fi
           echo "Tag and plugin version both ${version}."
-
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -77,38 +76,48 @@ jobs:
           npm ci
           npm run build
 
-      - name: Build the archive
-        # git archive honours the export-ignore rules in .gitattributes, so the
-        # zip contains only what a store should install. Built assets from the
-        # gitignored build/ directory are injected before packaging.
-        run: |
-          version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
-          mkdir -p artifacts dist
-          git archive --format=tar --prefix=gemini-enterprise-for-cx/ HEAD \
-            | tar -x -C artifacts
-          cp -r build artifacts/gemini-enterprise-for-cx/
-          (cd artifacts && zip -r -q "../dist/gemini-enterprise-for-cx-${version}.zip" gemini-enterprise-for-cx)
-          unzip -l "dist/gemini-enterprise-for-cx-${version}.zip"
+      - name: Install production dependencies
+        run: composer install --no-dev --optimize-autoloader --classmap-authoritative
 
-      - name: Fail if the archive contains development files
+      - name: Build the archive
+        # Builds the zip from the workspace using .distignore so that built assets
+        # and production vendor/autoload.php are included while development, CI, and test files are excluded.
         run: |
           version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
-          if unzip -l "dist/gemini-enterprise-for-cx-${version}.zip" \
-            | grep -E 'tests/|\.github/|packages/|eslint|oxlint|phpunit\.xml|phpcs\.xml|composer\.(json|lock)|package(-lock)?\.json|playwright\.config'; then
+          mkdir -p build/staging/gemini-enterprise-for-cx
+          rsync -rc --exclude-from=.distignore ./ build/staging/gemini-enterprise-for-cx/
+          (cd build/staging && zip -q -r "../gemini-enterprise-for-cx-${version}.zip" gemini-enterprise-for-cx)
+          rm -rf build/staging
+          unzip -l "build/gemini-enterprise-for-cx-${version}.zip"
+
+      - name: Verify archive contents
+        run: |
+          version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
+          zip_path="build/gemini-enterprise-for-cx-${version}.zip"
+          if unzip -l "${zip_path}" \
+            | grep -E 'tests/|\.github/|packages/|eslint|oxlint|phpunit\.xml|phpcs\.xml|composer\.lock|package(-lock)?\.json|playwright\.config'; then
             echo "Development files leaked into the release archive." >&2
             exit 1
           fi
-          if ! unzip -l "dist/gemini-enterprise-for-cx-${version}.zip" | grep -q 'build/scripts/storefront/index.min.js'; then
+          if ! unzip -l "${zip_path}" | grep -q 'build/scripts/storefront/index.min.js'; then
             echo "Built JavaScript assets missing from release archive." >&2
             exit 1
           fi
-          echo "Archive contains plugin files only."
+          if ! unzip -l "${zip_path}" | grep -q 'composer\.json'; then
+            echo "composer.json is missing from the release archive." >&2
+            exit 1
+          fi
+          if ! unzip -l "${zip_path}" | grep -q 'vendor/autoload\.php'; then
+            echo "vendor/autoload.php is missing from the release archive." >&2
+            exit 1
+          fi
+          echo "Archive contains plugin files, built JavaScript assets, composer.json, and vendor/autoload.php only."
 
       - name: Upload the archive as a build artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: plugin-zip
-          path: dist/*.zip
+          path: build/*.zip
           if-no-files-found: error
 
       - name: Attach the archive to the GitHub release
@@ -118,13 +127,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          mkdir -p dist
           if gh release view "${TAG}" > /dev/null 2>&1; then
-            gh release upload "${TAG}" dist/*.zip --clobber
+            gh release upload "${TAG}" build/*.zip --clobber
           else
             # Use the newest changelog.txt entry as the release notes.
-            awk '/^[0-9]{4}-[0-9]{2}-[0-9]{2} - version /{n++} n==1' changelog.txt > dist/notes.md
-            gh release create "${TAG}" dist/*.zip --verify-tag --title "${TAG}" --notes-file dist/notes.md
+            awk '/^[0-9]{4}-[0-9]{2}-[0-9]{2} - version /{n++} n==1' changelog.txt > build/notes.md
+            gh release create "${TAG}" build/*.zip --verify-tag --title "${TAG}" --notes-file build/notes.md
           fi
 
   # Uploads the same archive to the WooCommerce.com Marketplace listing
@@ -151,7 +159,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: plugin-zip
-          path: dist
+          path: build
 
       # The credentials go to curl as files (-F name=<file), never as
       # arguments, so they are not in the process list while curl runs.
@@ -173,7 +181,7 @@ jobs:
         env:
           WOO_PRODUCT_ID: ${{ vars.WOO_PRODUCT_ID || secrets.WOO_PRODUCT_ID || '18734006901326' }}
         run: |
-          zip_path="$(ls dist/gemini-enterprise-for-cx-*.zip)"
+          zip_path="$(ls build/gemini-enterprise-for-cx-*.zip)"
           version="$(basename "${zip_path}" .zip)"
           version="${version#gemini-enterprise-for-cx-}"
           echo "Deploying ${zip_path} as version ${version}."
@@ -208,17 +216,17 @@ jobs:
         if: always()
         run: rm -f "${RUNNER_TEMP}/woo-user" "${RUNNER_TEMP}/woo-pass"
 
-  # Commits the release to the WordPress.org Plugin Directory
-  # (https://wordpress.org/plugins/gemini-enterprise-for-cx/): trunk, a
-  # tags/<version> copy, and the listing assets in .wordpress-org/. Trunk is
-  # deployed from the verified release archive, keeping it identical to the
-  # release zip. The action skips versions already tagged in SVN.
-  #
-  # Runs for a tag push, and for a manual run from a v* tag with
-  # wordpress_org_dry_run unticked. Every other run gets wordpress-org-dry-run
-  # below instead. The wordpress-org environment holds the SVN credentials and
-  # should require a reviewer and allow only v* tags. See "Releases" in
-  # CONTRIBUTING.md.
+        # Commits the release to the WordPress.org Plugin Directory
+        # (https://wordpress.org/plugins/gemini-enterprise-for-cx/): trunk, a
+        # tags/<version> copy, and the listing assets in .wordpress-org/. Trunk is
+        # deployed from the verified release archive, keeping it identical to the
+        # release zip. The action skips versions already tagged in SVN.
+        #
+        # Runs for a tag push, and for a manual run from a v* tag with
+        # wordpress_org_dry_run unticked. Every other run gets wordpress-org-dry-run
+        # below instead. The wordpress-org environment holds the SVN credentials and
+        # should require a reviewer and allow only v* tags. See "Releases" in
+        # CONTRIBUTING.md.
   wordpress-org:
     name: Deploy to WordPress.org
     needs: package
@@ -241,12 +249,12 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: plugin-zip
-          path: dist
+          path: build
 
       - name: Extract archive for SVN deploy
         run: |
-          mkdir -p dist/svn-export
-          unzip -q dist/gemini-enterprise-for-cx-*.zip -d dist/svn-export
+          mkdir -p build/svn-export
+          unzip -q build/gemini-enterprise-for-cx-*.zip -d build/svn-export
 
       - name: Read the plugin version
         id: version
@@ -263,7 +271,7 @@ jobs:
           SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
           SLUG: gemini-enterprise-for-cx
           VERSION: ${{ steps.version.outputs.version }}
-          BUILD_DIR: dist/svn-export/gemini-enterprise-for-cx
+          BUILD_DIR: build/svn-export/gemini-enterprise-for-cx
           ASSETS_DIR: .wordpress-org
 
   # Checks out SVN and shows what a deploy of this commit would change, without
@@ -289,12 +297,12 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: plugin-zip
-          path: dist
+          path: build
 
       - name: Extract archive for SVN deploy
         run: |
-          mkdir -p dist/svn-export
-          unzip -q dist/gemini-enterprise-for-cx-*.zip -d dist/svn-export
+          mkdir -p build/svn-export
+          unzip -q build/gemini-enterprise-for-cx-*.zip -d build/svn-export
 
       - name: Read the plugin version
         id: version
@@ -311,5 +319,5 @@ jobs:
           SVN_PASSWORD: dry-run
           SLUG: gemini-enterprise-for-cx
           VERSION: ${{ steps.version.outputs.version }}
-          BUILD_DIR: dist/svn-export/gemini-enterprise-for-cx
+          BUILD_DIR: build/svn-export/gemini-enterprise-for-cx
           ASSETS_DIR: .wordpress-org

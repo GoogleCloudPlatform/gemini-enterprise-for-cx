@@ -35,22 +35,22 @@ if ( ! defined( 'GECX_VERSION' ) ) {
 }
 
 
-// Load core classes.
-require_once plugin_dir_path( __FILE__ ) . 'includes/class-gecx-auth.php';
-require_once plugin_dir_path( __FILE__ ) . 'includes/class-gecx-rest-api.php';
-require_once plugin_dir_path( __FILE__ ) . 'includes/class-gecx-admin.php';
-require_once plugin_dir_path( __FILE__ ) . 'includes/class-gecx-storefront.php';
+
+// Load Composer autoloader.
+if ( file_exists( __DIR__ . '/vendor/autoload.php' ) ) {
+    require_once __DIR__ . '/vendor/autoload.php';
+}
 
 // Register activation and deactivation hooks.
-register_activation_hook( __FILE__, [ 'GECX_Admin', 'activate_plugin' ] );
-register_deactivation_hook( __FILE__, [ 'GECX_Admin', 'deactivate_plugin' ] );
+register_activation_hook( __FILE__, [ Google\Gemini_Enterprise_For_CX\Admin::class, 'activate_plugin' ] );
+register_deactivation_hook( __FILE__, [ Google\Gemini_Enterprise_For_CX\Admin::class, 'deactivate_plugin' ] );
 
 /**
  * Initializes the plugin's components if WooCommerce is active.
  *
- * Every component assumes WooCommerce: GECX_Rest_API hooks WooCommerce
- * filters and calls WC(), GECX_Storefront renders on WooCommerce templates,
- * GECX_Admin adds fields to the WooCommerce product editor, and GECX_Auth
+ * Every component assumes WooCommerce: REST_API hooks WooCommerce
+ * filters and calls WC(), Storefront renders on WooCommerce templates,
+ * Admin adds fields to the WooCommerce product editor, and Auth
  * authenticates WooCommerce Store API requests. The "Requires Plugins" header
  * keeps WordPress from activating this plugin without WooCommerce, but that
  * header is only honoured on WordPress 6.5 and later and this plugin supports
@@ -67,10 +67,10 @@ function gecx_init_components(): void {
         return;
     }
 
-    new GECX_Auth();
-    new GECX_Rest_API();
-    new GECX_Admin( __FILE__ );
-    new GECX_Storefront( __FILE__ );
+    new Google\Gemini_Enterprise_For_CX\Auth();
+    new Google\Gemini_Enterprise_For_CX\REST\REST_API();
+    new Google\Gemini_Enterprise_For_CX\Admin( __FILE__ );
+    new Google\Gemini_Enterprise_For_CX\Storefront( __FILE__ );
 }
 add_action( 'plugins_loaded', 'gecx_init_components' );
 

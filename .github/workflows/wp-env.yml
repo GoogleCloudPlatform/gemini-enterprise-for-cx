@@ -41,6 +41,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '7.4'
+          coverage: none
+
+      - name: Generate autoloader
+        run: composer dump-autoload -o
+
       - name: Configure wp-env
         # WooCommerce is listed before "." deliberately. wp-env activates
         # pluginSources in array order, chained with &&, and gecx-agent.php

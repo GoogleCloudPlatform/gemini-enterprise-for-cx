@@ -14,6 +14,11 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX\Admin;
+
+use Google\Gemini_Enterprise_For_CX\Admin;
+use Google\Gemini_Enterprise_For_CX\Auth;
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
@@ -22,7 +27,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Connects the store to the Gemini Enterprise for CX console: the redirect
  * that starts linking an agent, and the callback the console returns to.
  */
-class GECX_Admin_Connection {
+class Connection {
 
     /**
      * Console path that receives the WooCommerce OAuth callback.
@@ -99,14 +104,14 @@ class GECX_Admin_Connection {
             }
         );
         update_option( 'gecx_pending_oauth_states', $states, 'no' );
-        update_option( GECX_Admin::AUTH_COMPLETE_OPTION, 1, 'no' );
+        update_option( Admin::AUTH_COMPLETE_OPTION, 1, 'no' );
         // The merchant just completed the connect flow, so reconciling with
         // Google is what they asked for.
-        delete_option( GECX_Admin::MERCHANT_UNLINKED_OPTION );
+        delete_option( Admin::MERCHANT_UNLINKED_OPTION );
 
         // Release the sync throttle window so the landing page reconciles
         // immediately with Cloud if the direct webhook has not arrived yet.
-        GECX_Admin_Console_Sync::clear_sync_window();
+        Console_Sync::clear_sync_window();
 
         // Nothing is persisted from this request. Google Cloud records the link
         // against the merchant's project and reports it to gecx/v1/link-agent with the
@@ -132,7 +137,7 @@ class GECX_Admin_Connection {
      * @return string Connect URL, or '' when the console base URL is refused.
      */
     public function build_connect_agent_url(): string {
-        $console_base = GECX_Auth::get_console_base_url();
+        $console_base = Auth::get_console_base_url();
         if ( '' === $console_base ) {
             // Nothing is minted: neither the OAuth state nor the admin JWT may
             // be handed to a destination that is not an allowed console host.
@@ -161,8 +166,8 @@ class GECX_Admin_Connection {
             admin_url( 'admin.php?page=gemini-enterprise-for-cx' )
         );
 
-        $is_authorized = (bool) get_option( GECX_Admin::AUTH_COMPLETE_OPTION, false ) && ! get_option( GECX_Admin::STORE_AUTH_INVALID_OPTION, false );
-        $admin_jwt     = $is_authorized ? GECX_Auth::generate_admin_jwt() : '';
+        $is_authorized = (bool) get_option( Admin::AUTH_COMPLETE_OPTION, false ) && ! get_option( Admin::STORE_AUTH_INVALID_OPTION, false );
+        $admin_jwt     = $is_authorized ? Auth::generate_admin_jwt() : '';
 
         // rawurlencode() is required here: WordPress core's add_query_arg()
         // delegates to _http_build_query(..., false), which does NOT URL-encode
@@ -181,7 +186,7 @@ class GECX_Admin_Connection {
         // admin_jwt goes in the fragment so browsers never send it to the
         // console server, write it to access logs, or leak it via Referer.
         // Appending '#...' is safe only while $connect_url has no fragment:
-        // GECX_Auth::is_allowed_console_base_url() rejects bases with one,
+        // Auth::is_allowed_console_base_url() rejects bases with one,
         // CONSOLE_APP_PATH must not contain '#', and return_url is encoded.
         if ( ! empty( $admin_jwt ) ) {
             $connect_url .= '#admin_jwt=' . rawurlencode( $admin_jwt );
@@ -218,7 +223,7 @@ class GECX_Admin_Connection {
             return;
         }
 
-        if ( ! GECX_Admin::is_standard_rest_api_enabled() ) {
+        if ( ! Admin::is_standard_rest_api_enabled() ) {
             set_transient(
                 'gecx_admin_notice_error',
                 __( 'Gemini Enterprise for CX requires pretty permalinks and the default /wp-json REST API prefix. Please enable pretty permalinks under Settings > Permalinks before connecting.', 'gemini-enterprise-for-cx' ),
@@ -252,7 +257,7 @@ class GECX_Admin_Connection {
             }
             return;
         }
-        // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect -- Redirecting to the external Google Cloud Console URL on an allowlisted host (GECX_Auth::get_console_base_url()).
+        // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect -- Redirecting to the external Google Cloud Console URL on an allowlisted host (Auth::get_console_base_url()).
         wp_redirect( $connect_url, 302 );
         if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
             exit;

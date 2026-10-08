@@ -137,13 +137,13 @@ echo '3. Cart-Token authentication hooks and Store API scoping'
 echo '================================================================='
 
 wp eval '
-  if ( ! class_exists( "GECX_Auth" ) ) {
-      fwrite( STDERR, "FAIL: GECX_Auth was not loaded\n" );
+  if ( ! class_exists( \Google\Gemini_Enterprise_For_CX\Auth::class ) ) {
+      fwrite( STDERR, "FAIL: Google\\Gemini_Enterprise_For_CX\\Auth was not loaded\n" );
       exit( 1 );
   }
 
   // Inspect the hooks the plugin actually registered. Constructing a second
-  // GECX_Auth here would register the very callbacks being looked for and
+  // Auth here would register the very callbacks being looked for and
   // the assertion would pass no matter what the plugin did.
   $registered = static function ( string $hook, string $method ): bool {
       global $wp_filter;
@@ -153,7 +153,7 @@ wp eval '
       foreach ( $wp_filter[ $hook ]->callbacks as $callbacks ) {
           foreach ( $callbacks as $callback ) {
               $fn = $callback["function"];
-              if ( is_array( $fn ) && $fn[0] instanceof GECX_Auth && $method === $fn[1] ) {
+              if ( is_array( $fn ) && $fn[0] instanceof \Google\Gemini_Enterprise_For_CX\Auth && $method === $fn[1] ) {
                   return true;
               }
           }
@@ -173,8 +173,8 @@ wp eval '
   // reset_cart_token_state() is inert outside the stub suite, so the static
   // is driven directly. newInstanceWithoutConstructor() keeps this from
   // adding a duplicate copy of both filters.
-  $auth = ( new ReflectionClass( "GECX_Auth" ) )->newInstanceWithoutConstructor();
-  $state = new ReflectionProperty( "GECX_Auth", "authenticated_via_cart_token" );
+  $auth = ( new ReflectionClass( \Google\Gemini_Enterprise_For_CX\Auth::class ) )->newInstanceWithoutConstructor();
+  $state = new ReflectionProperty( \Google\Gemini_Enterprise_For_CX\Auth::class, "authenticated_via_cart_token" );
   $state->setAccessible( true );
   $state->setValue( null, true );
 

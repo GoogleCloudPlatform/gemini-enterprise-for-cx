@@ -88,14 +88,23 @@ jobs:
           npm ci
           npm run build
 
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '7.4'
+          coverage: none
+
+      - name: Install production dependencies
+        run: composer install --no-dev --optimize-autoloader --classmap-authoritative
+
       - name: Export the plugin as it ships
         # Plugin Check has to see the artifact a store installs, not the
         # repository. Checking the repository root fails on files that never
         # ship: .github and the dotfiles trip "hidden files are not
         # permitted", and phpunit.xml.dist and phpcs.xml.dist trip
         # "application files are not permitted" because of the .dist
-        # extension. git archive applies the export-ignore rules in
-        # .gitattributes, which is what produces the release zip.
+        # extension. .distignore excludes those development and test files while
+        # preserving the production Composer autoloader.
         #
         # The same export is packaged as a zip and uploaded below, so every
         # pull request produces an installable build of itself.
@@ -103,9 +112,7 @@ jobs:
         run: |
           version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
           mkdir -p artifacts dist
-          git archive --format=tar --prefix=gemini-enterprise-for-cx/ HEAD \
-            | tar -x -C artifacts
-          cp -r build artifacts/gemini-enterprise-for-cx/
+          rsync -rc --exclude-from=.distignore ./ artifacts/gemini-enterprise-for-cx/
           (cd artifacts && zip -r -q "../dist/gemini-enterprise-for-cx-${version}.zip" gemini-enterprise-for-cx)
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           find artifacts/gemini-enterprise-for-cx -type f | sort
