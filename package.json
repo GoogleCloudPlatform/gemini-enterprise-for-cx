@@ -3,12 +3,36 @@
   "private": true,
   "license": "GPL-3.0-or-later",
   "description": "Development tooling only. Nothing here ships in the plugin.",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
+    "build": "wp-build",
+    "postbuild": "node .github/scripts/clean-build.mjs",
+    "dev": "wp-build --watch",
+    "lint:js": "oxlint packages/ && eslint packages/",
+    "lint": "npm run lint:js",
     "test:e2e": "playwright test --project=placement",
     "test:e2e:themes": "bash tests/e2e/bin/run-theme-matrix.sh"
   },
+  "wpPlugin": {
+    "name": "gecx",
+    "scriptGlobal": "gecx",
+    "packageNamespace": "gecx",
+    "handlePrefix": "gecx"
+  },
   "devDependencies": {
     "@playwright/test": "1.63.0",
-    "@wordpress/env": "11.16.0"
+    "@wordpress/block-editor": "^18.1.0",
+    "@wordpress/blocks": "^16.2.0",
+    "@wordpress/build": "^0.25.0",
+    "@wordpress/components": "^42.0.0",
+    "@wordpress/element": "^9.0.0",
+    "@wordpress/env": "11.16.0",
+    "@wordpress/eslint-plugin": "^27.1.0",
+    "@wordpress/i18n": "^6.30.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-oxlint": "^1.87.0",
+    "oxlint": "^1.87.0"
   }
 }

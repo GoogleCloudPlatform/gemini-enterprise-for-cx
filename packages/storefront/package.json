@@ -1,0 +1,8 @@
+{
+  "name": "@gecx/storefront",
+  "version": "0.3.32",
+  "private": true,
+  "main": "src/index.js",
+  "wpScript": true
+}
+

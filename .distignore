@@ -16,8 +16,15 @@ playwright.config.js
 composer.lock
 package.json
 package-lock.json
-build
+packages
+eslint.config.mjs
+.oxlintrc.json
 dist
+artifacts
+build/*.zip
+build/*.md
+build/staging
+build/svn-export
 vendor/bin
 
 # Temporary and local environment files

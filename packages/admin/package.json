@@ -1,0 +1,11 @@
+{
+  "name": "@gecx/admin",
+  "version": "0.3.32",
+  "private": true,
+  "main": "src/index.js",
+  "wpScript": true,
+  "wpScriptExtraDependencies": [
+    "jquery"
+  ]
+}
+

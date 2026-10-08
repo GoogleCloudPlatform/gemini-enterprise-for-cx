@@ -757,7 +757,7 @@ class StorefrontTest extends GECX_TestCase {
             $this->markTestSkipped( 'Node.js is not available to test storefront.js runtime.' );
         }
 
-        $script_path = dirname( __DIR__ ) . '/assets/js/storefront.js';
+        $script_path = dirname( __DIR__ ) . '/packages/storefront/src/index.js';
         $js_code     = file_get_contents( $script_path );
         $this->assertNotEmpty( $js_code );
 
@@ -832,7 +832,7 @@ JS;
             $this->markTestSkipped( 'Node.js is not available to test storefront.js runtime.' );
         }
 
-        $script_path = dirname( __DIR__ ) . '/assets/js/storefront.js';
+        $script_path = dirname( __DIR__ ) . '/packages/storefront/src/index.js';
         $test_runner = <<<'JS'
 const fs = require('fs');
 const vm = require('vm');
@@ -1166,7 +1166,7 @@ JS;
             '%s %s %s %s',
             escapeshellcmd( $node ),
             escapeshellarg( $temp_runner ),
-            escapeshellarg( dirname( __DIR__ ) . '/assets/js/storefront.js' ),
+            escapeshellarg( dirname( __DIR__ ) . '/packages/storefront/src/index.js' ),
             escapeshellarg( (string) wp_json_encode( $scenario ) )
         );
         $output = [];

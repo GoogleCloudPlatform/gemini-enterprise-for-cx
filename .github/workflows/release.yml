@@ -65,18 +65,29 @@ jobs:
             exit 1
           fi
           echo "Tag and plugin version both ${version}."
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies and build assets
+        run: |
+          npm ci
+          npm run build
 
       - name: Install production dependencies
         run: composer install --no-dev --optimize-autoloader --classmap-authoritative
 
       - name: Build the archive
-        # Builds the zip from the workspace using .distignore so that production
-        # vendor/autoload.php is included while development, CI, and test files are excluded.
+        # Builds the zip from the workspace using .distignore so that built assets
+        # and production vendor/autoload.php are included while development, CI, and test files are excluded.
         run: |
           version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
           mkdir -p build/staging/gemini-enterprise-for-cx
           rsync -rc --exclude-from=.distignore ./ build/staging/gemini-enterprise-for-cx/
           (cd build/staging && zip -q -r "../gemini-enterprise-for-cx-${version}.zip" gemini-enterprise-for-cx)
+          rm -rf build/staging
           unzip -l "build/gemini-enterprise-for-cx-${version}.zip"
 
       - name: Verify archive contents
@@ -84,8 +95,12 @@ jobs:
           version="$(sed -n 's/^ \* Version:[[:space:]]*\(.*\)$/\1/p' gecx-agent.php | tr -d '[:space:]')"
           zip_path="build/gemini-enterprise-for-cx-${version}.zip"
           if unzip -l "${zip_path}" \
-            | grep -E 'tests/|\.github/|phpunit\.xml|phpcs\.xml|composer\.lock|package(-lock)?\.json|playwright\.config'; then
+            | grep -E 'tests/|\.github/|packages/|eslint|oxlint|phpunit\.xml|phpcs\.xml|composer\.lock|package(-lock)?\.json|playwright\.config'; then
             echo "Development files leaked into the release archive." >&2
+            exit 1
+          fi
+          if ! unzip -l "${zip_path}" | grep -q 'build/scripts/storefront/index.min.js'; then
+            echo "Built JavaScript assets missing from release archive." >&2
             exit 1
           fi
           if ! unzip -l "${zip_path}" | grep -q 'composer\.json'; then
@@ -96,7 +111,7 @@ jobs:
             echo "vendor/autoload.php is missing from the release archive." >&2
             exit 1
           fi
-          echo "Archive contains plugin files, composer.json, and vendor/autoload.php only."
+          echo "Archive contains plugin files, built JavaScript assets, composer.json, and vendor/autoload.php only."
 
       - name: Upload the archive as a build artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -201,17 +216,17 @@ jobs:
         if: always()
         run: rm -f "${RUNNER_TEMP}/woo-user" "${RUNNER_TEMP}/woo-pass"
 
-  # Commits the release to the WordPress.org Plugin Directory
-  # (https://wordpress.org/plugins/gemini-enterprise-for-cx/): trunk, a
-  # tags/<version> copy, and the listing assets in .wordpress-org/. Trunk is
-  # synced using .distignore from the commit the package job verified, including
-  # the production Composer autoloader. The action skips versions already tagged in SVN.
-  #
-  # Runs for a tag push, and for a manual run from a v* tag with
-  # wordpress_org_dry_run unticked. Every other run gets wordpress-org-dry-run
-  # below instead. The wordpress-org environment holds the SVN credentials and
-  # should require a reviewer and allow only v* tags. See "Releases" in
-  # CONTRIBUTING.md.
+        # Commits the release to the WordPress.org Plugin Directory
+        # (https://wordpress.org/plugins/gemini-enterprise-for-cx/): trunk, a
+        # tags/<version> copy, and the listing assets in .wordpress-org/. Trunk is
+        # deployed from the verified release archive, keeping it identical to the
+        # release zip. The action skips versions already tagged in SVN.
+        #
+        # Runs for a tag push, and for a manual run from a v* tag with
+        # wordpress_org_dry_run unticked. Every other run gets wordpress-org-dry-run
+        # below instead. The wordpress-org environment holds the SVN credentials and
+        # should require a reviewer and allow only v* tags. See "Releases" in
+        # CONTRIBUTING.md.
   wordpress-org:
     name: Deploy to WordPress.org
     needs: package
@@ -230,14 +245,16 @@ jobs:
           ref: ${{ needs.package.outputs.sha }}
           persist-credentials: false
 
-      - name: Set up PHP
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+      - name: Download the archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          php-version: '7.4'
-          coverage: none
+          name: plugin-zip
+          path: build
 
-      - name: Install production dependencies
-        run: composer install --no-dev --optimize-autoloader --classmap-authoritative
+      - name: Extract archive for SVN deploy
+        run: |
+          mkdir -p build/svn-export
+          unzip -q build/gemini-enterprise-for-cx-*.zip -d build/svn-export
 
       - name: Read the plugin version
         id: version
@@ -254,6 +271,8 @@ jobs:
           SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
           SLUG: gemini-enterprise-for-cx
           VERSION: ${{ steps.version.outputs.version }}
+          BUILD_DIR: build/svn-export/gemini-enterprise-for-cx
+          ASSETS_DIR: .wordpress-org
 
   # Checks out SVN and shows what a deploy of this commit would change, without
   # committing. Needs no environment and no secrets: the SVN checkout is
@@ -274,14 +293,16 @@ jobs:
           ref: ${{ needs.package.outputs.sha }}
           persist-credentials: false
 
-      - name: Set up PHP
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+      - name: Download the archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          php-version: '7.4'
-          coverage: none
+          name: plugin-zip
+          path: build
 
-      - name: Install production dependencies
-        run: composer install --no-dev --optimize-autoloader --classmap-authoritative
+      - name: Extract archive for SVN deploy
+        run: |
+          mkdir -p build/svn-export
+          unzip -q build/gemini-enterprise-for-cx-*.zip -d build/svn-export
 
       - name: Read the plugin version
         id: version
@@ -298,3 +319,5 @@ jobs:
           SVN_PASSWORD: dry-run
           SLUG: gemini-enterprise-for-cx
           VERSION: ${{ steps.version.outputs.version }}
+          BUILD_DIR: build/svn-export/gemini-enterprise-for-cx
+          ASSETS_DIR: .wordpress-org

@@ -1024,7 +1024,6 @@ function gecxCreateSafeWidgetElement(html, expectedTagName) {
   if (!html || typeof html !== 'string' || !expectedTagName) {
     return null;
   }
-  const tagLower = expectedTagName.toLowerCase();
   const tpl = document.createElement('template');
   let rootSearch = null;
   if (tpl && tpl.content) {
@@ -1041,6 +1040,7 @@ function gecxCreateSafeWidgetElement(html, expectedTagName) {
   if (rootSearch.querySelector('script, iframe, object, embed, svg, img, link, style')) {
     return null;
   }
+  const tagLower = expectedTagName.toLowerCase();
   const parsed = rootSearch.querySelector(tagLower);
   if (!parsed || (parsed.children && parsed.children.length > 0)) {
     return null;

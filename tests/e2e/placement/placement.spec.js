@@ -16,7 +16,9 @@ const { stubWidgetBundle, visibleLaunchers, settle } = require('../support/launc
 
 const ROOT = path.join(__dirname, '..', '..', '..');
 const assets = JSON.parse(execFileSync('php', [path.join(ROOT, 'tests/e2e/bin/print-storefront-assets.php')]).toString());
-const STOREFRONT_JS = fs.readFileSync(path.join(ROOT, 'assets/js/storefront.js'), 'utf8');
+const STOREFRONT_JS = fs.existsSync(path.join(ROOT, 'build/scripts/storefront/index.min.js'))
+  ? fs.readFileSync(path.join(ROOT, 'build/scripts/storefront/index.min.js'), 'utf8')
+  : fs.readFileSync(path.join(ROOT, 'packages/storefront/src/index.js'), 'utf8');
 const BUTTON = assets.buttonHtml;
 const WIDGET_URL = 'https://www.gstatic.com/gecx/chat-widget/woocommerce-chat-widget.js';
 
