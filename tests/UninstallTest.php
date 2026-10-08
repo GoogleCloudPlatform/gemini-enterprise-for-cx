@@ -72,10 +72,13 @@ class UninstallTest extends GECX_TestCase {
 		}
 
 		// Verify webhook is removed
-		if ( function_exists( 'wc_get_webhooks' ) ) {
-			foreach ( wc_get_webhooks( [ 'status' => 'any', 'limit' => 50 ] ) as $wh ) {
-				$this->assertNotSame( 'GECX Agent Order Created', $wh->get_name(), 'GECX Webhook was not deleted by uninstall.' );
-			}
+		if ( class_exists( 'WC_Data_Store' ) ) {
+			$data_store  = \WC_Data_Store::load( 'webhook' );
+			$webhook_ids = $data_store->search_webhooks( [
+				'search' => 'GECX Agent Order Created',
+				'limit'  => 50,
+			] );
+			$this->assertEmpty( $webhook_ids, 'GECX Webhook was not deleted by uninstall.' );
 		}
 	}
 }

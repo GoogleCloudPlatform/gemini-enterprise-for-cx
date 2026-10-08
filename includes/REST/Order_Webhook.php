@@ -291,16 +291,17 @@ class Order_Webhook {
             }
         }
 
-        if ( function_exists( 'wc_get_webhooks' ) ) {
+        if ( class_exists( 'WC_Data_Store' ) ) {
             try {
-                $webhooks = wc_get_webhooks( [
-                    'status' => 'any',
+                $data_store  = \WC_Data_Store::load( 'webhook' );
+                $webhook_ids = $data_store->search_webhooks( [
                     'search' => 'GECX Agent Order Created',
                     'limit'  => 25,
                 ] );
-                if ( is_array( $webhooks ) ) {
-                    foreach ( $webhooks as $candidate ) {
-                        if ( $candidate instanceof \WC_Webhook && 'order.created' === $candidate->get_topic() && 'GECX Agent Order Created' === $candidate->get_name() ) {
+                if ( is_array( $webhook_ids ) ) {
+                    foreach ( $webhook_ids as $candidate_id ) {
+                        $candidate = new \WC_Webhook( (int) $candidate_id );
+                        if ( $candidate->get_id() > 0 && 'order.created' === $candidate->get_topic() && 'GECX Agent Order Created' === $candidate->get_name() ) {
                             if ( null === $primary ) {
                                 $primary = $candidate;
                                 update_option( 'gecx_webhook_id', $primary->get_id() );
@@ -354,16 +355,17 @@ class Order_Webhook {
                     Auth::log( 'Failed to delete order webhook by stored id: ' . $e->getMessage(), 'debug' );
                 }
             }
-            if ( function_exists( 'wc_get_webhooks' ) ) {
+            if ( class_exists( 'WC_Data_Store' ) ) {
                 try {
-                    $webhooks = wc_get_webhooks( [
-                        'status' => 'any',
+                    $data_store  = \WC_Data_Store::load( 'webhook' );
+                    $webhook_ids = $data_store->search_webhooks( [
                         'search' => 'GECX Agent Order Created',
                         'limit'  => 25,
                     ] );
-                    if ( is_array( $webhooks ) ) {
-                        foreach ( $webhooks as $candidate ) {
-                            if ( $candidate instanceof \WC_Webhook && 'order.created' === $candidate->get_topic() && 'GECX Agent Order Created' === $candidate->get_name() ) {
+                    if ( is_array( $webhook_ids ) ) {
+                        foreach ( $webhook_ids as $candidate_id ) {
+                            $candidate = new \WC_Webhook( (int) $candidate_id );
+                            if ( $candidate->get_id() > 0 && 'order.created' === $candidate->get_topic() && 'GECX Agent Order Created' === $candidate->get_name() ) {
                                 try {
                                     $candidate->delete( true );
                                 } catch ( \Throwable $e ) {

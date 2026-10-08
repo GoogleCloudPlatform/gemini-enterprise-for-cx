@@ -15,15 +15,14 @@ use Google\Gemini_Enterprise_For_CX\Admin;
 use Google\Gemini_Enterprise_For_CX\Auth;
 use Google\Gemini_Enterprise_For_CX\REST\Order_Webhook;
 use Google\Gemini_Enterprise_For_CX\REST\REST_API;
-use PHPUnit\Framework\TestCase;
-
-class WebhookLifecycleTest extends TestCase {
+class WebhookLifecycleTest extends GECX_TestCase {
 
     private REST_API $rest_api;
     private Admin $admin;
 
     protected function setUp(): void {
-        gecx_reset_test_globals();
+        parent::setUp();
+        wp_set_current_user( 1 );
         $this->rest_api = new REST_API();
         $this->admin    = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
     }
@@ -168,10 +167,10 @@ class WebhookLifecycleTest extends TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $order = new WC_Order( 500 );
-        $order->save();
+        $order    = wc_create_order();
+        $order_id = $order->get_id();
 
-        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 500 ) );
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, $order_id ) );
     }
 
     public function test_delivery_suppressed_with_invalid_session_id(): void {
@@ -181,11 +180,12 @@ class WebhookLifecycleTest extends TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $order = new WC_Order( 501 );
+        $order = wc_create_order();
         $order->update_meta_data( '_gecx_session_id', 'invalid session spaces <script>' );
         $order->save();
+        $order_id = $order->get_id();
 
-        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 501 ) );
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, $order_id ) );
     }
 
     public function test_delivery_allowed_with_valid_session_id(): void {
@@ -195,30 +195,32 @@ class WebhookLifecycleTest extends TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $order = new WC_Order( 502 );
+        $order = wc_create_order();
         $order->update_meta_data( '_gecx_session_id', 'projects/123/locations/global/commerceSessions/sess-123' );
         $order->save();
+        $order_id = $order->get_id();
 
-        $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 502 ) );
+        $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, $order_id ) );
     }
 
     public function test_delivery_suppressed_when_widget_disabled_or_unlinked(): void {
         $webhook_id = $this->create_gecx_webhook();
         $webhook    = new WC_Webhook( $webhook_id );
 
-        $order = new WC_Order( 503 );
+        $order = wc_create_order();
         $order->update_meta_data( '_gecx_session_id', 'projects/123/locations/global/commerceSessions/sess-123' );
         $order->save();
+        $order_id = $order->get_id();
 
         // Linked but widget disabled
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 0 );
-        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 503 ) );
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, $order_id ) );
 
         // Enabled but unlinked
         delete_option( 'gecx_agent_name' );
         update_option( 'gecx_agent_enabled', 1 );
-        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 503 ) );
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, $order_id ) );
     }
 
     public function test_deactivation_pauses_webhook(): void {
@@ -262,13 +264,14 @@ class WebhookLifecycleTest extends TestCase {
 
         Admin::activate_plugin();
 
-        $this->assertArrayNotHasKey( $orphan_id, $GLOBALS['gecx_test_webhooks'] );
+        $deleted_orphan = new WC_Webhook( $orphan_id );
+        $this->assertSame( 0, $deleted_orphan->get_id() );
         $this->assertFalse( get_option( 'gecx_webhook_id' ) );
     }
 
     public function test_widget_toggle_pauses_and_resumes_webhook(): void {
+        $this->enable_ajax();
         $webhook_id = $this->create_gecx_webhook( 'active' );
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
 
         // Disable widget
         $_POST = [
@@ -294,11 +297,11 @@ class WebhookLifecycleTest extends TestCase {
     }
 
     public function test_unlink_pauses_webhook_and_preserves_secret(): void {
+        $this->enable_ajax();
         $webhook_id = $this->create_gecx_webhook( 'active' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_api_secret', 'legacy_secret_to_be_deleted' );
         update_option( 'gecx_auth_complete', 1 );
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
 
         $_POST = [
             'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
@@ -306,8 +309,8 @@ class WebhookLifecycleTest extends TestCase {
         $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 200, '' );
         $this->admin->console_sync->ajax_unlink_agent();
 
-        $this->assertArrayHasKey( $webhook_id, $GLOBALS['gecx_test_webhooks'] );
         $webhook = new WC_Webhook( $webhook_id );
+        $this->assertSame( $webhook_id, $webhook->get_id() );
         $this->assertSame( 'paused', $webhook->get_status() );
         $this->assertSame( $webhook_id, get_option( 'gecx_webhook_id' ) );
         $this->assertFalse( get_option( 'gecx_api_secret' ) );
@@ -316,7 +319,6 @@ class WebhookLifecycleTest extends TestCase {
     }
 
     public function test_webhook_registration_does_not_end_merchant_unlink(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         update_option( Admin::MERCHANT_UNLINKED_OPTION, 1 );
 
         $request = new WP_REST_Request( 'POST', '/gecx/v1/webhooks/order-created' );
@@ -353,22 +355,20 @@ class WebhookLifecycleTest extends TestCase {
 
         $this->assertInstanceOf( WP_Error::class, $result );
         $this->assertSame( 'console_url_refused', $result->get_error_code() );
-        foreach ( $GLOBALS['gecx_test_webhooks'] as $webhook ) {
-            $this->assertStringNotContainsString( 'attacker.example', (string) ( $webhook['delivery_url'] ?? '' ) );
+        $data_store = WC_Data_Store::load( 'webhook' );
+        foreach ( $data_store->get_webhooks_ids() as $wh_id ) {
+            $wh = new WC_Webhook( $wh_id );
+            $this->assertStringNotContainsString( 'attacker.example', $wh->get_delivery_url() );
         }
     }
 
     public function test_uninstall_revokes_wc_auth_api_keys(): void {
-        $GLOBALS['gecx_test_wc_api_keys'] = [
-            7 => [ 'description' => 'Gemini Enterprise For CX - API (2026-09-01 10:00:00)' ],
-            8 => [ 'description' => 'Some other app - API (2026-09-01 10:00:00)' ],
-            // Hand-made by the merchant: matches the LIKE case-insensitively
-            // but is not read_write, so it is kept.
-            9 => [
-                'description' => 'gemini enterprise for cx - API (reporting)',
-                'permissions' => 'read',
-            ],
-        ];
+        global $wpdb;
+        $table = $wpdb->prefix . 'woocommerce_api_keys';
+        $wpdb->query( "TRUNCATE TABLE {$table}" );
+        $wpdb->insert( $table, [ 'key_id' => 7, 'user_id' => 1, 'description' => 'Gemini Enterprise For CX - API (2026-09-01 10:00:00)', 'permissions' => 'read_write', 'consumer_key' => 'ck_1', 'consumer_secret' => 'cs_1', 'truncated_key' => '1' ] );
+        $wpdb->insert( $table, [ 'key_id' => 8, 'user_id' => 1, 'description' => 'Some other app - API (2026-09-01 10:00:00)', 'permissions' => 'read_write', 'consumer_key' => 'ck_2', 'consumer_secret' => 'cs_2', 'truncated_key' => '2' ] );
+        $wpdb->insert( $table, [ 'key_id' => 9, 'user_id' => 1, 'description' => 'gemini enterprise for cx - API (reporting)', 'permissions' => 'read', 'consumer_key' => 'ck_3', 'consumer_secret' => 'cs_3', 'truncated_key' => '3' ] );
 
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
             define( 'WP_UNINSTALL_PLUGIN', true );
@@ -376,11 +376,11 @@ class WebhookLifecycleTest extends TestCase {
 
         include dirname( __DIR__ ) . '/uninstall.php';
 
-        $this->assertSame( [ 8, 9 ], array_keys( $GLOBALS['gecx_test_wc_api_keys'] ) );
+        $remaining_ids = array_map( 'intval', $wpdb->get_col( "SELECT key_id FROM {$table} ORDER BY key_id ASC" ) );
+        $this->assertSame( [ 8, 9 ], $remaining_ids );
     }
 
     public function test_uninstall_does_not_notify_store_that_only_holds_a_keypair(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         // Activation generates a keypair on every site, connected or not.
         Auth::get_or_generate_keypair();
         delete_option( 'gecx_webhook_id' );
@@ -399,7 +399,6 @@ class WebhookLifecycleTest extends TestCase {
     }
 
     public function test_uninstall_does_not_notify_disallowed_console_host(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         Auth::get_or_generate_keypair();
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_console_base_url', 'https://attacker.example' );
@@ -421,21 +420,17 @@ class WebhookLifecycleTest extends TestCase {
 
         Admin::activate_plugin();
 
-        $this->assertArrayHasKey( $webhook_id, $GLOBALS['gecx_test_webhooks'] );
         $webhook = new WC_Webhook( $webhook_id );
+        $this->assertSame( $webhook_id, $webhook->get_id() );
         $this->assertSame( 'paused', $webhook->get_status() );
         $this->assertSame( $webhook_id, get_option( 'gecx_webhook_id' ) );
     }
 
     public function test_uninstall_deletes_row_and_notifies_with_bearer_without_woocommerce(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         Auth::get_or_generate_keypair();
         $webhook_id = $this->create_gecx_webhook( 'active', 'wh_db_secret_789' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         delete_option( 'gecx_api_secret' );
-
-        // Simulate WooCommerce being deactivated before plugin uninstall
-        $GLOBALS['gecx_test_disable_wc_webhook'] = true;
 
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
             define( 'WP_UNINSTALL_PLUGIN', true );
@@ -443,7 +438,8 @@ class WebhookLifecycleTest extends TestCase {
 
         include dirname( __DIR__ ) . '/uninstall.php';
 
-        $this->assertArrayNotHasKey( $webhook_id, $GLOBALS['gecx_test_webhooks'] );
+        $deleted = new WC_Webhook( $webhook_id );
+        $this->assertSame( 0, $deleted->get_id() );
         $this->assertFalse( get_option( 'gecx_webhook_id' ) );
 
         // Verify that the uninstall webhook notification was sent using the RS256 Bearer JWT without X-WC-Webhook-Signature
@@ -455,7 +451,6 @@ class WebhookLifecycleTest extends TestCase {
     }
 
     public function test_uninstall_sends_bearer_jwt_without_hmac_signature(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         Auth::get_or_generate_keypair();
         $this->create_gecx_webhook( 'active', 'wh_db_secret_789' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
@@ -489,7 +484,6 @@ class WebhookLifecycleTest extends TestCase {
     }
 
     public function test_uninstall_notifies_with_the_jwt_when_the_api_secret_is_gone(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         Auth::get_or_generate_keypair();
         delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_webhook_id' );
@@ -511,7 +505,6 @@ class WebhookLifecycleTest extends TestCase {
     }
 
     public function test_uninstall_skips_webhook_and_keypair_generation_for_unconnected_store(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_webhook_id' );
         delete_option( 'gecx_agent_name' );
@@ -530,7 +523,6 @@ class WebhookLifecycleTest extends TestCase {
     }
 
     public function test_uninstall_skips_notification_when_stored_keypair_is_corrupt(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
         $this->create_gecx_webhook( 'active', 'wh_db_secret_789' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option(
@@ -561,22 +553,22 @@ class WebhookLifecycleTest extends TestCase {
         update_option( 'gecx_agent_enabled', 1 );
 
         // Raw UUID (non-resource name format)
-        $order1 = new WC_Order( 601 );
+        $order1 = wc_create_order();
         $order1->update_meta_data( '_gecx_session_id', 'TestSessionToken0123456789abcdefghijklmnopq' );
         $order1->save();
-        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 601 ) );
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, $order1->get_id() ) );
 
         // Alphanumeric project ID instead of numeric project number
-        $order2 = new WC_Order( 602 );
+        $order2 = wc_create_order();
         $order2->update_meta_data( '_gecx_session_id', 'projects/my-cool-project/locations/global/commerceSessions/sess-123' );
         $order2->save();
-        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 602 ) );
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, $order2->get_id() ) );
 
         // Numeric project number (canonical resource name format) succeeds
-        $order3 = new WC_Order( 603 );
+        $order3 = wc_create_order();
         $order3->update_meta_data( '_gecx_session_id', 'projects/123456789012/locations/global/commerceSessions/sess-123' );
         $order3->save();
-        $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 603 ) );
+        $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, $order3->get_id() ) );
     }
 
     public function test_delete_order_webhook_clears_transients_on_direct_sql(): void {
@@ -584,7 +576,6 @@ class WebhookLifecycleTest extends TestCase {
         set_transient( 'woocommerce_webhook_ids', [ 1 ] );
         set_transient( 'woocommerce_webhook_ids_status_active', [ 1 ] );
 
-        $GLOBALS['gecx_test_disable_wc_webhook'] = true;
         Order_Webhook::delete_order_webhook();
 
         $this->assertFalse( get_transient( 'woocommerce_webhook_ids' ) );
@@ -616,7 +607,7 @@ class WebhookLifecycleTest extends TestCase {
         // Foreign webhook must be completely untouched
         $foreign_reloaded = new WC_Webhook( $foreign_id );
         $this->assertSame( 'active', $foreign_reloaded->get_status(), 'Foreign webhook status must not be modified' );
-        $this->assertArrayHasKey( $foreign_id, $GLOBALS['gecx_test_webhooks'], 'Foreign webhook must not be deleted' );
+        $this->assertSame( $foreign_id, $foreign_reloaded->get_id(), 'Foreign webhook must not be deleted' );
 
         // Real GECX webhook must be updated
         $real_reloaded = new WC_Webhook( $real_id );
@@ -629,43 +620,38 @@ class WebhookLifecycleTest extends TestCase {
     public function test_minimize_order_webhook_payload_from_order_items_using_get_item_total(): void {
         $webhook_id = $this->create_gecx_webhook();
 
-        $order = new WC_Order( 701 );
+        $order = wc_create_order();
         $order->update_meta_data( '_gecx_session_id', 'projects/123/locations/global/commerceSessions/sess-701' );
         $order->set_currency( 'USD' );
-        $order->set_total( '99.99' );
 
-        $item = new class {
-            public function get_product_id(): int { return 501; }
-            public function get_variation_id(): int { return 0; }
-            public function get_name(): string { return 'Custom T-Shirt'; }
-            public function get_quantity(): int { return 3; }
-            public function get_total(): float { return 99.99; }
-        };
-        $order->set_items( [ $item ] );
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+
+        $item = new WC_Order_Item_Product();
+        $item->set_product_id( $product_id );
+        $item->set_name( 'Custom T-Shirt' );
+        $item->set_quantity( 3 );
+        $item->set_total( '99.99' );
+        $order->add_item( $item );
+        $order->calculate_totals();
         $order->save();
+        $order_id = $order->get_id();
 
         // When payload has no line_items, it falls back to $order->get_items()
         $payload = [
-            'id'         => 701,
+            'id'         => $order_id,
             'line_items' => null,
         ];
 
-        $minimized = $this->rest_api->order_webhook->minimize_order_webhook_payload( $payload, 'order', 701, $webhook_id );
+        $minimized = $this->rest_api->order_webhook->minimize_order_webhook_payload( $payload, 'order', $order_id, $webhook_id );
 
         $this->assertCount( 1, $minimized['line_items'] );
-        $this->assertSame( 501, $minimized['line_items'][0]['product_id'] );
+        $this->assertSame( $product_id, $minimized['line_items'][0]['product_id'] );
         $this->assertSame( 3, $minimized['line_items'][0]['quantity'] );
         // 99.99 / 3 = 33.33
         $this->assertSame( 33.33, $minimized['line_items'][0]['price'] );
     }
 
-    /**
-     * @runInSeparateProcess
-     * @preserveGlobalState disabled
-     */
     public function test_uninstall_cleans_up_transients_and_woocommerce_session_rows(): void {
-        global $wpdb;
-
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
             define( 'WP_UNINSTALL_PLUGIN', true );
         }
@@ -677,7 +663,8 @@ class WebhookLifecycleTest extends TestCase {
         set_transient( 'gecx_admin_notice_error', 'Some error' );
         set_transient( 'gecx_guest_jwt_cache', [ 'jwt' => 'x' ] );
 
-        $wpdb->wc_sessions['t_shopper_42'] = maybe_serialize(
+        $this->set_wc_session(
+            't_shopper_42',
             [
                 'cart'            => 'serialized_cart',
                 'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sess-42',
@@ -692,7 +679,7 @@ class WebhookLifecycleTest extends TestCase {
         $this->assertFalse( get_transient( 'gecx_admin_notice_error' ) );
         $this->assertFalse( get_transient( 'gecx_guest_jwt_cache' ) );
 
-        $updated_session = maybe_unserialize( $wpdb->wc_sessions['t_shopper_42'] );
+        $updated_session = $this->get_wc_session( 't_shopper_42' );
         $this->assertIsArray( $updated_session );
         $this->assertArrayNotHasKey( 'gecx_session_id', $updated_session );
         $this->assertSame( 'serialized_cart', $updated_session['cart'] );

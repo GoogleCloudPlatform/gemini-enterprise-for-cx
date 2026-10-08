@@ -821,12 +821,13 @@ class AdminTest extends GECX_TestCase {
 
     public function test_revoke_woocommerce_api_keys_tolerates_missing_table(): void {
         global $wpdb;
-        $table = $wpdb->prefix . 'woocommerce_api_keys';
-        $wpdb->query( "DROP TABLE IF EXISTS `{$table}`" );
+        $table        = $wpdb->prefix . 'woocommerce_api_keys';
+        $backup_table = $table . '_backup';
+        $wpdb->query( "RENAME TABLE `{$table}` TO `{$backup_table}`" );
         try {
             $this->assertSame( 0, Auth::revoke_woocommerce_api_keys() );
         } finally {
-            \WC_Install::create_tables();
+            $wpdb->query( "RENAME TABLE `{$backup_table}` TO `{$table}`" );
         }
     }
 

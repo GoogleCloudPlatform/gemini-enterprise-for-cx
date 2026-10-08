@@ -305,6 +305,9 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                     $gecx_esc_iss_t
                 )
             );
+            if ( function_exists( 'wp_cache_flush' ) ) {
+                wp_cache_flush();
+            }
         }
 
         // Strip gecx_session_id from active WooCommerce customer session rows.

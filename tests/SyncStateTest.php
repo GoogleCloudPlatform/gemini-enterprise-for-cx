@@ -27,8 +27,11 @@ class SyncStateTest extends GECX_TestCase {
 
     protected function setUp(): void {
         parent::setUp();
-        // generate_admin_jwt() returns null without a logged in administrator.
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        wp_set_current_user( 1 );
+        update_option( 'home', 'https://example.com' );
+        update_option( 'siteurl', 'https://example.com' );
+        global $wp_settings_errors;
+        $wp_settings_errors = [];
     }
 
     /**
@@ -80,7 +83,7 @@ class SyncStateTest extends GECX_TestCase {
      * @param string $code Notice code.
      */
     private function assert_notice_code( string $code ): void {
-        $codes = array_column( $GLOBALS['gecx_test_settings_errors'], 'code' );
+        $codes = array_column( get_settings_errors(), 'code' );
         $this->assertTrue(
             in_array( $code, $codes, true ),
             'Expected notice ' . $code . ', got: ' . implode( ',', $codes )
@@ -93,7 +96,7 @@ class SyncStateTest extends GECX_TestCase {
      * @param string $code Notice code.
      */
     private function assert_no_notice_code( string $code ): void {
-        $codes = array_column( $GLOBALS['gecx_test_settings_errors'], 'code' );
+        $codes = array_column( get_settings_errors(), 'code' );
         $this->assertFalse(
             in_array( $code, $codes, true ),
             'Did not expect notice ' . $code . ', got: ' . implode( ',', $codes )
@@ -244,7 +247,7 @@ class SyncStateTest extends GECX_TestCase {
         // The destination comes from an option and a filter, and the body
         // carries a store-signed admin JWT, so the request must validate the
         // host and must not hand the body to a redirect target.
-        $args = $GLOBALS['gecx_test_last_remote_post']['args'];
+        $args = end( $GLOBALS['gecx_test_http_requests'] )['args'];
         $this->assertTrue( $args['reject_unsafe_urls'] );
         $this->assertSame( 0, $args['redirection'] );
     }
@@ -415,7 +418,7 @@ class SyncStateTest extends GECX_TestCase {
 
         $this->assertEquals( self::SYNCED, $status );
         $this->assert_still_linked();
-        $this->assertCount( 0, $GLOBALS['gecx_test_settings_errors'] );
+        $this->assertCount( 0, get_settings_errors() );
     }
 
     public function test_transport_error_does_not_unlink(): void {
@@ -426,7 +429,7 @@ class SyncStateTest extends GECX_TestCase {
 
         $this->assertEquals( '', $status );
         $this->assert_still_linked();
-        $this->assertCount( 0, $GLOBALS['gecx_test_settings_errors'] );
+        $this->assertCount( 0, get_settings_errors() );
     }
 
     public function test_timeout_wp_error_is_noop_and_poisons_throttle(): void {
@@ -437,7 +440,7 @@ class SyncStateTest extends GECX_TestCase {
 
         $this->assertEquals( '', $status );
         $this->assert_still_linked();
-        $this->assertCount( 0, $GLOBALS['gecx_test_settings_errors'] );
+        $this->assertCount( 0, get_settings_errors() );
 
         // Verify that the throttle was claimed and not released.
         $this->assertTrue( false !== get_option( 'gecx_sync_last_attempt' ) );
@@ -481,7 +484,7 @@ class SyncStateTest extends GECX_TestCase {
 
         $this->assertEquals( 'SOMETHING_NEW', $status );
         $this->assert_still_linked();
-        $this->assertCount( 0, $GLOBALS['gecx_test_settings_errors'] );
+        $this->assertCount( 0, get_settings_errors() );
     }
 
     public function test_status_is_read_without_the_xssi_prefix(): void {
@@ -546,7 +549,7 @@ class SyncStateTest extends GECX_TestCase {
 
         $this->assertEquals( self::LINK_REQUIRED, $status );
         $this->assert_still_linked();
-        $this->assertCount( 0, $GLOBALS['gecx_test_settings_errors'] );
+        $this->assertCount( 0, get_settings_errors() );
     }
 
     public function test_auth_failures_reset_store_authorization_without_unlinking(): void {
@@ -664,7 +667,7 @@ class SyncStateTest extends GECX_TestCase {
 
     public function test_missing_admin_jwt_issues_no_request_and_takes_no_lock(): void {
         $this->seed_linked_store();
-        $GLOBALS['gecx_test_current_user'] = null;
+        wp_set_current_user( 0 );
 
         $status = $this->sync( 'agents/agent_a' );
 
@@ -710,7 +713,7 @@ class SyncStateTest extends GECX_TestCase {
         $this->assertEquals( 'application/json', $request['args']['headers']['Accept'] );
         $this->assertMatchesRegularExpression( '/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/', (string) ( $request['args']['headers']['Authorization'] ?? '' ) );
         // Certificate verification must stay at the WordPress default.
-        $this->assertArrayNotHasKey( 'sslverify', $request['args'] );
+        $this->assertTrue( $request['args']['sslverify'] );
 
         $body = json_decode( (string) $request['args']['body'], true );
         $this->assertEquals( 'agents/agent_a', $body['expected_agent_id'] );
@@ -744,6 +747,7 @@ class SyncStateTest extends GECX_TestCase {
     }
 
     public function test_explicit_unlink_keeps_appearance_and_releases_the_throttle_window(): void {
+        $this->enable_ajax();
         $this->seed_linked_store();
         update_option( 'gecx_button_label', 'Ask AI' );
         update_option( 'gecx_sync_last_attempt', (string) time() );
@@ -760,6 +764,7 @@ class SyncStateTest extends GECX_TestCase {
     }
 
     public function test_explicit_unlink_tells_google_before_clearing_the_binding(): void {
+        $this->enable_ajax();
         $this->seed_linked_store();
         $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
         $this->queue( gecx_test_http_response( 200, '' ) );
@@ -781,6 +786,7 @@ class SyncStateTest extends GECX_TestCase {
     }
 
     public function test_explicit_unlink_without_an_agent_issues_no_request(): void {
+        $this->enable_ajax();
         $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
 
         $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
@@ -826,6 +832,7 @@ class SyncStateTest extends GECX_TestCase {
     }
 
     public function test_explicit_unlink_treats_400_and_403_as_unlinked(): void {
+        $this->enable_ajax();
         foreach ( [ 400, 403 ] as $status_code ) {
             $this->seed_linked_store( 'agents/stale_agent' );
             $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
@@ -861,6 +868,10 @@ class SyncStateTest extends GECX_TestCase {
     private function run_version_check(): void {
         $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
         $admin->console_sync->maybe_sync_on_version_change();
+        $user_id = (int) get_option( Admin::VERSION_SYNC_USER_OPTION, 0 );
+        if ( $user_id > 0 ) {
+            $admin->console_sync->run_scheduled_version_sync( $user_id );
+        }
     }
 
     public function test_version_change_syncs_past_an_unexpired_throttle_window(): void {
@@ -911,7 +922,7 @@ class SyncStateTest extends GECX_TestCase {
 
     public function test_version_change_does_not_sync_on_an_ajax_request(): void {
         $this->seed_upgraded_store();
-        $GLOBALS['gecx_test_doing_ajax'] = true;
+        $this->enable_ajax();
 
         $this->run_version_check();
 
@@ -922,7 +933,8 @@ class SyncStateTest extends GECX_TestCase {
 
     public function test_version_change_does_not_sync_without_manage_options(): void {
         $this->seed_upgraded_store();
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 2, 'manager@example.com', [ 'shop_manager' ] );
+        $user_id = $this->factory()->user->create( [ 'role' => 'shop_manager' ] );
+        wp_set_current_user( $user_id );
 
         $this->run_version_check();
 
@@ -932,7 +944,7 @@ class SyncStateTest extends GECX_TestCase {
 
     public function test_version_change_does_not_sync_for_a_logged_out_request(): void {
         $this->seed_upgraded_store();
-        $GLOBALS['gecx_test_current_user'] = null;
+        wp_set_current_user( 0 );
 
         $this->run_version_check();
 
@@ -975,7 +987,7 @@ class SyncStateTest extends GECX_TestCase {
 
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         // settings_errors() is never called on the screen this ran from.
-        $this->assertCount( 0, $GLOBALS['gecx_test_settings_errors'] );
+        $this->assertCount( 0, get_settings_errors() );
         $this->assertEquals(
             [ 'gecx_agent_unlinked' ],
             get_option( Admin::PENDING_NOTICES_OPTION )
@@ -1001,8 +1013,9 @@ class SyncStateTest extends GECX_TestCase {
 
     public function test_deferred_notices_are_kept_until_an_administrator_sees_them(): void {
         update_option( Admin::PENDING_NOTICES_OPTION, [ 'gecx_agent_unlinked' ] );
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 2, 'manager@example.com', [ 'shop_manager' ] );
-        $admin                             = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $user_id = $this->factory()->user->create( [ 'role' => 'shop_manager' ] );
+        wp_set_current_user( $user_id );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
 
         ob_start();
         $admin->console_sync->show_pending_sync_notices();
@@ -1039,7 +1052,6 @@ class SyncStateTest extends GECX_TestCase {
     public function test_version_change_schedules_async_wp_cron_sync_without_blocking_admin_init(): void {
         $this->seed_linked_store();
         update_option( Admin::PLUGIN_VERSION_OPTION, '0.3.13' );
-        $GLOBALS['gecx_test_defer_cron'] = true;
 
         $this->queue(
             gecx_test_http_response(
@@ -1059,8 +1071,9 @@ class SyncStateTest extends GECX_TestCase {
 
         // No HTTP request is made synchronously during admin_init when cron is deferred.
         $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
-        $this->assertCount( 1, $GLOBALS['gecx_test_scheduled_events'] );
-        $this->assertSame( Admin::VERSION_SYNC_CRON_HOOK, $GLOBALS['gecx_test_scheduled_events'][0]['hook'] );
+        $has_scheduled = ( function_exists( 'as_has_scheduled_action' ) && false !== as_has_scheduled_action( Admin::VERSION_SYNC_CRON_HOOK, [], 'gecx' ) )
+            || (bool) wp_next_scheduled( Admin::VERSION_SYNC_CRON_HOOK );
+        $this->assertTrue( $has_scheduled );
 
         // Executing the scheduled cron callback performs the SyncState call and updates the stored version.
         $admin->console_sync->run_scheduled_version_sync( 1 );

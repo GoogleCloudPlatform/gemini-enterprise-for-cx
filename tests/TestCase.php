@@ -51,6 +51,84 @@ class RedirectException extends \Exception {
 	}
 }
 
+if ( ! class_exists( 'WC_Cart_Mock' ) ) {
+	class WC_Cart_Mock extends \WC_Cart {
+		public array $session_cart = [];
+		public array $cart_for_session = [];
+		public int $persistent_cart_updates = 0;
+
+		public function __construct() {}
+
+		public function persistent_cart_update(): void {
+			$this->persistent_cart_updates++;
+		}
+
+		public function get_cart_for_session(): array {
+			return ! empty( $this->cart_for_session ) ? $this->cart_for_session : $this->session_cart;
+		}
+
+		public function is_empty(): bool {
+			return empty( $this->get_cart_for_session() );
+		}
+
+		public function get_cart_hash(): string {
+			$cart = $this->get_cart_for_session();
+			return $cart ? md5( (string) wp_json_encode( $cart ) ) : '';
+		}
+	}
+}
+
+if ( ! class_exists( 'WC_Session_Mock' ) ) {
+	class WC_Session_Mock extends \WC_Session_Handler {
+		public bool $cookie_set = false;
+		public int $cookie_set_calls = 0;
+		public int $save_data_calls = 0;
+		public string $customer_id = 't_guest_session_123';
+		public bool $has_active_session = false;
+
+		public function __construct() {}
+		public function init(): void {}
+
+		public function set_customer_session_cookie( $val ): void {
+			$this->cookie_set = (bool) $val;
+			$this->cookie_set_calls++;
+		}
+
+		public function save_data( $old_session_key = '' ): void {
+			$this->save_data_calls++;
+		}
+
+		public function get_customer_id(): string {
+			return $this->customer_id;
+		}
+
+		public function set_customer_id( $id ): void {
+			$this->customer_id = (string) $id;
+		}
+
+		public function has_session(): bool {
+			return $this->has_active_session;
+		}
+
+		public function get_session_cookie() {
+			if ( ! empty( $_COOKIE ) ) {
+				foreach ( $_COOKIE as $k => $v ) {
+					if ( 0 === strpos( (string) $k, 'wp_woocommerce_session_' ) ) {
+						$parts = explode( '||', (string) $v );
+						if ( count( $parts ) >= 4 ) {
+							if ( 'forged' === $parts[3] ) {
+								return false;
+							}
+							return [ $parts[0], (int) $parts[1], (int) $parts[2], $parts[3] ];
+						}
+					}
+				}
+			}
+			return [ $this->customer_id, time() + 3600, time() + 1800, 'valid_hash' ];
+		}
+	}
+}
+
 /**
  * Trait to generate valid Store API Cart-Tokens in tests.
  */
@@ -179,15 +257,41 @@ abstract class GECX_TestCase extends TestCase {
 
 		$_REQUEST = &$_POST;
 
-		update_option( 'permalink_structure', '/%postname%/' );
+		$this->set_permalink_structure( '/%postname%/' );
 
 		if ( class_exists( \Google\Gemini_Enterprise_For_CX\Auth::class ) ) {
 			\Google\Gemini_Enterprise_For_CX\Auth::reset_cart_token_state();
 		}
 
+		if ( class_exists( \Google\Gemini_Enterprise_For_CX\REST\Console_API::class ) ) {
+			\Google\Gemini_Enterprise_For_CX\REST\Console_API::reset_wc_auth_state();
+		}
+
+		if ( function_exists( 'WC' ) ) {
+			WC()->session = new WC_Session_Mock();
+			WC()->cart    = new WC_Cart_Mock();
+		}
+
+		global $wpdb;
+		if ( isset( $wpdb ) ) {
+			$wpdb->query( "DELETE FROM {$wpdb->prefix}woocommerce_sessions" );
+			$wpdb->query( "DELETE FROM {$wpdb->prefix}woocommerce_order_items" );
+			$wpdb->query( "DELETE FROM {$wpdb->prefix}woocommerce_order_itemmeta" );
+			$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'gecx_%' OR option_name LIKE '_transient_gecx_%' OR option_name LIKE '_transient_timeout_gecx_%'" );
+			wp_cache_flush();
+		}
+
 		$GLOBALS['gecx_test_http_requests']  = [];
 		$GLOBALS['gecx_test_http_responses'] = [];
+		$GLOBALS['gecx_test_cookies']        = [];
 		add_filter( 'pre_http_request', [ $this, 'mock_http_request_handler' ], 10, 3 );
+		add_filter( 'woocommerce_set_cookie_enabled', [ $this, 'capture_wc_cookies' ], 10, 5 );
+
+		$GLOBALS['wp_scripts'] = new WP_Scripts();
+		$GLOBALS['wp_styles']  = new WP_Styles();
+		if ( class_exists( 'WC_Frontend_Scripts' ) && method_exists( 'WC_Frontend_Scripts', 'load_scripts' ) ) {
+			\WC_Frontend_Scripts::load_scripts();
+		}
 
 		$this->last_status_header_code = 200;
 		add_filter( 'status_header', [ $this, 'record_status_header' ], 10, 2 );
@@ -201,6 +305,7 @@ abstract class GECX_TestCase extends TestCase {
 	 * Tear down after each test.
 	 */
 	public function tear_down(): void {
+		remove_filter( 'woocommerce_set_cookie_enabled', [ $this, 'capture_wc_cookies' ], 10 );
 		remove_filter( 'status_header', [ $this, 'record_status_header' ], 10 );
 		remove_filter( 'wp_doing_ajax', '__return_true' );
 		remove_filter( 'wp_doing_ajax', '__return_false' );
@@ -211,9 +316,30 @@ abstract class GECX_TestCase extends TestCase {
 
 		$GLOBALS['gecx_test_http_requests']  = [];
 		$GLOBALS['gecx_test_http_responses'] = [];
+		$GLOBALS['gecx_test_cookies']        = [];
 
 		if ( class_exists( \Google\Gemini_Enterprise_For_CX\Auth::class ) ) {
 			\Google\Gemini_Enterprise_For_CX\Auth::reset_cart_token_state();
+		}
+
+		if ( class_exists( \Google\Gemini_Enterprise_For_CX\REST\Console_API::class ) ) {
+			\Google\Gemini_Enterprise_For_CX\REST\Console_API::reset_wc_auth_state();
+		}
+
+		switch_theme( 'default' );
+		$GLOBALS['wp_scripts'] = new WP_Scripts();
+		$GLOBALS['wp_styles']  = new WP_Styles();
+
+		global $wp_locale;
+		if ( isset( $wp_locale ) ) {
+			$wp_locale->text_direction = 'ltr';
+		}
+
+		global $wpdb;
+		if ( isset( $wpdb ) ) {
+			$wpdb->query( "TRUNCATE TABLE {$wpdb->prefix}woocommerce_sessions" );
+			$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'gecx_%' OR option_name LIKE '_transient_gecx_%' OR option_name LIKE '_transient_timeout_gecx_%'" );
+			wp_cache_flush();
 		}
 
 		// Clean up superglobals.
@@ -227,6 +353,61 @@ abstract class GECX_TestCase extends TestCase {
 		wp_set_current_user( 0 );
 
 		parent::tear_down();
+	}
+
+	/**
+	 * Reads a session from the real woocommerce_sessions table.
+	 *
+	 * @param string $session_key Session key.
+	 * @return array|null Unserialized session array or null.
+	 */
+	protected function get_wc_session( string $session_key ): ?array {
+		global $wpdb;
+		$val = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s",
+				$session_key
+			)
+		);
+		return null !== $val ? maybe_unserialize( $val ) : null;
+	}
+
+	/**
+	 * Sets a session in the real woocommerce_sessions table.
+	 *
+	 * @param string   $session_key Session key.
+	 * @param array    $data        Session data.
+	 * @param int|null $expiry      Session expiry timestamp.
+	 */
+	protected function set_wc_session( string $session_key, array $data, ?int $expiry = null ): void {
+		global $wpdb;
+		$wpdb->replace(
+			"{$wpdb->prefix}woocommerce_sessions",
+			[
+				'session_key'    => $session_key,
+				'session_value'  => serialize( $data ),
+				'session_expiry' => $expiry ?? ( time() + 2 * DAY_IN_SECONDS ),
+			]
+		);
+	}
+
+	/**
+	 * Intercepts WooCommerce cookies to record them and prevent header output during tests.
+	 *
+	 * @param bool   $enabled Whether setting cookie is enabled.
+	 * @param string $name    Cookie name.
+	 * @param string $value   Cookie value.
+	 * @param int    $expire  Expiry timestamp.
+	 * @param bool   $secure  Whether cookie is HTTPS only.
+	 * @return bool Always false to prevent header sending in tests.
+	 */
+	public function capture_wc_cookies( $enabled, $name, $value, $expire = 0, $secure = false ): bool {
+		$GLOBALS['gecx_test_cookies'][ $name ] = [
+			'value'  => (string) $value,
+			'expire' => (int) $expire,
+			'secure' => (bool) $secure,
+		];
+		return false;
 	}
 
 	/**
@@ -372,7 +553,7 @@ abstract class GECX_TestCase extends TestCase {
 	 * @param string $url         Target URL.
 	 * @return array Mock response.
 	 */
-	public function mock_http_request_handler( $preempt, array $parsed_args, string $url ): array {
+	public function mock_http_request_handler( $preempt, array $parsed_args, string $url ) {
 		$GLOBALS['gecx_test_http_requests'][] = [
 			'url'  => $url,
 			'args' => $parsed_args,
@@ -463,6 +644,71 @@ abstract class GECX_TestCase extends TestCase {
 			return false;
 		}
 		return 1 === openssl_verify( $signing_input, $signature, $pub_key_res, OPENSSL_ALGO_SHA256 );
+	}
+
+	/**
+	 * Sets up a dummy block theme directory so tests can switch to a block theme.
+	 */
+	protected function setup_block_theme(): void {
+		$theme_root = sys_get_temp_dir() . '/gecx-test-themes/block-theme';
+		if ( ! is_dir( $theme_root . '/templates' ) ) {
+			@mkdir( $theme_root . '/templates', 0777, true );
+			file_put_contents( $theme_root . '/style.css', "/*\nTheme Name: Block Theme\n*/\n" );
+			touch( $theme_root . '/templates/index.html' );
+		}
+		register_theme_directory( sys_get_temp_dir() . '/gecx-test-themes' );
+	}
+
+	/**
+	 * Switches theme to a block theme or back to the default classic theme.
+	 *
+	 * @param bool $is_block True for block theme, false for classic.
+	 */
+	protected function set_block_theme( bool $is_block ): void {
+		if ( $is_block ) {
+			$this->setup_block_theme();
+			switch_theme( 'block-theme' );
+		} else {
+			switch_theme( 'default' );
+		}
+	}
+
+	/**
+	 * Retrieves localized script data from wp_scripts.
+	 *
+	 * @param string $handle      Script handle.
+	 * @param string $object_name JavaScript variable name.
+	 * @return array<string, mixed> Decoded data array or empty array.
+	 */
+	protected function get_localized_script( string $handle, string $object_name ): array {
+		global $wp_scripts;
+		if ( ! isset( $wp_scripts ) || ! is_object( $wp_scripts ) ) {
+			return [];
+		}
+		$data = $wp_scripts->get_data( $handle, 'data' );
+		if ( ! is_string( $data ) || '' === $data ) {
+			return [];
+		}
+		if ( preg_match( '/var\s+' . preg_quote( $object_name, '/' ) . '\s*=\s*(.+?);\s*$/s', $data, $matches ) ) {
+			$decoded = json_decode( $matches[1], true );
+			return is_array( $decoded ) ? $decoded : [];
+		}
+		return [];
+	}
+
+	/**
+	 * Retrieves inline styles added to a style handle.
+	 *
+	 * @param string $handle Style handle.
+	 * @return string Concatenated inline styles.
+	 */
+	protected function get_inline_styles( string $handle ): string {
+		global $wp_styles;
+		if ( ! isset( $wp_styles ) || ! is_object( $wp_styles ) ) {
+			return '';
+		}
+		$after = $wp_styles->get_data( $handle, 'after' );
+		return is_array( $after ) ? implode( "\n", $after ) : '';
 	}
 }
 
