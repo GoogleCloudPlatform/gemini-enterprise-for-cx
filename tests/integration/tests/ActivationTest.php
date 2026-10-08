@@ -7,10 +7,16 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX\Tests\Integration;
+
+use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\REST\Order_Webhook;
+use WC_Webhook;
+
 /**
  * Tests runtime environment, route registration, permissions, and webhook lifecycle.
  */
-class ActivationTest extends GECX_TestCase {
+class ActivationTest extends TestCase {
 
 	/**
 	 * Asserts that all gecx/v1 REST routes are registered.
@@ -50,6 +56,7 @@ class ActivationTest extends GECX_TestCase {
 	public function test_auth_context_serves_same_origin_request(): void {
 		$request = new \WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
 		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request->set_header( 'Referer', home_url( '/shop/' ) );
 
 		$server   = rest_get_server();
 		$response = $server->dispatch( $request );
@@ -68,6 +75,7 @@ class ActivationTest extends GECX_TestCase {
 	public function test_auth_context_is_not_served_over_get(): void {
 		$request = new \WP_REST_Request( 'GET', '/gecx/v1/auth-context' );
 		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request->set_header( 'Referer', home_url( '/shop/' ) );
 
 		$server   = rest_get_server();
 		$response = $server->dispatch( $request );

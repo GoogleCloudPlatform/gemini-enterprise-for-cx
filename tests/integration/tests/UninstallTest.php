@@ -7,10 +7,15 @@
 
 declare(strict_types=1);
 
+namespace Google\Gemini_Enterprise_For_CX\Tests\Integration;
+
+use WC_Data_Store;
+use WC_Webhook;
+
 /**
  * Tests the complete uninstall sweep of options, transients, and webhooks.
  */
-class UninstallTest extends GECX_TestCase {
+class UninstallTest extends TestCase {
 
 	/**
 	 * Asserts uninstall.php wipes all plugin options, transients, and webhooks.
@@ -31,23 +36,21 @@ class UninstallTest extends GECX_TestCase {
 		set_transient( 'gecx_admin_notice_error', 'temporary error', 300 );
 		set_transient( 'gecx_guest_jwt_cache', 'cached jwt', 300 );
 
-		// Seed webhook if WooCommerce is active
-		if ( class_exists( 'WC_Webhook' ) ) {
-			$webhook = new \WC_Webhook();
-			$webhook->set_name( 'GECX Agent Order Created' );
-			$webhook->set_topic( 'order.created' );
-			$webhook->set_delivery_url( 'https://example.com/gecx/webhook' );
-			$webhook->set_status( 'active' );
-			$webhook_id = $webhook->save();
-			update_option( 'gecx_webhook_id', $webhook_id );
-		}
+		// Seed webhook
+		$webhook = new WC_Webhook();
+		$webhook->set_name( 'GECX Agent Order Created' );
+		$webhook->set_topic( 'order.created' );
+		$webhook->set_delivery_url( 'https://example.com/gecx/webhook' );
+		$webhook->set_status( 'active' );
+		$webhook_id = $webhook->save();
+		update_option( 'gecx_webhook_id', $webhook_id );
 
 		// Run uninstall.php under WP_UNINSTALL_PLUGIN
 		if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 			define( 'WP_UNINSTALL_PLUGIN', 'gemini-enterprise-for-cx/gecx-agent.php' );
 		}
 
-		require dirname( __DIR__ ) . '/uninstall.php';
+		require dirname( __DIR__, 3 ) . '/uninstall.php';
 
 		// Verify options are removed
 		$options = [
@@ -72,13 +75,11 @@ class UninstallTest extends GECX_TestCase {
 		}
 
 		// Verify webhook is removed
-		if ( class_exists( 'WC_Data_Store' ) ) {
-			$data_store  = \WC_Data_Store::load( 'webhook' );
-			$webhook_ids = $data_store->search_webhooks( [
-				'search' => 'GECX Agent Order Created',
-				'limit'  => 50,
-			] );
-			$this->assertEmpty( $webhook_ids, 'GECX Webhook was not deleted by uninstall.' );
-		}
+		$data_store  = WC_Data_Store::load( 'webhook' );
+		$webhook_ids = $data_store->search_webhooks( [
+			'search' => 'GECX Agent Order Created',
+			'limit'  => 50,
+		] );
+		$this->assertEmpty( $webhook_ids, 'GECX Webhook was not deleted by uninstall.' );
 	}
 }

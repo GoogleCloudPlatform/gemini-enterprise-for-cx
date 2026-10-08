@@ -9,19 +9,25 @@
  * @package GECX
  */
 
-require_once __DIR__ . '/bootstrap.php';
+declare(strict_types=1);
+
+namespace Google\Gemini_Enterprise_For_CX\Tests\Integration;
 
 use Google\Gemini_Enterprise_For_CX\Auth;
+use ReflectionMethod;
+use stdClass;
+use WP_Error;
+use WP_REST_Request;
+use WP_REST_Response;
+use WP_User;
 
-class AuthTest extends GECX_TestCase {
-
-    use GECX_CartTokenMinting;
+class AuthTest extends TestCase {
 
     private Auth $auth;
     private array $unknown_issuer_reports = [];
 
-    protected function setUp(): void {
-        parent::setUp();
+    public function set_up(): void {
+        parent::set_up();
         $_SERVER['REQUEST_URI']        = '/wp-json/wc/store/v1/cart';
         $this->auth                    = new Auth();
         $this->unknown_issuer_reports = [];
@@ -944,7 +950,7 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_generate_customer_jwt_explicit_zero_forces_guest_when_logged_in(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        wp_set_current_user( 1 );
 
         $jwt = Auth::generate_customer_jwt( 0 );
         $this->assertNotNull( $jwt );
@@ -957,7 +963,7 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_generate_customer_jwt_negative_id_normalizes_to_guest(): void {
-        $GLOBALS['gecx_test_current_user'] = null;
+        wp_set_current_user( 0 );
 
         $jwt = Auth::generate_customer_jwt( -5 );
         $this->assertNotNull( $jwt );
@@ -970,7 +976,7 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_generate_customer_jwt_with_explicit_email_populates_user_and_roles(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        wp_set_current_user( 1 );
 
         $jwt = Auth::generate_customer_jwt( 1, 3600, 'custom@example.com' );
         $this->assertNotNull( $jwt );
@@ -1065,7 +1071,8 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_admin_jwt_role_separation(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com', [ 'customer' ] );
+        $this->ensure_user_with_id( 42, 'customer42', 'customer', 'customer@example.com' );
+        wp_set_current_user( 42 );
 
         $cust_jwt = Auth::generate_customer_jwt();
         $this->assertNotNull( $cust_jwt );
@@ -1077,7 +1084,7 @@ class AuthTest extends GECX_TestCase {
         $this->assertNull( $non_admin_jwt );
 
         // Admin user should successfully obtain an admin JWT
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        wp_set_current_user( 1 );
         $admin_jwt = Auth::generate_admin_jwt( 1, 300, 'admin@example.com' );
         $this->assertNotNull( $admin_jwt );
         $admin_payload = $this->decode_jwt_payload( $admin_jwt );
@@ -1656,7 +1663,7 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_generate_jwt_caches_guest_token(): void {
-        $GLOBALS['gecx_test_current_user'] = null;
+        wp_set_current_user( 0 );
         delete_transient( Auth::GUEST_JWT_CACHE_TRANSIENT );
 
         $first  = Auth::generate_customer_jwt();

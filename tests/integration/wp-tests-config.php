@@ -17,7 +17,7 @@ $get_env = static function ( string $name, $default_value ) {
 
 // Path to WordPress core installation.
 if ( ! defined( 'ABSPATH' ) ) {
-	$core_dir = $get_env( 'WP_CORE_DIR', dirname( __DIR__ ) . '/vendor/roots/wordpress/' );
+	$core_dir = $get_env( 'WP_CORE_DIR', dirname( __DIR__, 2 ) . '/vendor/roots/wordpress/' );
 	define( 'ABSPATH', rtrim( $core_dir, '/' ) . '/' );
 }
 
@@ -47,7 +47,7 @@ define( 'WP_TESTS_TITLE', 'Test Blog' );
 define( 'WP_PHP_BINARY', 'php' );
 
 // Register the test theme directory before wp-settings.php loads.
-$theme_dir = dirname( __DIR__ ) . '/vendor/wp-phpunit/wp-phpunit/data/themedir1';
+$theme_dir = dirname( __DIR__, 2 ) . '/vendor/wp-phpunit/wp-phpunit/data/themedir1';
 if ( is_dir( $theme_dir ) ) {
 	$GLOBALS['wp_theme_directories'] = [ $theme_dir ];
 }

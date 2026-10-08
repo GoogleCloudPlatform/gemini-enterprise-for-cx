@@ -17,6 +17,20 @@ jobs:
   phpunit:
     name: PHPUnit (PHP ${{ matrix.php-version }})
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mariadb:lts
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: true
+          MARIADB_DATABASE: wordpress_test
+        ports:
+          - 3306
+        options: --health-cmd="healthcheck.sh --su-mysql --connect --innodb_initialized" --health-interval=10s --health-timeout=5s --health-retries=3
+    env:
+      WP_DB_HOST: 127.0.0.1:${{ job.services.mysql.ports[3306] }}
+      WP_DB_NAME: wordpress_test
+      WP_DB_USER: root
+      WP_DB_PASS: ''
     strategy:
       fail-fast: false
       matrix:
@@ -30,20 +44,39 @@ jobs:
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: ${{ matrix.php-version }}
-          extensions: openssl, json, mbstring, curl
-          tools: phpunit:9.6.36
+          extensions: openssl, json, mbstring, curl, mysqli
+          tools: composer
           coverage: ${{ matrix.php-version == '8.2' && 'pcov' || 'none' }}
 
-      - name: Generate autoloader
-        run: composer dump-autoload -o
+      - name: Install dependencies
+        uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
 
-      - name: Run PHPUnit tests with coverage
+      - name: Cache WooCommerce
+        id: cache-woocommerce
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: vendor/woocommerce/woocommerce
+          key: woocommerce-9.9.0
+
+      - name: Download WooCommerce
+        if: steps.cache-woocommerce.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p vendor/woocommerce
+          curl -sSL -o woocommerce.zip https://downloads.wordpress.org/plugin/woocommerce.9.9.0.zip
+          unzip -q woocommerce.zip -d vendor/woocommerce/
+          rm woocommerce.zip
+
+      - name: Wait for database
+        run: |
+          while ! mysqladmin ping -h"127.0.0.1" -P"${{ job.services.mysql.ports[3306] }}" --silent; do
+            sleep 1
+          done
+
+      - name: Run PHPUnit single-site tests with coverage
         if: matrix.php-version == '8.2'
         run: |
-          # Without pipefail the exit status of the pipeline is tee's, so a
-          # failing suite would report success.
           set -o pipefail
-          phpunit --configuration phpunit.xml.dist --coverage-text --coverage-clover clover.xml | tee coverage.txt
+          vendor/bin/phpunit --configuration phpunit.xml.dist --coverage-text --coverage-clover clover.xml | tee coverage.txt
           echo "### Test Coverage Summary (PHP 8.2)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           sed -n '/Code Coverage Report:/,$p' coverage.txt >> "$GITHUB_STEP_SUMMARY"
@@ -58,6 +91,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Run PHPUnit tests
+      - name: Run PHPUnit multisite tests (coverage job)
+        if: matrix.php-version == '8.2'
+        run: vendor/bin/phpunit --configuration phpunit-multisite.xml.dist
+
+      - name: Run PHPUnit single-site tests
         if: matrix.php-version != '8.2'
-        run: phpunit --configuration phpunit.xml.dist
+        run: vendor/bin/phpunit --configuration phpunit.xml.dist
+
+      - name: Run PHPUnit multisite tests
+        if: matrix.php-version != '8.2'
+        run: vendor/bin/phpunit --configuration phpunit-multisite.xml.dist

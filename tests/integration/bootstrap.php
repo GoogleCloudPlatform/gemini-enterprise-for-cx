@@ -10,12 +10,12 @@ declare(strict_types=1);
 use function Yoast\WPTestUtils\WPIntegration\bootstrap_it;
 use function Yoast\WPTestUtils\WPIntegration\get_path_to_wp_test_dir;
 
-require_once dirname( __DIR__ ) . '/vendor/autoload.php';
-require_once dirname( __DIR__ ) . '/vendor/yoast/wp-test-utils/src/WPIntegration/bootstrap-functions.php';
+require_once dirname( __DIR__, 2 ) . '/vendor/autoload.php';
+require_once dirname( __DIR__, 2 ) . '/vendor/yoast/wp-test-utils/src/WPIntegration/bootstrap-functions.php';
 
 // Detect or configure WP tests directory.
 if ( ! getenv( 'WP_TESTS_DIR' ) ) {
-	putenv( 'WP_TESTS_DIR=' . dirname( __DIR__ ) . '/vendor/wp-phpunit/wp-phpunit' );
+	putenv( 'WP_TESTS_DIR=' . dirname( __DIR__, 2 ) . '/vendor/wp-phpunit/wp-phpunit' );
 }
 
 if ( ! getenv( 'WP_PHPUNIT__TESTS_CONFIG' ) ) {
@@ -24,7 +24,7 @@ if ( ! getenv( 'WP_PHPUNIT__TESTS_CONFIG' ) ) {
 
 $_tests_dir = get_path_to_wp_test_dir();
 if ( false === $_tests_dir ) {
-	$_tests_dir = dirname( __DIR__ ) . '/vendor/wp-phpunit/wp-phpunit/';
+	$_tests_dir = dirname( __DIR__, 2 ) . '/vendor/wp-phpunit/wp-phpunit/';
 }
 
 // Give access to tests_add_filter() function.
@@ -36,8 +36,8 @@ require_once $_tests_dir . 'includes/functions.php';
 tests_add_filter( 'muplugins_loaded', static function () {
 	// Locate and load WooCommerce.
 	$wc_candidates = [
-		dirname( __DIR__ ) . '/vendor/woocommerce/woocommerce/woocommerce.php',
-		dirname( __DIR__, 2 ) . '/woocommerce/woocommerce.php',
+		dirname( __DIR__, 2 ) . '/vendor/woocommerce/woocommerce/woocommerce.php',
+		dirname( __DIR__, 3 ) . '/woocommerce/woocommerce.php',
 		'/var/www/html/wp-content/plugins/woocommerce/woocommerce.php',
 	];
 	foreach ( $wc_candidates as $candidate ) {
@@ -48,15 +48,10 @@ tests_add_filter( 'muplugins_loaded', static function () {
 	}
 
 	// Load plugin under test.
-	require_once dirname( __DIR__ ) . '/gecx-agent.php';
+	require_once dirname( __DIR__, 2 ) . '/gecx-agent.php';
 } );
 
 // Bootstrap WordPress and testing framework.
 bootstrap_it();
 
-if ( class_exists( 'WC_Install' ) ) {
-	\WC_Install::create_tables();
-}
-
-// Load base test case and helper utilities.
-require_once __DIR__ . '/TestCase.php';
+\WC_Install::create_tables();

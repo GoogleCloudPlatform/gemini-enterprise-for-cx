@@ -12,6 +12,14 @@
             "Google\\Gemini_Enterprise_For_CX\\": "includes/"
         }
     },
+    "autoload-dev": {
+        "psr-4": {
+            "Google\\Gemini_Enterprise_For_CX\\Tests\\Integration\\": [
+                "tests/integration/includes",
+                "tests/integration/tests"
+            ]
+        }
+    },
     "require-dev": {
         "phpunit/phpunit": "^9.6",
         "wp-coding-standards/wpcs": "^3.1",
@@ -35,6 +43,7 @@
     },
     "scripts": {
         "test": "phpunit --configuration phpunit.xml.dist",
+        "test:multisite": "phpunit --configuration phpunit-multisite.xml.dist",
         "lint": "phpcs",
         "lint:all": "phpcs",
         "lint:fix": "phpcbf",

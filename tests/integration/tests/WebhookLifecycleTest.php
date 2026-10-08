@@ -9,22 +9,30 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/bootstrap.php';
+namespace Google\Gemini_Enterprise_For_CX\Tests\Integration;
 
 use Google\Gemini_Enterprise_For_CX\Admin;
 use Google\Gemini_Enterprise_For_CX\Auth;
 use Google\Gemini_Enterprise_For_CX\REST\Order_Webhook;
 use Google\Gemini_Enterprise_For_CX\REST\REST_API;
-class WebhookLifecycleTest extends GECX_TestCase {
+use WC_Data_Store;
+use WC_Order;
+use WC_Order_Item_Product;
+use WC_Webhook;
+use WP_Error;
+use WP_REST_Request;
+use WP_REST_Response;
+
+class WebhookLifecycleTest extends TestCase {
 
     private REST_API $rest_api;
     private Admin $admin;
 
-    protected function setUp(): void {
-        parent::setUp();
+    public function set_up(): void {
+        parent::set_up();
         wp_set_current_user( 1 );
         $this->rest_api = new REST_API();
-        $this->admin    = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $this->admin    = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
     }
 
     private function create_gecx_webhook( string $status = 'active', string $secret = 'wh_secret_abc' ): int {
@@ -306,7 +314,7 @@ class WebhookLifecycleTest extends GECX_TestCase {
         $_POST = [
             'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
         ];
-        $GLOBALS['gecx_test_http_responses'][] = gecx_test_http_response( 200, '' );
+        $this->http_responses[] = gecx_test_http_response( 200, '' );
         $this->admin->console_sync->ajax_unlink_agent();
 
         $webhook = new WC_Webhook( $webhook_id );
@@ -374,7 +382,7 @@ class WebhookLifecycleTest extends GECX_TestCase {
             define( 'WP_UNINSTALL_PLUGIN', true );
         }
 
-        include dirname( __DIR__ ) . '/uninstall.php';
+        include dirname( __DIR__, 3 ) . '/uninstall.php';
 
         $remaining_ids = array_map( 'intval', $wpdb->get_col( "SELECT key_id FROM {$table} ORDER BY key_id ASC" ) );
         $this->assertSame( [ 8, 9 ], $remaining_ids );
@@ -386,15 +394,15 @@ class WebhookLifecycleTest extends GECX_TestCase {
         delete_option( 'gecx_webhook_id' );
         delete_option( 'gecx_agent_name' );
         delete_option( 'gecx_auth_complete' );
-        $GLOBALS['gecx_test_http_requests'] = [];
+        $this->http_requests = [];
 
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
             define( 'WP_UNINSTALL_PLUGIN', true );
         }
 
-        include dirname( __DIR__ ) . '/uninstall.php';
+        include dirname( __DIR__, 3 ) . '/uninstall.php';
 
-        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertCount( 0, $this->http_requests );
         $this->assertFalse( get_option( 'gecx_keypair' ) );
     }
 
@@ -402,15 +410,15 @@ class WebhookLifecycleTest extends GECX_TestCase {
         Auth::get_or_generate_keypair();
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_console_base_url', 'https://attacker.example' );
-        $GLOBALS['gecx_test_http_requests'] = [];
+        $this->http_requests = [];
 
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
             define( 'WP_UNINSTALL_PLUGIN', true );
         }
 
-        include dirname( __DIR__ ) . '/uninstall.php';
+        include dirname( __DIR__, 3 ) . '/uninstall.php';
 
-        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertCount( 0, $this->http_requests );
     }
 
     public function test_activation_pauses_webhook_when_unlinked_but_authorized(): void {
@@ -436,15 +444,15 @@ class WebhookLifecycleTest extends GECX_TestCase {
             define( 'WP_UNINSTALL_PLUGIN', true );
         }
 
-        include dirname( __DIR__ ) . '/uninstall.php';
+        include dirname( __DIR__, 3 ) . '/uninstall.php';
 
         $deleted = new WC_Webhook( $webhook_id );
         $this->assertSame( 0, $deleted->get_id() );
         $this->assertFalse( get_option( 'gecx_webhook_id' ) );
 
         // Verify that the uninstall webhook notification was sent using the RS256 Bearer JWT without X-WC-Webhook-Signature
-        $this->assertTrue( ! empty( $GLOBALS['gecx_test_http_requests'] ) );
-        $last_req = end( $GLOBALS['gecx_test_http_requests'] );
+        $this->assertTrue( ! empty( $this->http_requests ) );
+        $last_req = end( $this->http_requests );
         $this->assertSame( 'plugin/uninstalled', $last_req['args']['headers']['X-WC-Webhook-Topic'] );
         $this->assertTrue( isset( $last_req['args']['headers']['Authorization'] ) );
         $this->assertArrayNotHasKey( 'X-WC-Webhook-Signature', $last_req['args']['headers'] );
@@ -459,9 +467,9 @@ class WebhookLifecycleTest extends GECX_TestCase {
             define( 'WP_UNINSTALL_PLUGIN', true );
         }
 
-        include dirname( __DIR__ ) . '/uninstall.php';
+        include dirname( __DIR__, 3 ) . '/uninstall.php';
 
-        $last_req = end( $GLOBALS['gecx_test_http_requests'] );
+        $last_req = end( $this->http_requests );
         $headers  = $last_req['args']['headers'];
 
         // The RS256 Bearer JWT is the sole credential on plugin/uninstalled.
@@ -493,10 +501,10 @@ class WebhookLifecycleTest extends GECX_TestCase {
             define( 'WP_UNINSTALL_PLUGIN', true );
         }
 
-        include dirname( __DIR__ ) . '/uninstall.php';
+        include dirname( __DIR__, 3 ) . '/uninstall.php';
 
-        $this->assertTrue( ! empty( $GLOBALS['gecx_test_http_requests'] ) );
-        $last_req = end( $GLOBALS['gecx_test_http_requests'] );
+        $this->assertTrue( ! empty( $this->http_requests ) );
+        $last_req = end( $this->http_requests );
         $headers  = $last_req['args']['headers'];
 
         $this->assertSame( 'plugin/uninstalled', $headers['X-WC-Webhook-Topic'] );
@@ -510,15 +518,15 @@ class WebhookLifecycleTest extends GECX_TestCase {
         delete_option( 'gecx_agent_name' );
         delete_option( 'gecx_auth_complete' );
         delete_option( 'gecx_keypair' );
-        $GLOBALS['gecx_test_http_requests'] = [];
+        $this->http_requests = [];
 
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
             define( 'WP_UNINSTALL_PLUGIN', true );
         }
 
-        include dirname( __DIR__ ) . '/uninstall.php';
+        include dirname( __DIR__, 3 ) . '/uninstall.php';
 
-        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertCount( 0, $this->http_requests );
         $this->assertFalse( get_option( 'gecx_keypair' ) );
     }
 
@@ -533,17 +541,17 @@ class WebhookLifecycleTest extends GECX_TestCase {
                 'private_key' => [ 'iv' => 'bad', 'tag' => 'bad', 'ciphertext' => 'unreadable' ],
             ]
         );
-        $GLOBALS['gecx_test_http_requests'] = [];
+        $this->http_requests = [];
 
         if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
             define( 'WP_UNINSTALL_PLUGIN', true );
         }
 
-        include dirname( __DIR__ ) . '/uninstall.php';
+        include dirname( __DIR__, 3 ) . '/uninstall.php';
 
         // Without a readable RS256 private key, uninstall must not mint an
         // ephemeral keypair or send an unauthenticated request.
-        $this->assertCount( 0, $GLOBALS['gecx_test_http_requests'] );
+        $this->assertCount( 0, $this->http_requests );
     }
 
     public function test_delivery_suppressed_with_alphanumeric_or_raw_session_id(): void {
@@ -671,7 +679,7 @@ class WebhookLifecycleTest extends GECX_TestCase {
             ]
         );
 
-        include dirname( __DIR__ ) . '/uninstall.php';
+        include dirname( __DIR__, 3 ) . '/uninstall.php';
 
         $this->assertFalse( get_transient( 'gecx_oauth_state_tok123' ) );
         $this->assertFalse( get_transient( 'gecx_oauth_state_orphan' ) );

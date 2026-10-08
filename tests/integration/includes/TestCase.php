@@ -7,217 +7,19 @@
 
 declare(strict_types=1);
 
-use Yoast\WPTestUtils\WPIntegration\TestCase;
+namespace Google\Gemini_Enterprise_For_CX\Tests\Integration;
 
-/**
- * Exception thrown when a redirect is caught in tests.
- */
-class RedirectException extends \Exception {
-
-	/**
-	 * Redirect location.
-	 */
-	protected string $location;
-
-	/**
-	 * Redirect HTTP status code.
-	 */
-	protected int $status;
-
-	/**
-	 * Constructor.
-	 *
-	 * @param string $location Redirect target.
-	 * @param int    $status   HTTP status code.
-	 */
-	public function __construct( string $location, int $status = 302 ) {
-		parent::__construct( sprintf( 'Redirected to %s with status %d', $location, $status ) );
-		$this->location = $location;
-		$this->status   = $status;
-	}
-
-	/**
-	 * Gets the redirect target URL.
-	 */
-	public function get_location(): string {
-		return $this->location;
-	}
-
-	/**
-	 * Gets the HTTP status code.
-	 */
-	public function get_status(): int {
-		return $this->status;
-	}
-}
-
-if ( ! class_exists( 'WC_Cart_Mock' ) ) {
-	class WC_Cart_Mock extends \WC_Cart {
-		public array $session_cart = [];
-		public array $cart_for_session = [];
-		public int $persistent_cart_updates = 0;
-
-		public function __construct() {}
-
-		public function persistent_cart_update(): void {
-			$this->persistent_cart_updates++;
-		}
-
-		public function get_cart_for_session(): array {
-			return ! empty( $this->cart_for_session ) ? $this->cart_for_session : $this->session_cart;
-		}
-
-		public function is_empty(): bool {
-			return empty( $this->get_cart_for_session() );
-		}
-
-		public function get_cart_hash(): string {
-			$cart = $this->get_cart_for_session();
-			return $cart ? md5( (string) wp_json_encode( $cart ) ) : '';
-		}
-	}
-}
-
-if ( ! class_exists( 'WC_Session_Mock' ) ) {
-	class WC_Session_Mock extends \WC_Session_Handler {
-		public bool $cookie_set = false;
-		public int $cookie_set_calls = 0;
-		public int $save_data_calls = 0;
-		public string $customer_id = 't_guest_session_123';
-		public bool $has_active_session = false;
-
-		public function __construct() {}
-		public function init(): void {}
-
-		public function set_customer_session_cookie( $val ): void {
-			$this->cookie_set = (bool) $val;
-			$this->cookie_set_calls++;
-		}
-
-		public function save_data( $old_session_key = '' ): void {
-			$this->save_data_calls++;
-		}
-
-		public function get_customer_id(): string {
-			return $this->customer_id;
-		}
-
-		public function set_customer_id( $id ): void {
-			$this->customer_id = (string) $id;
-		}
-
-		public function has_session(): bool {
-			return $this->has_active_session;
-		}
-
-		public function get_session_cookie() {
-			if ( ! empty( $_COOKIE ) ) {
-				foreach ( $_COOKIE as $k => $v ) {
-					if ( 0 === strpos( (string) $k, 'wp_woocommerce_session_' ) ) {
-						$parts = explode( '||', (string) $v );
-						if ( count( $parts ) >= 4 ) {
-							if ( 'forged' === $parts[3] ) {
-								return false;
-							}
-							return [ $parts[0], (int) $parts[1], (int) $parts[2], $parts[3] ];
-						}
-					}
-				}
-			}
-			return [ $this->customer_id, time() + 3600, time() + 1800, 'valid_hash' ];
-		}
-	}
-}
-
-/**
- * Trait to generate valid Store API Cart-Tokens in tests.
- */
-trait GECX_CartTokenMinting {
-
-	/**
-	 * Generates a signed Cart-Token for tests.
-	 *
-	 * @param string|int  $user_id    Customer ID or user ID.
-	 * @param int         $exp_offset Expiration offset in seconds.
-	 * @param string      $salt       Salt.
-	 * @param bool        $valid_sig  Whether to produce a valid signature.
-	 * @param string|null $iss        Issuer claim.
-	 * @return string JWT token.
-	 */
-	protected function generate_jwt(
-		$user_id,
-		int $exp_offset = 3600,
-		?string $salt = null,
-		bool $valid_sig = true,
-		?string $iss = 'store-api'
-	): string {
-		if ( null === $salt ) {
-			$salt = wp_salt();
-		}
-
-		$claims = [
-			'user_id' => $user_id,
-			'exp'     => time() + $exp_offset,
-		];
-		if ( null !== $iss ) {
-			$claims['iss'] = $iss;
-		}
-
-		$header  = (string) wp_json_encode( [ 'typ' => 'JWT', 'alg' => 'HS256' ] );
-		$payload = (string) wp_json_encode( $claims );
-
-		$to_base_64_url = static function ( string $string ) {
-			return str_replace( [ '+', '/', '=' ], [ '-', '_', '' ], base64_encode( $string ) );
-		};
-
-		$header_encoded  = $to_base_64_url( $header );
-		$payload_encoded = $to_base_64_url( $payload );
-
-		$secret            = '@' . $salt;
-		$signature         = hash_hmac( 'sha256', $header_encoded . '.' . $payload_encoded, $secret, true );
-		$signature_encoded = $to_base_64_url( $signature );
-
-		if ( ! $valid_sig ) {
-			$signature_encoded .= 'invalid';
-		}
-
-		return $header_encoded . '.' . $payload_encoded . '.' . $signature_encoded;
-	}
-
-	/**
-	 * Mints a cart token with custom payload.
-	 *
-	 * @param array       $payload Payload claims.
-	 * @param string|null $salt    Optional salt.
-	 * @return string JWT token.
-	 */
-	protected function mint_token_with_payload( array $payload, ?string $salt = null ): string {
-		if ( null === $salt ) {
-			$salt = wp_salt();
-		}
-		$header       = (string) wp_json_encode( [ 'typ' => 'JWT', 'alg' => 'HS256' ] );
-		$payload_json = (string) wp_json_encode( $payload );
-
-		$to_base_64_url = static function ( string $string ) {
-			return str_replace( [ '+', '/', '=' ], [ '-', '_', '' ], base64_encode( $string ) );
-		};
-
-		$header_encoded  = $to_base_64_url( $header );
-		$payload_encoded = $to_base_64_url( $payload_json );
-
-		$secret            = '@' . $salt;
-		$signature         = hash_hmac( 'sha256', $header_encoded . '.' . $payload_encoded, $secret, true );
-		$signature_encoded = $to_base_64_url( $signature );
-
-		return $header_encoded . '.' . $payload_encoded . '.' . $signature_encoded;
-	}
-}
+use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\REST\Console_API;
+use WP_Scripts;
+use WP_Styles;
+use Yoast\WPTestUtils\WPIntegration\TestCase as PolyfilledTestCase;
 
 /**
  * Base TestCase class extending Yoast WPTestUtils integration test case.
  */
-abstract class GECX_TestCase extends TestCase {
-	use GECX_CartTokenMinting;
+abstract class TestCase extends PolyfilledTestCase {
+	use CartTokenMinting;
 
 	/**
 	 * Last redirect caught during test.
@@ -240,17 +42,40 @@ abstract class GECX_TestCase extends TestCase {
 	protected int $last_status_header_code = 200;
 
 	/**
+	 * Recorded HTTP requests.
+	 *
+	 * @var array<int, array{url: string, args: array}>
+	 */
+	protected array $http_requests = [];
+
+	/**
+	 * Queued mock HTTP responses.
+	 *
+	 * @var array<int, array|\WP_Error>
+	 */
+	protected array $http_responses = [];
+
+	/**
+	 * Captured WooCommerce cookies.
+	 *
+	 * @var array<string, array{value: string, expire: int, secure: bool}>
+	 */
+	protected array $cookies = [];
+
+	/**
 	 * Set up before each test.
 	 */
 	public function set_up(): void {
 		parent::set_up();
 
-		$this->last_redirect        = null;
-		$this->last_redirect_status = null;
-		$this->last_json_response   = null;
+		$this->last_redirect          = null;
+		$this->last_redirect_status   = null;
+		$this->last_json_response     = null;
+		$this->last_status_header_code = 200;
+		$this->http_requests          = [];
+		$this->http_responses         = [];
+		$this->cookies                = [];
 
-		$GLOBALS['gecx_test_last_redirect']      = &$this->last_redirect;
-		$GLOBALS['gecx_test_last_json_response'] = &$this->last_json_response;
 
 		$_SERVER['SCRIPT_FILENAME'] = ABSPATH . 'index.php';
 		$_SERVER['SCRIPT_NAME']     = '/index.php';
@@ -259,13 +84,8 @@ abstract class GECX_TestCase extends TestCase {
 
 		$this->set_permalink_structure( '/%postname%/' );
 
-		if ( class_exists( \Google\Gemini_Enterprise_For_CX\Auth::class ) ) {
-			\Google\Gemini_Enterprise_For_CX\Auth::reset_cart_token_state();
-		}
-
-		if ( class_exists( \Google\Gemini_Enterprise_For_CX\REST\Console_API::class ) ) {
-			\Google\Gemini_Enterprise_For_CX\REST\Console_API::reset_wc_auth_state();
-		}
+		Auth::reset_cart_token_state();
+		Console_API::reset_wc_auth_state();
 
 		if ( function_exists( 'WC' ) ) {
 			WC()->session = new WC_Session_Mock();
@@ -275,27 +95,18 @@ abstract class GECX_TestCase extends TestCase {
 		global $wpdb;
 		if ( isset( $wpdb ) ) {
 			$wpdb->query( "DELETE FROM {$wpdb->prefix}woocommerce_sessions" );
-			$wpdb->query( "DELETE FROM {$wpdb->prefix}woocommerce_order_items" );
-			$wpdb->query( "DELETE FROM {$wpdb->prefix}woocommerce_order_itemmeta" );
 			$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'gecx_%' OR option_name LIKE '_transient_gecx_%' OR option_name LIKE '_transient_timeout_gecx_%'" );
 			wp_cache_flush();
 		}
 
-		$GLOBALS['gecx_test_http_requests']  = [];
-		$GLOBALS['gecx_test_http_responses'] = [];
-		$GLOBALS['gecx_test_cookies']        = [];
 		add_filter( 'pre_http_request', [ $this, 'mock_http_request_handler' ], 10, 3 );
 		add_filter( 'woocommerce_set_cookie_enabled', [ $this, 'capture_wc_cookies' ], 10, 5 );
 
 		$GLOBALS['wp_scripts'] = new WP_Scripts();
 		$GLOBALS['wp_styles']  = new WP_Styles();
-		if ( class_exists( 'WC_Frontend_Scripts' ) && method_exists( 'WC_Frontend_Scripts', 'load_scripts' ) ) {
-			\WC_Frontend_Scripts::load_scripts();
-		}
+		\WC_Frontend_Scripts::load_scripts();
 
-		$this->last_status_header_code = 200;
 		add_filter( 'status_header', [ $this, 'record_status_header' ], 10, 2 );
-
 		add_filter( 'wp_redirect', [ $this, 'catch_redirect' ], 1, 2 );
 		add_filter( 'wp_die_handler', [ $this, 'get_custom_wp_die_handler' ], 1 );
 		add_filter( 'wp_die_ajax_handler', [ $this, 'get_custom_wp_die_handler' ], 1 );
@@ -305,52 +116,16 @@ abstract class GECX_TestCase extends TestCase {
 	 * Tear down after each test.
 	 */
 	public function tear_down(): void {
-		remove_filter( 'woocommerce_set_cookie_enabled', [ $this, 'capture_wc_cookies' ], 10 );
-		remove_filter( 'status_header', [ $this, 'record_status_header' ], 10 );
-		remove_filter( 'wp_doing_ajax', '__return_true' );
-		remove_filter( 'wp_doing_ajax', '__return_false' );
-		remove_filter( 'wp_redirect', [ $this, 'catch_redirect' ], 1 );
-		remove_filter( 'wp_die_handler', [ $this, 'get_custom_wp_die_handler' ], 1 );
-		remove_filter( 'wp_die_ajax_handler', [ $this, 'get_custom_wp_die_handler' ], 1 );
-		remove_filter( 'pre_http_request', [ $this, 'mock_http_request_handler' ], 10 );
+		$this->http_requests  = [];
+		$this->http_responses = [];
+		$this->cookies        = [];
 
-		$GLOBALS['gecx_test_http_requests']  = [];
-		$GLOBALS['gecx_test_http_responses'] = [];
-		$GLOBALS['gecx_test_cookies']        = [];
+		Auth::reset_cart_token_state();
+		Console_API::reset_wc_auth_state();
 
-		if ( class_exists( \Google\Gemini_Enterprise_For_CX\Auth::class ) ) {
-			\Google\Gemini_Enterprise_For_CX\Auth::reset_cart_token_state();
-		}
-
-		if ( class_exists( \Google\Gemini_Enterprise_For_CX\REST\Console_API::class ) ) {
-			\Google\Gemini_Enterprise_For_CX\REST\Console_API::reset_wc_auth_state();
-		}
-
-		switch_theme( 'default' );
-		$GLOBALS['wp_scripts'] = new WP_Scripts();
-		$GLOBALS['wp_styles']  = new WP_Styles();
-
-		global $wp_locale;
-		if ( isset( $wp_locale ) ) {
-			$wp_locale->text_direction = 'ltr';
-		}
-
-		global $wpdb;
-		if ( isset( $wpdb ) ) {
-			$wpdb->query( "TRUNCATE TABLE {$wpdb->prefix}woocommerce_sessions" );
-			$wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE 'gecx_%' OR option_name LIKE '_transient_gecx_%' OR option_name LIKE '_transient_timeout_gecx_%'" );
-			wp_cache_flush();
-		}
-
-		// Clean up superglobals.
-		$_GET     = [];
-		$_POST    = [];
-		$_REQUEST = [];
-		$_COOKIE  = [];
+		// Clean up custom server headers and cookies.
+		$_COOKIE = [];
 		unset( $_SERVER['HTTP_CART_TOKEN'], $_SERVER['HTTP_AUTHORIZATION'], $_SERVER['HTTP_ORIGIN'], $_SERVER['HTTP_REFERER'], $_SERVER['HTTP_SEC_FETCH_SITE'] );
-
-		// Reset current user to 0.
-		wp_set_current_user( 0 );
 
 		parent::tear_down();
 	}
@@ -402,7 +177,7 @@ abstract class GECX_TestCase extends TestCase {
 	 * @return bool Always false to prevent header sending in tests.
 	 */
 	public function capture_wc_cookies( $enabled, $name, $value, $expire = 0, $secure = false ): bool {
-		$GLOBALS['gecx_test_cookies'][ $name ] = [
+		$this->cookies[ $name ] = [
 			'value'  => (string) $value,
 			'expire' => (int) $expire,
 			'secure' => (bool) $secure,
@@ -443,6 +218,9 @@ abstract class GECX_TestCase extends TestCase {
 		clean_user_cache( $id );
 		$new_user = new \WP_User( $id );
 		$new_user->set_role( $role );
+		if ( is_multisite() ) {
+			add_user_to_blog( (int) get_current_blog_id(), $id, $role );
+		}
 		return $new_user;
 	}
 
@@ -551,16 +329,16 @@ abstract class GECX_TestCase extends TestCase {
 	 * @param mixed  $preempt     Existing preempt response.
 	 * @param array  $parsed_args Request arguments.
 	 * @param string $url         Target URL.
-	 * @return array Mock response.
+	 * @return array|\WP_Error Mock response.
 	 */
 	public function mock_http_request_handler( $preempt, array $parsed_args, string $url ) {
-		$GLOBALS['gecx_test_http_requests'][] = [
+		$this->http_requests[] = [
 			'url'  => $url,
 			'args' => $parsed_args,
 		];
 
-		if ( ! empty( $GLOBALS['gecx_test_http_responses'] ) ) {
-			return array_shift( $GLOBALS['gecx_test_http_responses'] );
+		if ( ! empty( $this->http_responses ) ) {
+			return array_shift( $this->http_responses );
 		}
 
 		return [
@@ -575,7 +353,31 @@ abstract class GECX_TestCase extends TestCase {
 	}
 
 	/**
+	 * Queues a mock HTTP response.
+	 *
+	 * @param int          $status_code HTTP status code.
+	 * @param string|array $body        Response body.
+	 * @param array        $headers     Response headers.
+	 * @return array WP HTTP response array.
+	 */
+	protected function mock_http_response( int $status_code, $body = '', array $headers = [] ): array {
+		$response = [
+			'response' => [
+				'code'    => $status_code,
+				'message' => 'OK',
+			],
+			'headers'  => $headers,
+			'body'     => is_array( $body ) ? (string) wp_json_encode( $body ) : (string) $body,
+			'cookies'  => [],
+		];
+		$this->http_responses[] = $response;
+		return $response;
+	}
+
+	/**
 	 * Subscribes to HTTP requests made via WP HTTP.
+	 *
+	 * @param \Closure   $listener Callback.
 	 * @param mixed|null $response Mock response object.
 	 * @return \Closure Unsubscribe function.
 	 */
@@ -649,7 +451,7 @@ abstract class GECX_TestCase extends TestCase {
 	/**
 	 * Sets up a dummy block theme directory so tests can switch to a block theme.
 	 */
-	protected function setup_block_theme(): void {
+	public function set_up_block_theme(): void {
 		$theme_root = sys_get_temp_dir() . '/gecx-test-themes/block-theme';
 		if ( ! is_dir( $theme_root . '/templates' ) ) {
 			@mkdir( $theme_root . '/templates', 0777, true );
@@ -666,7 +468,7 @@ abstract class GECX_TestCase extends TestCase {
 	 */
 	protected function set_block_theme( bool $is_block ): void {
 		if ( $is_block ) {
-			$this->setup_block_theme();
+			$this->set_up_block_theme();
 			switch_theme( 'block-theme' );
 		} else {
 			switch_theme( 'default' );

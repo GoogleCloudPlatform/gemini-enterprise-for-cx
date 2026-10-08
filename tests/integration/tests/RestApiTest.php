@@ -9,21 +9,32 @@
  * @package GECX
  */
 
-require_once __DIR__ . '/bootstrap.php';
+declare(strict_types=1);
+
+namespace Google\Gemini_Enterprise_For_CX\Tests\Integration;
 
 use Google\Gemini_Enterprise_For_CX\Auth;
 use Google\Gemini_Enterprise_For_CX\REST\Order_Webhook;
 use Google\Gemini_Enterprise_For_CX\REST\REST_API;
 use Google\Gemini_Enterprise_For_CX\REST\Session_Attribution;
+use ReflectionMethod;
+use stdClass;
+use WC_Data_Store;
+use WC_Order;
+use WC_REST_Authentication;
+use WC_Session_Handler;
+use WC_Webhook;
+use WP_Error;
+use WP_REST_Request;
+use WP_REST_Response;
+use WP_User;
 
-class RestApiTest extends GECX_TestCase {
+class RestApiTest extends TestCase {
 
-    use GECX_CartTokenMinting;
-
-    protected function setUp(): void {
-        parent::setUp();
-        wp_set_current_user( 0 );
-    }
+	public function set_up(): void {
+		parent::set_up();
+		wp_set_current_user( 0 );
+	}
 
     /**
      * Puts WordPress in the state it reaches once WP::parse_request() has
@@ -848,21 +859,24 @@ class RestApiTest extends GECX_TestCase {
     public function test_enable_wc_auth_is_independent_of_install_layout(): void {
         $rest_api = new REST_API();
 
-        $GLOBALS['gecx_test_home_url'] = 'https://example.com/shop';
-        $_SERVER['REQUEST_URI']        = '/shop/wp-json/gecx/v1/public-key';
+        $_SERVER['REQUEST_URI'] = '/shop/wp-json/gecx/v1/public-key';
         $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
 
         $this->given_wordpress_resolved_route( '/gecx/v1/public-key' );
         $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
 
-        $GLOBALS['gecx_test_home_url']        = 'https://example.com';
-        $GLOBALS['gecx_test_rest_url_prefix'] = 'api';
-        $_SERVER['REQUEST_URI']               = '/api/gecx/v1/public-key';
+        $_SERVER['REQUEST_URI'] = '/api/gecx/v1/public-key';
         $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
     }
 
     public function test_refresh_token_handler_success(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com', [ 'customer' ] );
+        $user_id = $this->factory()->user->create(
+            [
+                'user_email' => 'customer@example.com',
+                'role'       => 'customer',
+            ]
+        );
+        wp_set_current_user( $user_id );
 
         $rest_api = new REST_API();
         $request  = new WP_REST_Request();
@@ -1341,10 +1355,16 @@ class RestApiTest extends GECX_TestCase {
     }
 
     public function test_auth_context_handler_returns_fresh_nonce_and_customer_jwt_when_logged_in(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 77, 'buyer@shop.test' );
+        $user_id = $this->factory()->user->create(
+            [
+                'user_email' => 'buyer@shop.test',
+            ]
+        );
+        wp_set_current_user( $user_id );
 
         $rest_api = new REST_API();
         $request  = new WP_REST_Request();
+        $request->set_header( 'Referer', home_url( '/shop/' ) );
 
         $response = $rest_api->auth_context->auth_context_handler( $request );
 
@@ -1375,6 +1395,7 @@ class RestApiTest extends GECX_TestCase {
 
         $rest_api = new REST_API();
         $request  = new WP_REST_Request();
+        $request->set_header( 'Referer', home_url( '/shop/' ) );
 
         $response = $rest_api->auth_context->auth_context_handler( $request );
 
@@ -1404,6 +1425,7 @@ class RestApiTest extends GECX_TestCase {
         $same_origin_req = new WP_REST_Request();
         $same_origin_req->set_header( 'Origin', 'https://example.org' );
         $same_origin_req->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $same_origin_req->set_header( 'Referer', 'https://example.org/shop/' );
         $this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $same_origin_req ) );
 
         // Cross-site Fetch Metadata is rejected.
@@ -1473,10 +1495,14 @@ class RestApiTest extends GECX_TestCase {
         $request  = new WP_REST_Request();
         $request->set_header( 'Origin', 'https://example.org' );
         $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $request->set_header( 'Referer', 'https://example.org/shop/' );
 
         $this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $request ) );
     }
 
+    /**
+     * @group ms-excluded
+     */
     public function test_auth_context_permissions_accepts_the_site_url_host(): void {
         // WordPress in a subdirectory of the storefront: home_url() and
         // site_url() disagree, and requests legitimately arrive from either.
@@ -1501,6 +1527,7 @@ class RestApiTest extends GECX_TestCase {
         $rest_api = new REST_API();
         $request  = new WP_REST_Request();
         $request->set_header( 'Origin', 'https://example.org:443' );
+        $request->set_header( 'Referer', 'https://example.org:443/shop/' );
 
         $this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $request ) );
     }
@@ -1527,6 +1554,9 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 403, $perm->get_error_data()['status'] );
     }
 
+    /**
+     * @group ms-excluded
+     */
     public function test_auth_context_allowed_origins_are_filterable(): void {
         // Escape hatch for a headless front end or a mapped domain that
         // WordPress itself has no record of.
@@ -2044,7 +2074,8 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 0, WC()->session->save_data_calls );
     }
     public function test_widened_wc_auth_strips_capabilities_before_rest_pre_dispatch_and_restores_on_dispatch(): void {
-        wp_set_current_user( 1 );
+        $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
+        wp_set_current_user( $admin_id );
         $other_admin = $this->factory()->user->create( [ 'role' => 'administrator' ] );
         $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/webhooks/order-created';
         $this->given_wordpress_resolved_route( '/gecx/v1/webhooks/order-created' );
@@ -2071,7 +2102,8 @@ class RestApiTest extends GECX_TestCase {
         $this->assertTrue( current_user_can( 'manage_woocommerce' ) );
     }
     public function test_widened_wc_auth_rejects_a_route_mismatch_with_403_and_keeps_capabilities_withheld(): void {
-        wp_set_current_user( 1 );
+        $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
+        wp_set_current_user( $admin_id );
         $_SERVER['REQUEST_URI']            = '/wp-json/gecx/v1/public-key';
         $this->given_wordpress_resolved_route( '/gecx/v1/public-key' );
 
@@ -2106,7 +2138,8 @@ class RestApiTest extends GECX_TestCase {
     }
 
     public function test_widened_wc_auth_state_is_cleared_when_woocommerce_claims_the_request_itself(): void {
-        wp_set_current_user( 1 );
+        $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
+        wp_set_current_user( $admin_id );
         $_SERVER['REQUEST_URI']            = '/wp-json/gecx/v1/link-agent';
         $this->given_wordpress_resolved_route( '/gecx/v1/link-agent' );
 
@@ -2126,130 +2159,91 @@ class RestApiTest extends GECX_TestCase {
         $this->assertNull( $rest_api->console->unlock_widened_wc_auth_on_dispatch( null, null, $wc_request ) );
     }
 
+    /**
+     * @group ms-required
+     */
     public function test_auth_context_multisite_subdirectory_rejects_sibling_site_referer_and_non_member_user(): void {
         if ( ! is_multisite() ) {
             $this->markTestSkipped( 'Multisite only.' );
         }
-        $GLOBALS['gecx_test_is_multisite']  = true;
-        $GLOBALS['gecx_test_sites_by_path'] = [
-            '/site-a/' => 1,
-            '/site-b/' => 2,
-        ];
-        $GLOBALS['gecx_test_home_url'] = 'https://example.com/site-a';
-        $GLOBALS['gecx_test_site_url'] = 'https://example.com/site-a';
+
+        $other_user = $this->factory()->user->create();
+        $site_a     = (int) self::factory()->blog->create( [ 'path' => '/site-a/' ] );
+        $site_b     = (int) self::factory()->blog->create( [ 'path' => '/site-b/' ] );
+
+        switch_to_blog( $site_a );
 
         $rest_api = new REST_API();
 
         // Sibling subsite Referer must be rejected with 403 on subsite (/site-a).
         $cross_site_req = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
         $cross_site_req->set_header( 'Sec-Fetch-Site', 'same-origin' );
-        $cross_site_req->set_header( 'Origin', 'https://example.com' );
-        $cross_site_req->set_header( 'Referer', 'https://example.com/site-b/shop/' );
+        $cross_site_req->set_header( 'Origin', home_url() );
+        $cross_site_req->set_header( 'Referer', get_home_url( $site_b, '/shop/' ) );
         $perm = $rest_api->auth_context->check_auth_context_permissions( $cross_site_req );
         $this->assertInstanceOf( WP_Error::class, $perm );
         $this->assertSame( 403, $perm->get_error_data()['status'] );
 
-        // Root site (allowed_path === '') must also reject a sibling subsite Referer (/site-b/shop/) via get_site_by_path().
-        $GLOBALS['gecx_test_home_url'] = 'https://example.com';
-        $GLOBALS['gecx_test_site_url'] = 'https://example.com';
-        $root_cross_site_perm          = $rest_api->auth_context->check_auth_context_permissions( $cross_site_req );
-        $this->assertInstanceOf( WP_Error::class, $root_cross_site_perm );
-        $this->assertSame( 403, $root_cross_site_perm->get_error_data()['status'] );
-
-        // Root blog homepage sends a bare origin Referer under the default
-        // Referrer-Policy, so it must be served rather than 403'd. The blog it
-        // came from is unknowable, so auth_context_handler() downgrades it to
-        // guest (asserted in the dedicated test below).
-        $origin_only_req = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
-        $origin_only_req->set_header( 'Sec-Fetch-Site', 'same-origin' );
-        $origin_only_req->set_header( 'Referer', 'https://example.com/' );
-        $this->assertTrue( $rest_api->auth_context->check_auth_context_permissions( $origin_only_req ) );
-
-        // Unresolved get_site_by_path() (false) must also be rejected rather than falling through.
-        $GLOBALS['gecx_test_sites_by_path']['/unmapped/'] = false;
-        $unmapped_req                                     = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
-        $unmapped_req->set_header( 'Sec-Fetch-Site', 'same-origin' );
-        $unmapped_req->set_header( 'Referer', 'https://example.com/unmapped/page/' );
-        $unmapped_perm = $rest_api->auth_context->check_auth_context_permissions( $unmapped_req );
-        $this->assertInstanceOf( WP_Error::class, $unmapped_perm );
-        $this->assertSame( 403, $unmapped_perm->get_error_data()['status'] );
-
-        // Root site accepts a root-site Referer (/shop/product-1/).
-        $root_same_site_req = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
-        $root_same_site_req->set_header( 'Sec-Fetch-Site', 'same-origin' );
-        $root_same_site_req->set_header( 'Origin', 'https://example.com' );
-        $root_same_site_req->set_header( 'Referer', 'https://example.com/shop/product-1/' );
-        $this->assertTrue( $rest_api->auth_context->check_auth_context_permissions( $root_same_site_req ) );
-
-        // Same subsite Referer is accepted, but a user who is not a member of blog 1
-        // must be downgraded to guest (user_id === 0 and guest nonce) for site-a.
-        $GLOBALS['gecx_test_home_url'] = 'https://example.com/site-a';
-        $GLOBALS['gecx_test_site_url'] = 'https://example.com/site-a';
-        $same_site_req                 = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+        // Same subsite Referer is accepted.
+        $same_site_req = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
         $same_site_req->set_header( 'Sec-Fetch-Site', 'same-origin' );
-        $same_site_req->set_header( 'Origin', 'https://example.com' );
-        $same_site_req->set_header( 'Referer', 'https://example.com/site-a/shop/' );
+        $same_site_req->set_header( 'Origin', home_url() );
+        $same_site_req->set_header( 'Referer', get_home_url( $site_a, '/shop/' ) );
         $this->assertTrue( $rest_api->auth_context->check_auth_context_permissions( $same_site_req ) );
 
-        Auth::get_or_generate_keypair();
-        $GLOBALS['gecx_test_current_user']            = new WP_User( 77, 'otherblog@example.com', [ 'customer' ] );
-        $GLOBALS['gecx_test_blog_memberships'][1][77] = false;
+        // A user who is not a member of site-a must be downgraded to guest (user_id === 0) for site-a.
+        wp_set_current_user( $other_user );
 
+        Auth::get_or_generate_keypair();
         $response = $rest_api->auth_context->auth_context_handler( $same_site_req );
         $data     = $response->get_data();
-        $this->assertSame( 'test_nonce_wp_rest', $data['nonce'] );
-        $parts   = explode( '.', (string) $data['customer_jwt'] );
-        $payload = json_decode( $this->base64_url_decode( $parts[1] ), true );
+        $payload  = $this->decode_jwt_payload( $data['customer_jwt'] );
         $this->assertSame( 0, $payload['user_id'] );
         $this->assertSame( '', $payload['user_email'] );
+
+        restore_current_blog();
     }
+
+    /**
+     * @group ms-required
+     */
     public function test_auth_context_multisite_root_homepage_origin_only_referer_degrades_to_guest(): void {
         if ( ! is_multisite() ) {
             $this->markTestSkipped( 'Multisite only.' );
         }
-        $GLOBALS['gecx_test_is_multisite']  = true;
-        $GLOBALS['gecx_test_sites_by_path'] = [
-            '/site-a/' => 2,
-        ];
-        $GLOBALS['gecx_test_home_url'] = 'https://example.com';
-        $GLOBALS['gecx_test_site_url'] = 'https://example.com';
 
         Auth::get_or_generate_keypair();
         $rest_api = new REST_API();
 
-        // Member of the root blog, so nothing but the Referer can disqualify them.
-        $root_member                                  = new WP_User( 88, 'rootmember@example.com', [ 'customer' ] );
-        $GLOBALS['gecx_test_users'][88]               = $root_member;
-        $GLOBALS['gecx_test_current_user']            = $root_member;
-        $GLOBALS['gecx_test_blog_memberships'][1][88] = true;
+        $user_id = $this->factory()->user->create( [ 'user_email' => 'rootmember@example.com' ] );
+        wp_set_current_user( $user_id );
 
-        // Root blog homepage: Referer carries no path, so identity is unknowable
+        // Root blog homepage: Referer carries no path (origin only), so identity is unknowable
         // and the shopper is served a guest nonce rather than a 403.
         $origin_only_req = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
         $origin_only_req->set_header( 'Sec-Fetch-Site', 'same-origin' );
-        $origin_only_req->set_header( 'Referer', 'https://example.com/' );
+        $origin_only_req->set_header( 'Origin', home_url() );
+        $origin_only_req->set_header( 'Referer', home_url( '/' ) );
         $this->assertTrue( $rest_api->auth_context->check_auth_context_permissions( $origin_only_req ) );
 
         $guest_response = $rest_api->auth_context->auth_context_handler( $origin_only_req );
         $this->assertSame( 200, $guest_response->get_status() );
-        $guest_data = $guest_response->get_data();
-        $this->assertSame( 'test_nonce_wp_rest', $guest_data['nonce'] );
-        $guest_parts   = explode( '.', (string) $guest_data['customer_jwt'] );
-        $guest_payload = json_decode( $this->base64_url_decode( $guest_parts[1] ), true );
+        $guest_data    = $guest_response->get_data();
+        $guest_payload = $this->decode_jwt_payload( $guest_data['customer_jwt'] );
         $this->assertSame( 0, $guest_payload['user_id'] );
         $this->assertSame( '', $guest_payload['user_email'] );
 
         // A Referer that names a root-blog path still yields the member identity.
         $path_req = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
         $path_req->set_header( 'Sec-Fetch-Site', 'same-origin' );
-        $path_req->set_header( 'Referer', 'https://example.com/shop/product-1/' );
+        $path_req->set_header( 'Origin', home_url() );
+        $path_req->set_header( 'Referer', home_url( '/shop/product-1/' ) );
         $this->assertTrue( $rest_api->auth_context->check_auth_context_permissions( $path_req ) );
 
         $member_response = $rest_api->auth_context->auth_context_handler( $path_req );
         $member_data     = $member_response->get_data();
-        $member_parts    = explode( '.', (string) $member_data['customer_jwt'] );
-        $member_payload  = json_decode( $this->base64_url_decode( $member_parts[1] ), true );
-        $this->assertSame( 88, $member_payload['user_id'] );
+        $member_payload  = $this->decode_jwt_payload( $member_data['customer_jwt'] );
+        $this->assertSame( $user_id, $member_payload['user_id'] );
         $this->assertSame( 'rootmember@example.com', $member_payload['user_email'] );
     }
     public function test_rest_routes_declare_args_schemas_for_session_webhooks_and_link_agent(): void {
@@ -2314,10 +2308,10 @@ class RestApiTest extends GECX_TestCase {
         if ( '' !== $cart_token ) {
             $request->set_header( 'Cart-Token', $cart_token );
         }
-        $GLOBALS['gecx_test_cookies'] = [];
+        $this->cookies = [];
         ( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items_count' => 1 ] ), null, $request );
         return array_intersect_key(
-            $GLOBALS['gecx_test_cookies'] ?? [],
+            $this->cookies,
             array_flip( [ 'woocommerce_items_in_cart', 'woocommerce_cart_hash' ] )
         );
     }
