@@ -104,10 +104,10 @@ class ActivationTest extends GECX_TestCase {
 	 * Asserts Cart-Token authentication hooks and Store API scoping.
 	 */
 	public function test_cart_token_authentication_hooks_and_store_api_scoping(): void {
-		$this->assertTrue( class_exists( 'GECX_Auth' ) );
+		$this->assertTrue( class_exists( \Google\Gemini_Enterprise_For_CX\Auth::class ) );
 
-		$auth = ( new \ReflectionClass( 'GECX_Auth' ) )->newInstanceWithoutConstructor();
-		$state = new \ReflectionProperty( 'GECX_Auth', 'authenticated_via_cart_token' );
+		$auth = ( new \ReflectionClass( \Google\Gemini_Enterprise_For_CX\Auth::class ) )->newInstanceWithoutConstructor();
+		$state = new \ReflectionProperty( \Google\Gemini_Enterprise_For_CX\Auth::class, 'authenticated_via_cart_token' );
 		if ( PHP_VERSION_ID < 80100 ) {
 			$state->setAccessible( true );
 		}

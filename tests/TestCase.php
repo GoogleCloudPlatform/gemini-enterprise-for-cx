@@ -181,8 +181,8 @@ abstract class GECX_TestCase extends TestCase {
 
 		update_option( 'permalink_structure', '/%postname%/' );
 
-		if ( class_exists( 'GECX_Auth' ) ) {
-			GECX_Auth::reset_cart_token_state();
+		if ( class_exists( \Google\Gemini_Enterprise_For_CX\Auth::class ) ) {
+			\Google\Gemini_Enterprise_For_CX\Auth::reset_cart_token_state();
 		}
 
 		$GLOBALS['gecx_test_http_requests']  = [];
@@ -212,8 +212,8 @@ abstract class GECX_TestCase extends TestCase {
 		$GLOBALS['gecx_test_http_requests']  = [];
 		$GLOBALS['gecx_test_http_responses'] = [];
 
-		if ( class_exists( 'GECX_Auth' ) ) {
-			GECX_Auth::reset_cart_token_state();
+		if ( class_exists( \Google\Gemini_Enterprise_For_CX\Auth::class ) ) {
+			\Google\Gemini_Enterprise_For_CX\Auth::reset_cart_token_state();
 		}
 
 		// Clean up superglobals.
