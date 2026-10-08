@@ -3,7 +3,7 @@ Contributors: google
 Tags: woocommerce, ai, chatbot, ai agent, shopping assistant
 Requires at least: 6.2
 WC requires at least: 7.1
-WC tested up to: 11.1
+WC tested up to: 11.2
 Tested up to: 7.1
 Requires PHP: 7.4
 Stable tag: 1.0.1

@@ -91,21 +91,21 @@ jobs:
         env:
           PLUGIN_ZIP: ${{ steps.build.outputs.zip }}
         run: |
-          vendor/bin/qit run:validation gemini-enterprise-for-cx --zip="${PLUGIN_ZIP}" --wait
+          vendor/bin/qit run:validation gemini-enterprise-for-cx --zip="${PLUGIN_ZIP}"
 
       - name: Run QIT security test
         if: (success() || failure()) && steps.partner.outputs.configured == 'true'
         env:
           PLUGIN_ZIP: ${{ steps.build.outputs.zip }}
         run: |
-          vendor/bin/qit run:security gemini-enterprise-for-cx --zip="${PLUGIN_ZIP}" --wait
+          vendor/bin/qit run:security gemini-enterprise-for-cx --zip="${PLUGIN_ZIP}"
 
       - name: Run QIT activation test
         if: (success() || failure()) && steps.partner.outputs.configured == 'true'
         env:
           PLUGIN_ZIP: ${{ steps.build.outputs.zip }}
         run: |
-          vendor/bin/qit run:activation gemini-enterprise-for-cx --zip="${PLUGIN_ZIP}" --wait
+          vendor/bin/qit run:activation gemini-enterprise-for-cx --zip="${PLUGIN_ZIP}"
 
       - name: Upload plugin zip
         if: always()

@@ -35,7 +35,7 @@ jobs:
           - wp-version: '7.1'
             wc-version: '9.9.0'
           - wp-version: '7.1'
-            wc-version: '11.1.0'
+            wc-version: '11.2.0'
 
     steps:
       - name: Checkout code
