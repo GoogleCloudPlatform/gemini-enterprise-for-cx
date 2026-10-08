@@ -27,7 +27,6 @@ jobs:
           - 3306
         options: --health-cmd="healthcheck.sh --su-mysql --connect --innodb_initialized" --health-interval=10s --health-timeout=5s --health-retries=3
     env:
-      WP_DB_HOST: 127.0.0.1:${{ job.services.mysql.ports[3306] }}
       WP_DB_NAME: wordpress_test
       WP_DB_USER: root
       WP_DB_PASS: ''
@@ -37,6 +36,9 @@ jobs:
         php-version: ['7.4', '8.0', '8.1', '8.2', '8.3', '8.4']
 
     steps:
+      - name: Configure database host
+        run: echo "WP_DB_HOST=127.0.0.1:${{ job.services.mysql.ports[3306] }}" >> "$GITHUB_ENV"
+
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
