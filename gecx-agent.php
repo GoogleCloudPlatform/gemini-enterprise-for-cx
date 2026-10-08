@@ -35,12 +35,6 @@ if ( ! defined( 'GECX_VERSION' ) ) {
 }
 
 
-
-// Load auto-generated asset registration if built.
-if ( file_exists( plugin_dir_path( __FILE__ ) . 'build/build.php' ) ) {
-    require_once plugin_dir_path( __FILE__ ) . 'build/build.php';
-}
-
 // Load core classes.
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gecx-auth.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gecx-rest-api.php';

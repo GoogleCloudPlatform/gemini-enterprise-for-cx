@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "wp-build",
+    "postbuild": "node .github/scripts/clean-build.mjs",
     "dev": "wp-build --watch",
     "lint:js": "oxlint packages/ && eslint packages/",
     "lint": "npm run lint:js",
