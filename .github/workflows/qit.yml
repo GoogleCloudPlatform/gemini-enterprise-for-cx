@@ -37,6 +37,17 @@ jobs:
       - name: Install dependencies
         uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
 
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies and build assets
+        run: |
+          npm ci
+          npm run build
+
       - name: Build plugin ZIP
         id: build
         run: |
@@ -49,6 +60,7 @@ jobs:
           composer dump-autoload -o
           zip_path="dist/gemini-enterprise-for-cx-${version}.zip"
           (cd build/staging && zip -q -r "../../${zip_path}" gemini-enterprise-for-cx)
+          rm -rf build/staging
           echo "zip=${zip_path}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 

@@ -50,6 +50,17 @@ jobs:
       - name: Generate autoloader
         run: composer dump-autoload -o
 
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies and build assets
+        run: |
+          npm ci
+          npm run build
+
       - name: Configure wp-env
         # WooCommerce is listed before "." deliberately. wp-env activates
         # pluginSources in array order, chained with &&, and gecx-agent.php
