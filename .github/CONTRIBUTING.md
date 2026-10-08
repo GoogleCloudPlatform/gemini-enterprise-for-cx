@@ -62,6 +62,13 @@ disclosed, and an out-of-date disclosure is grounds for removal.
 
 ## Releases
 
+Version numbers follow [Semantic Versioning](https://semver.org/) against the
+plugin's documented interface: hooks, shortcodes, blocks, REST routes,
+JavaScript events and globals, and saved settings. Bump the major version for a
+release that breaks any of those, the minor version for new features or notable
+internal changes such as a new archive layout, and the patch version for fixes
+only.
+
 Releases are built by `.github/workflows/release.yml` from a `v*` tag. The
 archive is produced from the workspace using `.distignore` and includes the
 production Composer classmap autoloader (`vendor/autoload.php`); never hand-zip
