@@ -18,19 +18,26 @@ class AuthTest extends GECX_TestCase {
     use GECX_CartTokenMinting;
 
     private Auth $auth;
+    private array $unknown_issuer_reports = [];
 
     protected function setUp(): void {
         parent::setUp();
-        $_SERVER['REQUEST_URI'] = '/wp-json/wc/store/v1/cart';
-        $this->auth             = new Auth();
+        $_SERVER['REQUEST_URI']        = '/wp-json/wc/store/v1/cart';
+        $this->auth                    = new Auth();
+        $this->unknown_issuer_reports = [];
+
+        add_action(
+            'gecx_cart_token_unknown_issuer',
+            function ( $reported ) {
+                $this->unknown_issuer_reports[] = $reported;
+            }
+        );
 
         // Token subjects used across these tests must resolve to real,
         // unprivileged shoppers. A token naming a user who does not exist is
         // refused outright, which would mask the behaviour under test.
-        $GLOBALS['gecx_test_users'] = [
-            123 => new WP_User( 123, 'shopper123@example.com', [ 'customer' ] ),
-            456 => new WP_User( 456, 'shopper456@example.com', [ 'customer' ] ),
-        ];
+        $this->ensure_user_with_id( 123, 'shopper123', 'customer' );
+        $this->ensure_user_with_id( 456, 'shopper456', 'customer' );
     }
 
     public function test_bypass_if_no_token(): void {
@@ -336,15 +343,10 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_parse_request_backstop_runs_before_rest_dispatch(): void {
-        $priority = null;
-        foreach ( $GLOBALS['gecx_test_action_priorities']['parse_request'] ?? [] as [ $callback, $registered_priority ] ) {
-            if ( [ $this->auth, 'drop_cart_token_user_outside_store_api' ] === $callback ) {
-                $priority = $registered_priority;
-            }
-        }
+        $priority = has_action( 'parse_request', [ $this->auth, 'drop_cart_token_user_outside_store_api' ] );
 
         // rest_api_loaded() is on parse_request at 10 and exits after dispatch.
-        $this->assertNotNull( $priority );
+        $this->assertNotFalse( $priority );
         $this->assertLessThan( 10, $priority );
     }
 
@@ -392,7 +394,7 @@ class AuthTest extends GECX_TestCase {
      * subdirectory, which is still index.php.
      */
     public function test_front_controller_gate_allows_a_subdirectory_install(): void {
-        $GLOBALS['gecx_test_home_url'] = 'https://example.com/blog';
+        add_filter( 'home_url', static fn() => 'https://example.org/blog' );
         $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
         $_SERVER['SCRIPT_NAME']     = '/blog/index.php';
         $_SERVER['REQUEST_URI']     = '/blog/wp-json/wc/store/v1/cart';
@@ -406,9 +408,6 @@ class AuthTest extends GECX_TestCase {
      * appears to, or any user at all.
      */
     public function test_non_integral_user_id_is_refused(): void {
-        $GLOBALS['gecx_test_users'][1]    = new WP_User( 1, 'admin@example.com', [ 'customer' ] );
-        $GLOBALS['gecx_test_users'][1000] = new WP_User( 1000, 'shopper1000@example.com', [ 'customer' ] );
-
         foreach ( [ '1e3', true, ' 1', '01e2' ] as $subject ) {
             $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( $subject );
             $this->assertSame(
@@ -425,21 +424,30 @@ class AuthTest extends GECX_TestCase {
      * not hold.
      */
     public function test_refusal_reason_distinguishes_unresolved_user_from_capability(): void {
-        $GLOBALS['gecx_test_users'] = [];
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
-        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
-        $this->assertSame(
-            [ [ 'gecx_cart_token_refused', [ 456, Auth::REFUSAL_CODE_USER_UNRESOLVED, null ] ] ],
-            $GLOBALS['gecx_test_actions']
+        $refused_actions = [];
+        add_action(
+            'gecx_cart_token_refused',
+            static function ( ...$args ) use ( &$refused_actions ) {
+                $refused_actions[] = $args;
+            },
+            10,
+            3
         );
 
-        $GLOBALS['gecx_test_actions'] = [];
-        $GLOBALS['gecx_test_users']   = [ 7 => new WP_User( 7, 'admin@example.com', [ 'administrator' ] ) ];
-        $_SERVER['HTTP_CART_TOKEN']   = $this->generate_jwt( 7 );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 99999 );
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertSame(
-            [ [ 'gecx_cart_token_refused', [ 7, Auth::REFUSAL_CODE_CAPABILITY_HELD, 'manage_options' ] ] ],
-            $GLOBALS['gecx_test_actions']
+            [ [ 99999, Auth::REFUSAL_CODE_USER_UNRESOLVED, null ] ],
+            $refused_actions
+        );
+
+        $refused_actions = [];
+        $admin_id        = $this->factory()->user->create( [ 'role' => 'administrator' ] );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( $admin_id );
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+        $this->assertSame(
+            [ [ $admin_id, Auth::REFUSAL_CODE_CAPABILITY_HELD, 'manage_options' ] ],
+            $refused_actions
         );
     }
 
@@ -448,13 +456,8 @@ class AuthTest extends GECX_TestCase {
      * can widen who the agent serves. Nothing else in the list moves with it.
      */
     public function test_privileged_caps_filter_can_narrow_the_list(): void {
-        $GLOBALS['gecx_test_users'][55] = new WP_User(
-            55,
-            'contributor@example.com',
-            [ 'contributor' ],
-            [ 'edit_posts' => true ]
-        );
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 55 );
+        $user_id = $this->factory()->user->create( [ 'role' => 'contributor' ] );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( $user_id );
 
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
 
@@ -465,7 +468,7 @@ class AuthTest extends GECX_TestCase {
             }
         );
 
-        $this->assertSame( 55, $this->auth->authenticate_via_cart_token( 0 ) );
+        $this->assertSame( $user_id, $this->auth->authenticate_via_cart_token( 0 ) );
     }
 
     /**
@@ -473,13 +476,8 @@ class AuthTest extends GECX_TestCase {
      * disabling the check.
      */
     public function test_privileged_caps_filter_cannot_empty_the_list(): void {
-        $GLOBALS['gecx_test_users'][55] = new WP_User(
-            55,
-            'contributor@example.com',
-            [ 'contributor' ],
-            [ 'edit_posts' => true ]
-        );
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 55 );
+        $user_id = $this->factory()->user->create( [ 'role' => 'contributor' ] );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( $user_id );
 
         add_filter(
             'gecx_cart_token_privileged_caps',
@@ -537,7 +535,8 @@ class AuthTest extends GECX_TestCase {
      * must not touch their request.
      */
     public function test_dispatch_backstop_ignores_requests_without_a_cart_token(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
+        wp_set_current_user( $admin_id );
 
         $request = new WP_REST_Request();
         $request->set_route( '/gecx/v1/public-key' );
@@ -550,8 +549,7 @@ class AuthTest extends GECX_TestCase {
      * deleted, the capability check cannot answer, so it must fail closed.
      */
     public function test_cart_token_for_deleted_user_does_not_authenticate(): void {
-        $GLOBALS['gecx_test_users'] = [];
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 99999 );
 
         $this->assertEquals( 0, $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertFalse( Auth::is_cart_token_request() );
@@ -582,10 +580,10 @@ class AuthTest extends GECX_TestCase {
      * subdirectory install resolves the same route a root install does.
      */
     public function test_store_api_path_is_matched_in_a_subdirectory_install(): void {
-        $GLOBALS['gecx_test_home_url'] = 'https://example.com/blog/shop';
-        $_SERVER['HTTP_CART_TOKEN']    = $this->generate_jwt( 456 );
-        $_SERVER['SCRIPT_NAME']        = '/blog/shop/index.php';
-        $_SERVER['REQUEST_URI']        = '/blog/shop/wp-json/wc/store/v1/cart';
+        add_filter( 'home_url', static fn() => 'https://example.org/blog/shop' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
+        $_SERVER['SCRIPT_NAME']     = '/blog/shop/index.php';
+        $_SERVER['REQUEST_URI']     = '/blog/shop/wp-json/wc/store/v1/cart';
 
         $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
     }
@@ -595,8 +593,8 @@ class AuthTest extends GECX_TestCase {
      * then not a REST request at all.
      */
     public function test_store_api_path_honours_a_renamed_rest_prefix(): void {
-        $GLOBALS['gecx_test_rest_url_prefix'] = 'api';
-        $_SERVER['HTTP_CART_TOKEN']           = $this->generate_jwt( 456 );
+        add_filter( 'rest_url_prefix', static fn() => 'api' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
 
         $_SERVER['REQUEST_URI'] = '/api/wc/store/v1/cart';
         $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
@@ -614,33 +612,31 @@ class AuthTest extends GECX_TestCase {
      * not logged in as anyone.
      */
     public function test_cart_token_never_resolves_to_privileged_user(): void {
-        $admin                             = new WP_User( 7, 'admin@example.com', [ 'administrator' ] );
-        $GLOBALS['gecx_test_users'][7]     = $admin;
-        $GLOBALS['gecx_test_current_user'] = null;
+        $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
+        $admin    = get_userdata( $admin_id );
 
-        // Pins the capability mock: if roles stopped mapping to capabilities,
+        // Pins the capability: if roles stopped mapping to capabilities,
         // the assertions below would pass for the wrong reason.
         $this->assertTrue( user_can( $admin, 'manage_options' ) );
 
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 7 );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( $admin_id );
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertFalse( Auth::is_cart_token_request() );
     }
 
     public function test_cart_token_never_resolves_to_shop_manager(): void {
-        $manager                           = new WP_User( 9, 'manager@example.com', [ 'shop_manager' ] );
-        $GLOBALS['gecx_test_users'][9]     = $manager;
-        $GLOBALS['gecx_test_current_user'] = null;
+        $manager_id = $this->factory()->user->create( [ 'role' => 'shop_manager' ] );
+        $manager    = get_userdata( $manager_id );
 
         $this->assertTrue( user_can( $manager, 'manage_woocommerce' ) );
 
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 9 );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( $manager_id );
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertFalse( Auth::is_cart_token_request() );
     }
 
     public function test_reject_token_with_foreign_issuer(): void {
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, 'secret_salt', true, 'some-other-issuer' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, wp_salt(), true, 'some-other-issuer' );
         $this->assertEquals( 0, $this->auth->authenticate_via_cart_token( 0 ) );
     }
 
@@ -651,7 +647,7 @@ class AuthTest extends GECX_TestCase {
      * side of that boundary.
      */
     public function test_accept_token_with_pre_10_namespace_issuer(): void {
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, 'secret_salt', true, 'wc/store/v1' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, wp_salt(), true, 'wc/store/v1' );
         $this->assertSame( 123, $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertTrue( Auth::is_cart_token_request() );
     }
@@ -664,7 +660,7 @@ class AuthTest extends GECX_TestCase {
      * restricts to a versioned route.
      */
     public function test_accept_token_issued_by_unversioned_store_alias(): void {
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, 'secret_salt', true, 'wc/store' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, wp_salt(), true, 'wc/store' );
         $this->assertSame( 123, $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertTrue( Auth::is_cart_token_request() );
     }
@@ -674,7 +670,7 @@ class AuthTest extends GECX_TestCase {
      * cart token, so a token claiming it did not come from WooCommerce.
      */
     public function test_reject_token_issued_by_private_namespace(): void {
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, 'secret_salt', true, 'wc/private' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, wp_salt(), true, 'wc/private' );
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertFalse( Auth::is_cart_token_request() );
     }
@@ -684,7 +680,7 @@ class AuthTest extends GECX_TestCase {
      * the 'WC requires at least' header rests on.
      */
     public function test_reject_token_with_no_issuer_claim(): void {
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, 'secret_salt', true, null );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, wp_salt(), true, null );
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertFalse( Auth::is_cart_token_request() );
         $this->assertSame( [ '(absent)' ], $this->unknown_issuer_reports() );
@@ -695,7 +691,7 @@ class AuthTest extends GECX_TestCase {
      * the one that fires when WooCommerce changes the claim again.
      */
     public function test_unknown_issuer_is_reported_with_its_value(): void {
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, 'secret_salt', true, 'wc/private' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, wp_salt(), true, 'wc/private' );
         $this->auth->authenticate_via_cart_token( 0 );
         $this->assertSame( [ 'wc/private' ], $this->unknown_issuer_reports() );
     }
@@ -705,7 +701,7 @@ class AuthTest extends GECX_TestCase {
      * reach it. Otherwise the log is writable by anyone with the endpoint.
      */
     public function test_unknown_issuer_not_reported_for_unsigned_token(): void {
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, 'secret_salt', false, 'whatever' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, wp_salt(), false, 'whatever' );
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertSame( [], $this->unknown_issuer_reports() );
     }
@@ -714,7 +710,7 @@ class AuthTest extends GECX_TestCase {
      * An accepted issuer must not report anything.
      */
     public function test_known_issuer_is_not_reported(): void {
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, 'secret_salt', true, 'wc/store' );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, wp_salt(), true, 'wc/store' );
         $this->assertSame( 123, $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertSame( [], $this->unknown_issuer_reports() );
     }
@@ -725,13 +721,7 @@ class AuthTest extends GECX_TestCase {
      * @return array<int, string>
      */
     private function unknown_issuer_reports(): array {
-        $reports = [];
-        foreach ( $GLOBALS['gecx_test_actions'] ?? [] as $action ) {
-            if ( 'gecx_cart_token_unknown_issuer' === $action[0] ) {
-                $reports[] = $action[1][0];
-            }
-        }
-        return $reports;
+        return $this->unknown_issuer_reports;
     }
 
     /**
@@ -761,7 +751,7 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_reject_manipulated_signature(): void {
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, 'secret_salt', false );
+        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 123, 3600, wp_salt(), false );
         $this->assertEquals( 0, $this->auth->authenticate_via_cart_token( 0 ) );
     }
 
@@ -771,7 +761,7 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_generate_customer_jwt_generates_guest_jwt_when_logged_out(): void {
-        $GLOBALS['gecx_test_current_user'] = null;
+        wp_set_current_user( 0 );
 
         $jwt = Auth::generate_customer_jwt();
         $this->assertNotNull( $jwt );
@@ -785,24 +775,25 @@ class AuthTest extends GECX_TestCase {
         $this->assertEquals( 0, $payload['user_id'] );
         $this->assertEquals( '', $payload['user_email'] );
         $this->assertFalse( $payload['is_admin'] );
-        $this->assertEquals( 'example.com', $payload['iss'] );
+        $this->assertEquals( wp_parse_url( home_url(), PHP_URL_HOST ), $payload['iss'] );
         $this->assertEquals( 'gecx.cloud.google.com', $payload['aud'] );
         $this->assertTrue( isset( $payload['exp'] ) && $payload['exp'] > time() );
     }
 
     public function test_generate_customer_jwt_returns_null_when_no_secret_and_no_keypair(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com' );
         delete_option( 'gecx_api_secret' );
         delete_option( 'gecx_keypair' );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
-        $GLOBALS['gecx_test_wp_salt'] = '';
+        add_filter( 'salt', '__return_empty_string' );
 
         $this->assertNull( Auth::generate_customer_jwt() );
     }
 
     public function test_generate_and_verify_customer_jwt_success(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com', [ 'customer' ] );
+        $user_id = $this->factory()->user->create( [ 'role' => 'customer' ] );
+        $user    = get_userdata( $user_id );
+        wp_set_current_user( $user_id );
 
         $jwt = Auth::generate_customer_jwt();
         $this->assertNotNull( $jwt );
@@ -813,15 +804,17 @@ class AuthTest extends GECX_TestCase {
 
         $payload = $this->decode_jwt_payload( $jwt );
         $this->assertNotNull( $payload );
-        $this->assertEquals( 42, $payload['user_id'] );
-        $this->assertEquals( 'customer@example.com', $payload['user_email'] );
+        $this->assertEquals( $user_id, $payload['user_id'] );
+        $this->assertEquals( $user->user_email, $payload['user_email'] );
         $this->assertFalse( $payload['is_admin'] );
-        $this->assertEquals( 'example.com', $payload['iss'] );
+        $this->assertEquals( wp_parse_url( home_url(), PHP_URL_HOST ), $payload['iss'] );
         $this->assertTrue( isset( $payload['exp'] ) && $payload['exp'] > time() );
     }
 
     public function test_generate_customer_jwt_never_claims_admin_for_administrator(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
+        $admin    = get_userdata( $admin_id );
+        wp_set_current_user( $admin_id );
 
         $jwt = Auth::generate_customer_jwt();
         $this->assertNotNull( $jwt );
@@ -832,14 +825,16 @@ class AuthTest extends GECX_TestCase {
 
         $payload = $this->decode_jwt_payload( $jwt );
         $this->assertNotNull( $payload );
-        $this->assertEquals( 1, $payload['user_id'] );
-        $this->assertEquals( 'admin@example.com', $payload['user_email'] );
+        $this->assertEquals( $admin_id, $payload['user_id'] );
+        $this->assertEquals( $admin->user_email, $payload['user_email'] );
         $this->assertFalse( $payload['is_admin'] );
-        $this->assertEquals( 'example.com', $payload['iss'] );
+        $this->assertEquals( wp_parse_url( home_url(), PHP_URL_HOST ), $payload['iss'] );
     }
 
     public function test_generate_admin_jwt_success(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 99, 'admin@example.com', [ 'administrator' ] );
+        $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
+        $admin    = get_userdata( $admin_id );
+        wp_set_current_user( $admin_id );
 
         $jwt = Auth::generate_admin_jwt();
         $this->assertNotNull( $jwt );
@@ -850,18 +845,19 @@ class AuthTest extends GECX_TestCase {
 
         $payload = $this->decode_jwt_payload( $jwt );
         $this->assertNotNull( $payload );
-        $this->assertEquals( 99, $payload['user_id'] );
-        $this->assertEquals( 'admin@example.com', $payload['user_email'] );
+        $this->assertEquals( $admin_id, $payload['user_id'] );
+        $this->assertEquals( $admin->user_email, $payload['user_email'] );
         $this->assertTrue( $payload['is_admin'] );
-        $this->assertEquals( 'example.com', $payload['iss'] );
+        $this->assertEquals( wp_parse_url( home_url(), PHP_URL_HOST ), $payload['iss'] );
         $this->assertTrue( isset( $payload['iat'] ) && isset( $payload['exp'] ) );
         $this->assertEquals( $payload['iat'] + 3600, $payload['exp'] );
     }
 
     public function test_generate_admin_jwt_custom_expiration(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 99, 'admin@example.com', [ 'administrator' ] );
+        $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
+        wp_set_current_user( $admin_id );
 
-        $jwt = Auth::generate_admin_jwt( 99, 600, 'custom_admin@example.com' );
+        $jwt = Auth::generate_admin_jwt( $admin_id, 600, 'custom_admin@example.org' );
         $this->assertNotNull( $jwt );
 
         $pub_key = Auth::get_public_key();
@@ -870,17 +866,16 @@ class AuthTest extends GECX_TestCase {
 
         $payload = $this->decode_jwt_payload( $jwt );
         $this->assertNotNull( $payload );
-        $this->assertEquals( 'custom_admin@example.com', $payload['user_email'] );
+        $this->assertEquals( 'custom_admin@example.org', $payload['user_email'] );
         $this->assertEquals( $payload['iat'] + 600, $payload['exp'] );
         $this->assertTrue( $payload['is_admin'] );
     }
 
     public function test_generate_jwt_returns_null_when_no_private_key(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 55, 'fallback@example.com', [ 'customer' ] );
         delete_option( 'gecx_keypair' );
         delete_option( 'gecx_public_key' );
         delete_option( 'gecx_private_key' );
-        $GLOBALS['gecx_test_wp_salt'] = '';
+        add_filter( 'salt', '__return_empty_string' );
 
         // A store that once held the retired shared secret must not fall back
         // to signing with it.
@@ -892,7 +887,8 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_corrupt_private_key_is_replaced_and_signing_recovers_to_rs256(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 77, 'corrupt_key@example.com', [ 'customer' ] );
+        $user_id = $this->factory()->user->create( [ 'role' => 'customer' ] );
+        wp_set_current_user( $user_id );
 
         // Encrypt an invalid PEM string as the private key. It decrypts fine but
         // will not sign, which is the corrupt-key case rather than salt rotation.
@@ -915,7 +911,7 @@ class AuthTest extends GECX_TestCase {
         $this->assertEquals( 'RS256', $header['alg'] );
 
         $payload = $this->decode_jwt_payload( $jwt );
-        $this->assertEquals( 77, $payload['user_id'] );
+        $this->assertEquals( $user_id, $payload['user_id'] );
 
         // The corrupt key is gone, not left in place to fail again next time.
         $this->assertTrue( $encrypted !== get_option( 'gecx_private_key' ) );
@@ -987,30 +983,32 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_generate_customer_jwt_never_claims_admin_for_explicit_admin_id(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com', [ 'customer' ] );
-        $GLOBALS['gecx_test_users'][1]     = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
+        $admin    = get_userdata( $admin_id );
 
-        $jwt = Auth::generate_customer_jwt( 1 );
+        $jwt = Auth::generate_customer_jwt( $admin_id );
         $this->assertNotNull( $jwt );
 
         $payload = $this->decode_jwt_payload( $jwt );
         $this->assertNotNull( $payload );
-        $this->assertEquals( 1, $payload['user_id'] );
+        $this->assertEquals( $admin_id, $payload['user_id'] );
         // Resolved through get_userdata(), not wp_get_current_user(): the ID
         // passed is not the current user's.
-        $this->assertEquals( 'admin@example.com', $payload['user_email'] );
+        $this->assertEquals( $admin->user_email, $payload['user_email'] );
         $this->assertFalse( $payload['is_admin'] );
     }
 
     public function test_customer_jwt_payload_is_not_filterable(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com', [ 'customer' ] );
+        $user_id = $this->factory()->user->create( [ 'role' => 'customer' ] );
+        $user    = get_userdata( $user_id );
+        wp_set_current_user( $user_id );
 
         add_filter(
             'gecx_customer_jwt_payload',
             static function ( $payload ) {
                 $payload['is_admin']     = true;
                 $payload['user_id']      = 1;
-                $payload['user_email']   = 'admin@example.com';
+                $payload['user_email']   = 'admin@example.org';
                 $payload['iss']          = 'attacker.example';
                 $payload['aud']          = 'attacker.example';
                 $payload['exp']          = time() + 31536000;
@@ -1025,9 +1023,9 @@ class AuthTest extends GECX_TestCase {
         $payload = $this->decode_jwt_payload( $jwt );
         $this->assertNotNull( $payload );
         $this->assertFalse( $payload['is_admin'] );
-        $this->assertEquals( 42, $payload['user_id'] );
-        $this->assertEquals( 'customer@example.com', $payload['user_email'] );
-        $this->assertEquals( 'example.com', $payload['iss'] );
+        $this->assertEquals( $user_id, $payload['user_id'] );
+        $this->assertEquals( $user->user_email, $payload['user_email'] );
+        $this->assertEquals( wp_parse_url( home_url(), PHP_URL_HOST ), $payload['iss'] );
         $this->assertEquals( 'gecx.cloud.google.com', $payload['aud'] );
         $this->assertEquals( $payload['iat'] + 3600, $payload['exp'] );
         // The hook is gone rather than constrained, so a filter's own claims do
@@ -1036,13 +1034,15 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_admin_jwt_payload_is_not_filterable(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 99, 'admin@example.com', [ 'administrator' ] );
+        $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
+        $admin    = get_userdata( $admin_id );
+        wp_set_current_user( $admin_id );
 
         add_filter(
             'gecx_admin_jwt_payload',
             static function ( $payload ) {
                 $payload['user_id']      = 1;
-                $payload['user_email']   = 'attacker@example.com';
+                $payload['user_email']   = 'attacker@example.org';
                 $payload['iss']          = 'attacker.example';
                 $payload['aud']          = 'attacker.example';
                 $payload['exp']          = time() + 31536000;
@@ -1054,9 +1054,9 @@ class AuthTest extends GECX_TestCase {
         $payload = $this->decode_jwt_payload( (string) Auth::generate_admin_jwt() );
         $this->assertNotNull( $payload );
         $this->assertTrue( $payload['is_admin'] );
-        $this->assertEquals( 99, $payload['user_id'] );
-        $this->assertEquals( 'admin@example.com', $payload['user_email'] );
-        $this->assertEquals( 'example.com', $payload['iss'] );
+        $this->assertEquals( $admin_id, $payload['user_id'] );
+        $this->assertEquals( $admin->user_email, $payload['user_email'] );
+        $this->assertEquals( wp_parse_url( home_url(), PHP_URL_HOST ), $payload['iss'] );
         $this->assertEquals( 'gecx.cloud.google.com', $payload['aud'] );
         // The admin TTL is 3600 seconds and nothing downstream caps it, so the
         // token must not be able to outlive it.
@@ -1145,7 +1145,7 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_get_encryption_key_returns_null_when_salts_empty(): void {
-        $GLOBALS['gecx_test_wp_salt'] = '';
+        add_filter( 'salt', '__return_empty_string' );
         $this->assertNull( Auth::get_encryption_key() );
         $this->assertNull( Auth::encrypt_private_key( 'dummy_key' ) );
         $this->assertNull( Auth::decrypt_private_key( [
@@ -1207,7 +1207,7 @@ class AuthTest extends GECX_TestCase {
         $original_record = get_option( 'gecx_keypair' );
 
         // Simulate salt rotation: changing the salt causes decryption to fail.
-        $GLOBALS['gecx_test_wp_salt'] = 'new_rotated_salt';
+        add_filter( 'salt', static fn() => 'new_rotated_salt' );
 
         // Nothing can recover the old private key, so the store has to be given
         // a working one instead of being left unable to sign anything.
@@ -1338,7 +1338,7 @@ class AuthTest extends GECX_TestCase {
     }
 
     public function test_encryption_key_is_hkdf_sha256_over_the_salts(): void {
-        $GLOBALS['gecx_test_wp_salt'] = 'a_salt';
+        add_filter( 'salt', static fn() => 'a_salt' );
 
         $this->assertEquals(
             hash_hkdf( 'sha256', 'a_salt', 32, 'gecx_private_key_encryption', 'a_salt' ),
@@ -1443,25 +1443,18 @@ class AuthTest extends GECX_TestCase {
         $token = $this->mint_token_with_payload( $payload );
 
         // First verification: fires action and sets throttling transient
-        $_SERVER['HTTP_CART_TOKEN'] = $token;
+        $this->unknown_issuer_reports = [];
+        $_SERVER['HTTP_CART_TOKEN']   = $token;
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
 
-        $issuer_actions = array_filter(
-            $GLOBALS['gecx_test_actions'],
-            fn( $a ) => $a[0] === 'gecx_cart_token_unknown_issuer'
-        );
-        $this->assertCount( 1, $issuer_actions );
+        $this->assertCount( 1, $this->unknown_issuer_reports );
         $this->assertTrue( ! empty( get_transient( 'gecx_unknown_iss_' . md5( 'https://unknown.issuer.example.com' ) ) ) );
 
         // Second verification: fires action, but error log is throttled by transient
-        $GLOBALS['gecx_test_actions'] = [];
+        $this->unknown_issuer_reports = [];
         $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
 
-        $issuer_actions2 = array_filter(
-            $GLOBALS['gecx_test_actions'],
-            fn( $a ) => $a[0] === 'gecx_cart_token_unknown_issuer'
-        );
-        $this->assertCount( 1, $issuer_actions2 );
+        $this->assertCount( 1, $this->unknown_issuer_reports );
     }
 
     /**
@@ -1536,7 +1529,9 @@ class AuthTest extends GECX_TestCase {
         }
 
         $method = new ReflectionMethod( Auth::class, 'keypair_lock_holder_is_live' );
-        $method->setAccessible( true );
+        if ( PHP_VERSION_ID < 80100 ) {
+            $method->setAccessible( true );
+        }
 
         $this->assertSame( $expected, $method->invoke( null ), $why );
     }
@@ -1586,7 +1581,9 @@ class AuthTest extends GECX_TestCase {
         update_option( 'gecx_keypair_lock', 0 );
 
         $method = new ReflectionMethod( Auth::class, 'wait_for_concurrent_keypair' );
-        $method->setAccessible( true );
+        if ( PHP_VERSION_ID < 80100 ) {
+            $method->setAccessible( true );
+        }
 
         $started = microtime( true );
         $result  = $method->invoke( null );
@@ -1608,12 +1605,16 @@ class AuthTest extends GECX_TestCase {
         update_option( 'gecx_keypair_lock', time() );
 
         $generate = new ReflectionMethod( Auth::class, 'generate_and_store_keypair' );
-        $generate->setAccessible( true );
+        if ( PHP_VERSION_ID < 80100 ) {
+            $generate->setAccessible( true );
+        }
         $published = $generate->invoke( null );
         $this->assertNotNull( $published, 'Test setup failed: could not generate a keypair to publish.' );
 
         $method = new ReflectionMethod( Auth::class, 'wait_for_concurrent_keypair' );
-        $method->setAccessible( true );
+        if ( PHP_VERSION_ID < 80100 ) {
+            $method->setAccessible( true );
+        }
         $result = $method->invoke( null );
 
         $this->assertNotNull( $result );
@@ -1622,9 +1623,19 @@ class AuthTest extends GECX_TestCase {
 
     public function test_generate_existing_rs256_admin_jwt_falls_back_to_lowest_id_administrator_in_cli_context(): void {
         Auth::get_or_generate_keypair();
-        $GLOBALS['gecx_test_current_user'] = null;
-        $GLOBALS['gecx_test_users'][5]     = new WP_User( 5, 'admin5@example.com', [ 'administrator' ] );
-        $GLOBALS['gecx_test_users'][2]     = new WP_User( 2, 'admin2@example.com', [ 'administrator' ] );
+        wp_set_current_user( 0 );
+
+        $admins = get_users(
+            [
+                'role'    => 'administrator',
+                'number'  => 1,
+                'orderby' => 'ID',
+                'order'   => 'ASC',
+            ]
+        );
+        $first_admin    = reset( $admins );
+        $first_admin_id = (int) ( is_object( $first_admin ) ? $first_admin->ID : $first_admin );
+        $first_user     = get_userdata( $first_admin_id );
 
         if ( ! defined( 'WP_CLI' ) && ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
             $this->assertNull( Auth::generate_existing_rs256_admin_jwt() );
@@ -1639,8 +1650,8 @@ class AuthTest extends GECX_TestCase {
 
         $parts   = explode( '.', $jwt );
         $payload = json_decode( $this->base64_url_decode( $parts[1] ), true );
-        $this->assertSame( 2, $payload['user_id'] );
-        $this->assertSame( 'admin2@example.com', $payload['user_email'] );
+        $this->assertSame( $first_admin_id, $payload['user_id'] );
+        $this->assertSame( $first_user->user_email, $payload['user_email'] );
         $this->assertTrue( $payload['is_admin'] );
     }
 
@@ -1656,13 +1667,5 @@ class AuthTest extends GECX_TestCase {
         $cached = get_transient( Auth::GUEST_JWT_CACHE_TRANSIENT );
         $this->assertIsArray( $cached );
         $this->assertSame( $first, $cached['jwt'] );
-    }
-}
-
-if ( php_sapi_name() === 'cli' ) {
-    // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-    $argv0 = isset( $_SERVER['argv'][0] ) ? sanitize_text_field( wp_unslash( $_SERVER['argv'][0] ) ) : '';
-    if ( empty( $argv0 ) || basename( $argv0 ) === basename( __FILE__ ) ) {
-        gecx_run_test_class( AuthTest::class );
     }
 }

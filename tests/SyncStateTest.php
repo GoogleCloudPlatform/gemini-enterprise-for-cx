@@ -1238,7 +1238,3 @@ class SyncStateTest extends GECX_TestCase {
         }
     }
 }
-
-if ( php_sapi_name() === 'cli' && isset( $argv[0] ) && basename( $argv[0] ) === basename( __FILE__ ) ) {
-    gecx_run_test_class( SyncStateTest::class );
-}

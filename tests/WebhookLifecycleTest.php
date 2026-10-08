@@ -698,7 +698,3 @@ class WebhookLifecycleTest extends TestCase {
         $this->assertSame( 'serialized_cart', $updated_session['cart'] );
     }
 }
-
-if ( php_sapi_name() === 'cli' && isset( $argv[0] ) && basename( $argv[0] ) === basename( __FILE__ ) ) {
-    gecx_run_test_class( WebhookLifecycleTest::class );
-}

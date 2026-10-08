@@ -125,7 +125,7 @@ class Console_Sync {
             }
         }
 
-        $admin_user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+        $admin_user_id = (int) get_current_user_id();
         if ( $admin_user_id > 0 ) {
             update_option( Admin::VERSION_SYNC_USER_OPTION, $admin_user_id, false );
         }
@@ -140,8 +140,8 @@ class Console_Sync {
         }
 
         $cron_disabled = defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON;
-        if ( ! $cron_disabled && function_exists( 'wp_schedule_single_event' ) ) {
-            if ( ! function_exists( 'wp_next_scheduled' ) || ! wp_next_scheduled( Admin::VERSION_SYNC_CRON_HOOK ) ) {
+        if ( ! $cron_disabled ) {
+            if ( ! wp_next_scheduled( Admin::VERSION_SYNC_CRON_HOOK ) ) {
                 wp_schedule_single_event( time(), Admin::VERSION_SYNC_CRON_HOOK );
             }
             return;

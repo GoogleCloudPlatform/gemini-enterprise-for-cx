@@ -289,12 +289,10 @@ class Cart_Session {
         $session_expiration = time() + $expiration_seconds;
 
         $to_hash     = $customer_id . '|' . $session_expiration;
-        $cookie_hash = function_exists( 'wp_hash' )
-            ? hash_hmac( 'md5', $to_hash, wp_hash( $to_hash ) )
-            : md5( $to_hash );
+        $cookie_hash = hash_hmac( 'md5', $to_hash, wp_hash( $to_hash ) );
         $cookie_value = $customer_id . '||' . $session_expiration . '||' . $session_expiring . '||' . $cookie_hash;
 
-        $use_secure = function_exists( 'wc_site_is_https' ) && function_exists( 'is_ssl' ) && wc_site_is_https() && is_ssl();
+        $use_secure = function_exists( 'wc_site_is_https' ) && wc_site_is_https() && is_ssl();
         // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
         $use_secure = (bool) apply_filters( 'wc_session_use_secure_cookie', $use_secure );
 

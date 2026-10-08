@@ -1664,11 +1664,3 @@ class StorefrontUrlProbe extends Storefront {
         return $this->resolve_widget_urls();
     }
 }
-
-if ( php_sapi_name() === 'cli' ) {
-    // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-    $argv0 = isset( $_SERVER['argv'][0] ) ? sanitize_text_field( wp_unslash( $_SERVER['argv'][0] ) ) : '';
-    if ( empty( $argv0 ) || basename( $argv0 ) === basename( __FILE__ ) ) {
-        gecx_run_test_class( StorefrontTest::class );
-    }
-}

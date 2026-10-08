@@ -20,6 +20,11 @@ class RestApiTest extends GECX_TestCase {
 
     use GECX_CartTokenMinting;
 
+    protected function setUp(): void {
+        parent::setUp();
+        wp_set_current_user( 1 );
+    }
+
     /**
      * Puts WordPress in the state it reaches once WP::parse_request() has
      * resolved a REST route.
@@ -151,9 +156,8 @@ class RestApiTest extends GECX_TestCase {
      * permission gate even when the resolved user would otherwise qualify.
      */
     public function test_admin_permissions_rejects_cart_token_authenticated_request(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        $GLOBALS['gecx_test_users']        = [ 42 => new WP_User( 42, 'shopper@example.com', [ 'customer' ] ) ];
-        $_SERVER['REQUEST_URI']            = '/wp-json/wc/store/v1/cart';
+        $this->ensure_user_with_id( 42, 'shopper', 'customer' );
+        $_SERVER['REQUEST_URI'] = '/wp-json/wc/store/v1/cart';
 
         // Authenticate a non-privileged shopper via cart token to raise the flag.
         $auth = new Auth();
@@ -1902,7 +1906,9 @@ class RestApiTest extends GECX_TestCase {
         $request  = new WP_REST_Request( 'POST', '/wc/store/v1/batch' );
 
         $ref = new ReflectionMethod( $rest_api->cart_session, 'is_mutating_store_api_cart_request' );
-        $ref->setAccessible( true );
+        if ( PHP_VERSION_ID < 80100 ) {
+            $ref->setAccessible( true );
+        }
 
         $this->assertFalse( $ref->invoke( $rest_api->cart_session, $request ) );
 
@@ -2378,13 +2384,5 @@ class RestApiTest extends GECX_TestCase {
         $cookies = $this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart', $this->generate_jwt( 't_agent_shopper_888' ) );
 
         $this->assertSame( '1', $cookies['woocommerce_items_in_cart']['value'] );
-    }
-}
-
-if ( php_sapi_name() === 'cli' ) {
-    // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-    $argv0 = isset( $_SERVER['argv'][0] ) ? sanitize_text_field( wp_unslash( $_SERVER['argv'][0] ) ) : '';
-    if ( empty( $argv0 ) || basename( $argv0 ) === basename( __FILE__ ) ) {
-        gecx_run_test_class( RestApiTest::class );
     }
 }

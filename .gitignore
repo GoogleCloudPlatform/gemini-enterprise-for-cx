@@ -10,3 +10,4 @@ tests/e2e/env/
 packages/*/build/
 packages/*/build-module/
 /build/
+.composer/

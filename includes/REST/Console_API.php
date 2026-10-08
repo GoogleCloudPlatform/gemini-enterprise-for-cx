@@ -216,8 +216,7 @@ class Console_API {
             return new \WP_Error( 'rest_forbidden', __( 'Invalid or missing nonce.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
 
-        if ( ! function_exists( 'current_user_can' ) ||
-             ( ! current_user_can( 'manage_woocommerce' ) && ! current_user_can( 'manage_options' ) ) ) {
+        if ( ! current_user_can( 'manage_woocommerce' ) && ! current_user_can( 'manage_options' ) ) {
             return new \WP_Error( 'rest_forbidden', __( 'Unauthorized.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
 

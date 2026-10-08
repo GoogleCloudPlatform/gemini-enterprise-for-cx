@@ -276,8 +276,8 @@ class Settings_Page {
         $pdp_prompts_enabled   = (bool) get_option( 'gecx_pdp_prompts_enabled', 1 );
         $button_placement      = (string) get_option( 'gecx_button_placement', 'nav_menu' );
         $nav_menu_target       = Storefront::sanitize_nav_menu_target( get_option( 'gecx_nav_menu_target', '' ) );
-        $nav_menu_locations    = function_exists( 'get_registered_nav_menus' ) ? (array) get_registered_nav_menus() : [];
-        $nav_menus             = function_exists( 'wp_get_nav_menus' ) ? (array) wp_get_nav_menus() : [];
+        $nav_menu_locations    = (array) get_registered_nav_menus();
+        $nav_menus             = (array) wp_get_nav_menus();
         $floating_position     = (string) get_option( 'gecx_floating_position', 'bottom_center' );
         $display_style         = (string) get_option( 'gecx_button_display_style', 'responsive' );
         $button_label          = (string) get_option( 'gecx_button_label', '' );
