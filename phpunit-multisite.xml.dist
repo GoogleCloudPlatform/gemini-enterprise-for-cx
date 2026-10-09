@@ -5,26 +5,23 @@
     colors="true"
     processIsolation="false"
     stopOnFailure="false">
+    <php>
+        <const name="WP_TESTS_MULTISITE" value="1" />
+    </php>
     <testsuites>
-        <testsuite name="Gemini Enterprise for CX Test Suite">
+        <testsuite name="Gemini Enterprise for CX Multisite Integration Tests">
             <directory suffix="Test.php">./tests/integration/tests</directory>
         </testsuite>
     </testsuites>
     <groups>
         <exclude>
-            <group>ms-required</group>
+            <group>ms-excluded</group>
         </exclude>
     </groups>
-    <!--
-    processUncoveredFiles is deliberately left off (PHPUnit defaults it to
-    false). Turning it on makes PHPUnit include_once every file listed here
-    that no test loaded, and uninstall.php answers a bare include with `die;`
-    while the plugin entrypoints re-declare classes the suite has already
-    loaded. Either one ends the run.
-    -->
     <coverage>
         <include>
             <directory suffix=".php">./includes</directory>
         </include>
     </coverage>
 </phpunit>
+

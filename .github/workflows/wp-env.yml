@@ -96,8 +96,21 @@ jobs:
       - name: Start wp-env
         run: npx --yes @wordpress/env start
 
-      - name: Run runtime integration tests
-        run: bash .github/scripts/test-wp-env.sh
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run runtime e2e tests
+        env:
+          WP_BASE_URL: http://localhost:8888
+        run: npm run test:e2e:wp-env
+
+      - name: Upload traces
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wp-env-traces-${{ matrix.wp-version }}-${{ matrix.wc-version }}
+          path: test-results/
+          retention-days: 7
 
       - name: Print debug.log
         # WP_DEBUG_DISPLAY is off so notices never reach a response body;

@@ -157,7 +157,7 @@ class Auth_Context {
      * path (or running on multisite where sibling sites may share the same host).
      */
     private static function is_multisite_subdirectory_install(): bool {
-        if ( ! function_exists( 'is_multisite' ) || ! is_multisite() ) {
+        if ( ! is_multisite() ) {
             return false;
         }
         if ( defined( 'SUBDOMAIN_INSTALL' ) && SUBDOMAIN_INSTALL ) {
@@ -257,7 +257,7 @@ class Auth_Context {
                 $allowed_path   = $allowed['path'];
                 $candidate_path = $candidate['path'];
 
-                if ( function_exists( 'is_multisite' ) && is_multisite() && function_exists( 'get_site_by_path' ) && function_exists( 'get_current_blog_id' ) ) {
+                if ( is_multisite() ) {
                     $lookup_path   = '' !== $candidate_path ? $candidate_path . '/' : '/';
                     $resolved_site = get_site_by_path( $candidate['host'], $lookup_path );
                     if ( ! is_object( $resolved_site ) || ! isset( $resolved_site->blog_id ) || (int) get_current_blog_id() !== (int) $resolved_site->blog_id ) {
@@ -327,13 +327,10 @@ class Auth_Context {
      * @return array List of arrays with 'host' and 'port' keys.
      */
     private static function get_allowed_origins(): array {
-        $urls = [];
-        if ( function_exists( 'home_url' ) ) {
-            $urls[] = (string) home_url();
-        }
-        if ( function_exists( 'site_url' ) ) {
-            $urls[] = (string) site_url();
-        }
+        $urls = [
+            (string) home_url(),
+            (string) site_url(),
+        ];
 
         /**
          * Filters the URLs whose host and port may read the auth context.
@@ -344,9 +341,7 @@ class Auth_Context {
          *
          * @param array $urls Allowed URLs.
          */
-        if ( function_exists( 'apply_filters' ) ) {
-            $urls = (array) apply_filters( 'gecx_auth_context_allowed_origins', $urls );
-        }
+        $urls = (array) apply_filters( 'gecx_auth_context_allowed_origins', $urls );
 
         $allowed = [];
         foreach ( $urls as $url ) {
@@ -403,11 +398,11 @@ class Auth_Context {
      * @return \WP_REST_Response
      */
     public function auth_context_handler( \WP_REST_Request $request ): \WP_REST_Response {
-        $current_user_id   = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+        $current_user_id   = (int) get_current_user_id();
         $effective_user_id = $current_user_id;
         $nonce_user_filter = null;
 
-        if ( 0 === $effective_user_id && function_exists( 'wp_validate_auth_cookie' ) ) {
+        if ( 0 === $effective_user_id ) {
             $cookie_user_id = (int) wp_validate_auth_cookie( '', 'logged_in' );
             if ( $cookie_user_id > 0 ) {
                 $effective_user_id = $cookie_user_id;
@@ -419,10 +414,10 @@ class Auth_Context {
         // subsite B sends a valid cookie to subsite A. Require explicit blog
         // membership on the current blog before minting a user-bound nonce or
         // customer JWT; non-member network users are downgraded to guest (0).
-        if ( $effective_user_id > 0 && function_exists( 'is_multisite' ) && is_multisite() && function_exists( 'is_user_member_of_blog' ) ) {
-            $blog_id     = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 1;
-            $is_super    = function_exists( 'is_super_admin' ) && is_super_admin( $effective_user_id );
-            $is_member   = (bool) is_user_member_of_blog( $effective_user_id, $blog_id );
+        if ( $effective_user_id > 0 && is_multisite() ) {
+            $blog_id   = (int) get_current_blog_id();
+            $is_super  = is_super_admin( $effective_user_id );
+            $is_member = (bool) is_user_member_of_blog( $effective_user_id, $blog_id );
             if ( ! $is_member && ! $is_super ) {
                 $effective_user_id = 0;
             }
@@ -439,30 +434,28 @@ class Auth_Context {
         }
 
         $temporarily_cleared_user = false;
-        if ( 0 === $current_user_id && $effective_user_id > 0 && function_exists( 'add_filter' ) ) {
+        if ( 0 === $current_user_id && $effective_user_id > 0 ) {
             $bound_user_id     = $effective_user_id;
             $nonce_user_filter = static function ( $uid, $action = -1 ) use ( $bound_user_id ) {
                 return 'wp_rest' === (string) $action ? $bound_user_id : $uid;
             };
             add_filter( 'nonce_user_logged_out', $nonce_user_filter, 999, 2 );
-        } elseif ( $current_user_id > 0 && 0 === $effective_user_id && function_exists( 'wp_set_current_user' ) ) {
+        } elseif ( $current_user_id > 0 && 0 === $effective_user_id ) {
             // phpcs:ignore Generic.PHP.ForbiddenFunctions.Discouraged, Generic.PHP.ForbiddenFunctions.Found -- Temporarily isolate non-member or untrusted multisite user as guest so wp_create_nonce() mints a logged-out guest nonce.
             wp_set_current_user( 0 );
             $temporarily_cleared_user = true;
         }
 
         try {
-            if ( function_exists( 'nocache_headers' ) ) {
-                nocache_headers();
-            }
+            nocache_headers();
 
-            $nonce        = function_exists( 'wp_create_nonce' ) ? (string) wp_create_nonce( 'wp_rest' ) : '';
+            $nonce        = (string) wp_create_nonce( 'wp_rest' );
             $customer_jwt = Auth::generate_customer_jwt( $effective_user_id );
         } finally {
-            if ( null !== $nonce_user_filter && function_exists( 'remove_filter' ) ) {
+            if ( null !== $nonce_user_filter ) {
                 remove_filter( 'nonce_user_logged_out', $nonce_user_filter, 999 );
             }
-            if ( $temporarily_cleared_user && function_exists( 'wp_set_current_user' ) ) {
+            if ( $temporarily_cleared_user ) {
                 // phpcs:ignore Generic.PHP.ForbiddenFunctions.Discouraged, Generic.PHP.ForbiddenFunctions.Found -- Restore previously active user context after minting guest nonce.
                 wp_set_current_user( $current_user_id );
             }

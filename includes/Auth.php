@@ -214,14 +214,27 @@ class Auth {
      * callback replaced them with someone else, that user is left alone. The
      * flag stays raised either way, so privileged endpoints keep rejecting.
      *
-     * @param mixed $wp The WP instance.
+     * @param mixed $wp_or_request The WP or WP_REST_Request instance, or null.
      */
-    public function drop_cart_token_user_outside_store_api( $wp ): void {
+    public function drop_cart_token_user_outside_store_api( $wp_or_request = null ): void {
         if ( ! self::$authenticated_via_cart_token ) {
             return;
         }
 
-        $route = ( is_object( $wp ) && isset( $wp->query_vars['rest_route'] ) ) ? $wp->query_vars['rest_route'] : null;
+        $route = null;
+        if ( $wp_or_request instanceof \WP_REST_Request ) {
+            $route = $wp_or_request->get_route();
+        } elseif ( is_object( $wp_or_request ) && isset( $wp_or_request->query_vars['rest_route'] ) ) {
+            $route = $wp_or_request->query_vars['rest_route'];
+        } elseif ( is_string( $wp_or_request ) ) {
+            $route = $wp_or_request;
+        } else {
+            global $wp;
+            if ( isset( $wp->query_vars['rest_route'] ) ) {
+                $route = $wp->query_vars['rest_route'];
+            }
+        }
+
         if ( self::is_store_api_route( $route ) ) {
             return;
         }
@@ -424,17 +437,9 @@ class Auth {
     /**
      * Resets the request-scoped authentication state.
      *
-     * Test seam only. This is security state: clearing it mid-request would
-     * re-enable privileged endpoints for a cart-token request, so the body is
-     * inert unless the test harness has defined GECX_PHPUNIT_RUNNING.
-     *
      * @internal
      */
     public static function reset_cart_token_state(): void {
-        if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
-            return;
-        }
-
         self::$authenticated_via_cart_token = false;
         self::$cart_token_user_id           = 0;
         self::$resolving_cart_token         = false;
@@ -469,12 +474,18 @@ class Auth {
      * (Authentication::send_cors_headers grants Allow-Origin plus
      * Allow-Credentials to any origin presenting a valid one).
      */
-    public function authenticate_via_cart_token( $user_id ) {
+    public function authenticate_via_cart_token( $user_id, $request = null ) {
         if ( ! empty( $user_id ) || self::$resolving_cart_token ) {
             return $user_id;
         }
 
-        $cart_token = isset( $_SERVER['HTTP_CART_TOKEN'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_CART_TOKEN'] ) ) : '';
+        $cart_token = '';
+        if ( $request instanceof \WP_REST_Request ) {
+            $cart_token = (string) $request->get_header( 'cart_token' );
+        }
+        if ( empty( $cart_token ) && isset( $_SERVER['HTTP_CART_TOKEN'] ) ) {
+            $cart_token = sanitize_text_field( wp_unslash( $_SERVER['HTTP_CART_TOKEN'] ) );
+        }
         if ( empty( $cart_token ) ) {
             return $user_id;
         }
@@ -482,7 +493,7 @@ class Auth {
         // Restrict to the WooCommerce Store API. This plugin's own /gecx/ routes
         // carry administrative capability and authenticate via WooCommerce API
         // keys instead; a shopper credential must never reach them.
-        if ( ! self::is_store_api_request() ) {
+        if ( ! self::is_store_api_request( $request ) ) {
             return $user_id;
         }
 
@@ -714,11 +725,9 @@ class Auth {
 
         if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
             $transient_key = 'gecx_unknown_iss_' . md5( $reported );
-            $throttled     = function_exists( 'get_transient' ) && false !== get_transient( $transient_key );
+            $throttled     = false !== get_transient( $transient_key );
             if ( ! $throttled ) {
-                if ( function_exists( 'set_transient' ) ) {
-                    set_transient( $transient_key, 1, defined( 'HOUR_IN_SECONDS' ) ? HOUR_IN_SECONDS : 3600 );
-                }
+                set_transient( $transient_key, 1, HOUR_IN_SECONDS );
                 self::log(
                     sprintf(
                         'Cart-Token refused: unrecognised issuer %s. Check the WooCommerce version against the accepted issuers.',
@@ -761,14 +770,6 @@ class Auth {
      *                     Refusal details or null when the user holds nothing privileged.
      */
     private static function cart_token_refusal_reason( int $user_id ): ?array {
-        if ( ! function_exists( 'user_can' ) || ! function_exists( 'get_userdata' ) ) {
-            return [
-                'code'       => self::REFUSAL_CODE_CAPS_UNAVAILABLE,
-                'capability' => null,
-                'reason'     => self::REFUSAL_CAPS_UNAVAILABLE,
-            ];
-        }
-
         $user = get_userdata( $user_id );
         if ( ! $user ) {
             return [
@@ -818,10 +819,6 @@ class Auth {
      * @return string[]
      */
     private static function privileged_caps(): array {
-        if ( ! function_exists( 'apply_filters' ) ) {
-            return self::PRIVILEGED_CAPS;
-        }
-
         /**
          * Filters the capabilities that disqualify a user from cart-token
          * authentication.
@@ -880,18 +877,13 @@ class Auth {
      * only exist because parse_request() already ran.
      */
     private static function is_front_controller_request(): bool {
-        if ( ( function_exists( 'wp_doing_ajax' ) && wp_doing_ajax() ) ||
-             ( function_exists( 'wp_doing_cron' ) && wp_doing_cron() ) ||
-             ( function_exists( 'is_admin' ) && is_admin() ) ) {
+        if ( wp_doing_ajax() || wp_doing_cron() || is_admin() ) {
             return false;
         }
 
         if ( ! empty( $_SERVER['SCRIPT_FILENAME'] ) && defined( 'ABSPATH' ) && is_string( ABSPATH ) ) {
-            $normalize       = function_exists( 'wp_normalize_path' ) ? 'wp_normalize_path' : static function( $p ) {
-                return str_replace( '\\', '/', (string) $p );
-            };
             $script_filename = sanitize_text_field( wp_unslash( $_SERVER['SCRIPT_FILENAME'] ) );
-            if ( $normalize( $script_filename ) !== $normalize( rtrim( ABSPATH, '/\\' ) . '/index.php' ) ) {
+            if ( wp_normalize_path( $script_filename ) !== wp_normalize_path( rtrim( ABSPATH, '/\\' ) . '/index.php' ) ) {
                 return false;
             }
         }
@@ -900,10 +892,7 @@ class Auth {
             ? sanitize_text_field( wp_unslash( $_SERVER['SCRIPT_NAME'] ) )
             : '';
 
-        $home_path = '';
-        if ( function_exists( 'home_url' ) ) {
-            $home_path = (string) wp_parse_url( home_url(), PHP_URL_PATH );
-        }
+        $home_path = (string) wp_parse_url( home_url(), PHP_URL_PATH );
         $home_path = trim( $home_path, '/' );
         if ( '' !== $home_path ) {
             $home_path = '/' . $home_path;
@@ -935,15 +924,17 @@ class Auth {
 
     /**
      * Whether the current request targets the WooCommerce Store API.
+     *
+     * @param \WP_REST_Request|null $request Optional request instance.
      */
-    private static function is_store_api_request(): bool {
-        return self::is_store_api_route( self::resolve_rest_route() );
+    private static function is_store_api_request( $request = null ): bool {
+        return self::is_store_api_route( self::resolve_rest_route( $request ) );
     }
 
     /**
      * The REST route WordPress is going to dispatch for this request.
      *
-     * That route is $GLOBALS['wp']->query_vars['rest_route'], which
+     * That route is $wp->query_vars['rest_route'], which
      * WP_REST_Server reads in rest_api_loaded(). It is used whenever it is
      * available, including when it is empty: an empty value means WordPress
      * resolved no REST route, and rest_api_loaded() bails on it, so nothing is
@@ -968,14 +959,21 @@ class Auth {
      * The fallback tiers additionally require the request to have entered
      * through the front controller. See is_front_controller_request().
      *
+     * @param \WP_REST_Request|null $request Optional request instance.
      * @return mixed Route as WordPress would resolve it, '' when it resolves
      *               none, or null when this request cannot name one at all. A
      *               rest_route[]= parameter arrives as an array and is returned
      *               as one; callers must not assume a string.
      */
-    private static function resolve_rest_route() {
-        if ( isset( $GLOBALS['wp']->query_vars['rest_route'] ) ) {
-            return $GLOBALS['wp']->query_vars['rest_route'];
+    private static function resolve_rest_route( $request = null ) {
+        if ( $request instanceof \WP_REST_Request ) {
+            return $request->get_route();
+        }
+
+        global $wp;
+
+        if ( isset( $wp->query_vars['rest_route'] ) ) {
+            return $wp->query_vars['rest_route'];
         }
 
         if ( ! self::is_front_controller_request() ) {
@@ -986,8 +984,8 @@ class Auth {
         // WP::$extra_query_vars is assigned inside parse_request(), so in the
         // pre-parse_request path it is always the empty default. Correctly
         // ordered and harmless; defence in depth rather than a live tier.
-        if ( isset( $GLOBALS['wp']->extra_query_vars ) && is_array( $GLOBALS['wp']->extra_query_vars ) ) {
-            $sources[] = $GLOBALS['wp']->extra_query_vars;
+        if ( isset( $wp->extra_query_vars ) && is_array( $wp->extra_query_vars ) ) {
+            $sources[] = $wp->extra_query_vars;
         }
         // Route resolution only, mirroring how WordPress itself reads these
         // superglobals in WP::parse_request() before any handler runs. Nothing
@@ -1077,14 +1075,22 @@ class Auth {
      * authenticates there. Confirmed end to end on WP 6.2/WC 7.1.0,
      * WP 7.1/WC 9.9.0 and WP 7.1/WC 11.1.0, under both permalink styles.
      *
-     * @param string[] $routes Routes to match, without a leading slash.
+     * @param string[]                     $routes           Routes to match, without a leading slash.
+     * @param \WP_REST_Request|string|null $route_or_request Optional request or route to match against.
      */
-    public static function is_request_to_route( array $routes ): bool {
-        if ( ! isset( $GLOBALS['wp']->query_vars['rest_route'] ) ) {
-            return false;
+    public static function is_request_to_route( array $routes, $route_or_request = null ): bool {
+        $route = null;
+        if ( $route_or_request instanceof \WP_REST_Request ) {
+            $route = $route_or_request->get_route();
+        } elseif ( is_string( $route_or_request ) ) {
+            $route = $route_or_request;
+        } else {
+            global $wp;
+            if ( isset( $wp->query_vars['rest_route'] ) ) {
+                $route = $wp->query_vars['rest_route'];
+            }
         }
 
-        $route = $GLOBALS['wp']->query_vars['rest_route'];
         if ( ! is_string( $route ) ) {
             return false;
         }
@@ -1113,7 +1119,7 @@ class Auth {
         // dispatched. Any non-empty structure, PATHINFO included, gets both
         // rule pairs described above. Plain-permalink stores still reach the
         // Store API through ?rest_route=, which the tiers above handle.
-        $structure = function_exists( 'get_option' ) ? (string) get_option( 'permalink_structure', '' ) : '';
+        $structure = (string) get_option( 'permalink_structure', '' );
         if ( '' === $structure ) {
             return '';
         }
@@ -1122,10 +1128,7 @@ class Auth {
         // path structure and avoid treating //host as a protocol-relative authority.
         $path = explode( '?', $request_uri, 2 )[0];
 
-        $home_path = '';
-        if ( function_exists( 'home_url' ) ) {
-            $home_path = (string) wp_parse_url( home_url(), PHP_URL_PATH );
-        }
+        $home_path = (string) wp_parse_url( home_url(), PHP_URL_PATH );
         $home_path = trim( $home_path, '/' );
         if ( '' !== $home_path ) {
             $home_path = '/' . $home_path;
@@ -1138,16 +1141,18 @@ class Auth {
             }
         }
 
-        $prefix = function_exists( 'rest_get_url_prefix' ) ? rest_get_url_prefix() : 'wp-json';
+        $prefix = rest_get_url_prefix();
         $prefix = trim( (string) $prefix, '/' );
         if ( '' === $prefix ) {
             return '';
         }
 
+        global $wp_rewrite;
+
         // WP_Rewrite may not exist yet when this runs during plugins_loaded;
         // its index is 'index.php' unless something has replaced it.
-        $index = ( isset( $GLOBALS['wp_rewrite'] ) && is_object( $GLOBALS['wp_rewrite'] ) && is_string( $GLOBALS['wp_rewrite']->index ?? null ) && '' !== $GLOBALS['wp_rewrite']->index )
-            ? trim( $GLOBALS['wp_rewrite']->index, '/' )
+        $index = ( isset( $wp_rewrite ) && is_object( $wp_rewrite ) && is_string( $wp_rewrite->index ?? null ) && '' !== $wp_rewrite->index )
+            ? trim( $wp_rewrite->index, '/' )
             : 'index.php';
 
         foreach ( [ '/' . $prefix . '/', '/' . $index . '/' . $prefix . '/' ] as $expected_prefix ) {
@@ -1229,14 +1234,12 @@ class Auth {
      */
     public static function generate_existing_rs256_admin_jwt( ?int $user_id = null, int $expiration = self::ADMIN_JWT_TTL_SECONDS, ?string $email = null ): ?string {
         if ( null === $user_id ) {
-            $logged_in_id = ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() && function_exists( 'get_current_user_id' ) )
-                ? (int) get_current_user_id()
-                : 0;
+            $logged_in_id = is_user_logged_in() ? (int) get_current_user_id() : 0;
             $allow_unauthenticated_fallback = ( defined( 'WP_CLI' ) && WP_CLI )
                 || ( defined( 'WP_UNINSTALL_PLUGIN' ) && WP_UNINSTALL_PLUGIN );
             if ( $logged_in_id > 0 ) {
                 $user_id = $logged_in_id;
-            } elseif ( $allow_unauthenticated_fallback && function_exists( 'get_users' ) ) {
+            } elseif ( $allow_unauthenticated_fallback ) {
                 $admin_ids = get_users(
                     [
                         'role'    => 'administrator',
@@ -1267,10 +1270,10 @@ class Auth {
         bool $allow_key_generation
     ): ?string {
         if ( null === $user_id ) {
-            if ( ! function_exists( 'is_user_logged_in' ) || ! is_user_logged_in() ) {
+            if ( ! is_user_logged_in() ) {
                 return null;
             }
-            $user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+            $user_id = (int) get_current_user_id();
         }
 
         if ( $user_id <= 0 ) {
@@ -1278,12 +1281,7 @@ class Auth {
         }
 
         // Verify user actually possesses administrator or shop manager capabilities.
-        $has_admin_cap = false;
-        if ( function_exists( 'user_can' ) ) {
-            $has_admin_cap = (bool) ( user_can( $user_id, 'manage_options' ) || user_can( $user_id, 'manage_woocommerce' ) );
-        } elseif ( function_exists( 'current_user_can' ) && function_exists( 'get_current_user_id' ) && (int) get_current_user_id() === (int) $user_id ) {
-            $has_admin_cap = (bool) ( current_user_can( 'manage_options' ) || current_user_can( 'manage_woocommerce' ) );
-        }
+        $has_admin_cap = (bool) ( user_can( $user_id, 'manage_options' ) || user_can( $user_id, 'manage_woocommerce' ) );
         if ( ! $has_admin_cap ) {
             return null;
         }
@@ -1322,29 +1320,17 @@ class Auth {
         if ( ! $is_admin ) {
             // Customer JWT: authenticated user or guest ($user_id = 0).
             if ( null === $user_id ) {
-                if ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() ) {
-                    $user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
-                } else {
-                    $user_id = 0;
-                }
+                $user_id = is_user_logged_in() ? (int) get_current_user_id() : 0;
             } elseif ( $user_id < 0 ) {
                 $user_id = 0;
             }
         }
 
         $user_email = ! empty( $email ) ? (string) $email : '';
-        if ( $user_id > 0 ) {
-            if ( empty( $user_email ) && function_exists( 'get_userdata' ) ) {
-                $user = get_userdata( $user_id );
-                if ( $user instanceof \WP_User ) {
-                    $user_email = (string) $user->user_email;
-                }
-            }
-            if ( empty( $user_email ) && function_exists( 'wp_get_current_user' ) ) {
-                $current_user = wp_get_current_user();
-                if ( $current_user instanceof \WP_User && (int) $current_user->ID === (int) $user_id ) {
-                    $user_email = (string) $current_user->user_email;
-                }
+        if ( $user_id > 0 && empty( $user_email ) ) {
+            $user = get_userdata( $user_id );
+            if ( $user instanceof \WP_User ) {
+                $user_email = (string) $user->user_email;
             }
         }
 
@@ -1367,7 +1353,7 @@ class Auth {
         // on high-traffic storefront visits. The signed token carries no administrative
         // or user privileges, so storing it at rest in wp_options has minimal blast radius.
         // The fingerprint is derived from the public key rather than hashing private key bytes.
-        if ( $is_cacheable_guest && function_exists( 'get_transient' ) ) {
+        if ( $is_cacheable_guest ) {
             $cache_fingerprint = hash( 'sha256', (string) $store_domain . '|' . (string) $expiration . '|' . $public_key );
             $cached_guest_jwt  = get_transient( self::GUEST_JWT_CACHE_TRANSIENT );
             if (
@@ -1410,7 +1396,7 @@ class Auth {
         // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- OpenSSL warnings on a corrupt key are drained into the log lines below.
         if ( @openssl_sign( $signing_input, $raw_signature, $private_key, OPENSSL_ALGO_SHA256 ) && ! empty( $raw_signature ) ) {
             $signed_jwt = $signing_input . '.' . self::to_base_64_url( $raw_signature );
-            if ( $is_cacheable_guest && '' !== $cache_fingerprint && function_exists( 'set_transient' ) ) {
+            if ( $is_cacheable_guest && '' !== $cache_fingerprint ) {
                 set_transient(
                     self::GUEST_JWT_CACHE_TRANSIENT,
                     [
@@ -1518,7 +1504,7 @@ class Auth {
      * Sanitizes the store URL into a normalized domain without scheme or trailing slash.
      */
     public static function get_sanitized_store_domain(): string {
-        $raw_url = function_exists( 'home_url' ) ? (string) home_url() : '';
+        $raw_url = (string) home_url();
         if ( empty( $raw_url ) ) {
             return '';
         }
@@ -1542,9 +1528,6 @@ class Auth {
      * @return string|null 32-byte binary encryption key, or null if WordPress salts are unavailable.
      */
     public static function get_encryption_key(): ?string {
-        if ( ! function_exists( 'wp_salt' ) ) {
-            return null;
-        }
         $ikm  = (string) wp_salt( 'secure_auth' );
         $salt = (string) wp_salt( 'auth' );
         if ( empty( $ikm ) || empty( $salt ) ) {
@@ -1672,7 +1655,7 @@ class Auth {
      * @return array{public_key: string, private_key: string}|null
      */
     private static function read_stored_keypair(): ?array {
-        $stored = function_exists( 'get_option' ) ? get_option( self::KEYPAIR_OPTION, null ) : null;
+        $stored = get_option( self::KEYPAIR_OPTION, null );
 
         if ( is_array( $stored ) ) {
             $public_key = $stored['public_key'] ?? '';
@@ -1712,10 +1695,6 @@ class Auth {
      * @return array{public_key: string, private_key: string}|null
      */
     private static function migrate_legacy_keypair(): ?array {
-        if ( ! function_exists( 'get_option' ) ) {
-            return null;
-        }
-
         $public_key = get_option( 'gecx_public_key', '' );
         $encrypted  = get_option( 'gecx_private_key', null );
 
@@ -1728,24 +1707,22 @@ class Auth {
             return null;
         }
 
-        if ( function_exists( 'update_option' ) ) {
-            $migrated = update_option(
-                self::KEYPAIR_OPTION,
-                [
-                    'version'     => 1,
-                    'public_key'  => $public_key,
-                    'private_key' => $encrypted,
-                ],
-                'no'
-            );
+        $migrated = update_option(
+            self::KEYPAIR_OPTION,
+            [
+                'version'     => 1,
+                'public_key'  => $public_key,
+                'private_key' => $encrypted,
+            ],
+            'no'
+        );
 
-            // Only drop the old pair once the new record is actually on disk.
-            // Deleting first would leave a store with no keypair at all if the
-            // write failed.
-            if ( $migrated && function_exists( 'delete_option' ) ) {
-                delete_option( 'gecx_public_key' );
-                delete_option( 'gecx_private_key' );
-            }
+        // Only drop the old pair once the new record is actually on disk.
+        // Deleting first would leave a store with no keypair at all if the
+        // write failed.
+        if ( $migrated ) {
+            delete_option( 'gecx_public_key' );
+            delete_option( 'gecx_private_key' );
         }
 
         return [
@@ -1762,21 +1739,19 @@ class Auth {
      * have its newly written record deleted out from under it.
      */
     private static function discard_keypair(): void {
-        if ( function_exists( 'delete_option' ) ) {
-            delete_option( self::KEYPAIR_OPTION );
-            // Pre-0.3.15 layout. Cleared too, so a discard cannot leave a
-            // superseded pair behind for migrate_legacy_keypair() to adopt.
-            delete_option( 'gecx_public_key' );
-            delete_option( 'gecx_private_key' );
-        }
+        delete_option( self::KEYPAIR_OPTION );
+        // Pre-0.3.15 layout. Cleared too, so a discard cannot leave a
+        // superseded pair behind for migrate_legacy_keypair() to adopt.
+        delete_option( 'gecx_public_key' );
+        delete_option( 'gecx_private_key' );
     }
 
     /**
      * Acquire the gecx_keypair_lock mutex, reclaiming locks older than the TTL.
      */
     private static function acquire_keypair_lock(): bool {
-        $lock_acquired = function_exists( 'add_option' ) ? add_option( 'gecx_keypair_lock', time(), '', 'no' ) : true;
-        if ( ! $lock_acquired && function_exists( 'get_option' ) ) {
+        $lock_acquired = add_option( 'gecx_keypair_lock', time(), '', 'no' );
+        if ( ! $lock_acquired ) {
             $lock_time = (int) get_option( 'gecx_keypair_lock', 0 );
             if ( $lock_time > 0 && ( time() - $lock_time ) > self::KEYPAIR_LOCK_TTL_SECONDS ) {
                 delete_option( 'gecx_keypair_lock' );
@@ -1794,11 +1769,6 @@ class Auth {
      * without releasing.
      */
     private static function keypair_lock_holder_is_live(): bool {
-        if ( ! function_exists( 'get_option' ) ) {
-            // No way to inspect the lock, so fall back to waiting it out.
-            return true;
-        }
-
         $lock_time = (int) get_option( 'gecx_keypair_lock', 0 );
         if ( $lock_time <= 0 ) {
             return false;
@@ -1907,27 +1877,23 @@ class Auth {
             return null;
         }
 
-        if ( function_exists( 'update_option' ) ) {
-            // One write. See KEYPAIR_OPTION: this is what makes a lost lock race
-            // survivable, because the row either holds this worker's pair or
-            // another worker's, never one half of each.
-            update_option(
-                self::KEYPAIR_OPTION,
-                [
-                    'version'     => 1,
-                    'public_key'  => $public_key_pem,
-                    'private_key' => $encrypted_payload,
-                ],
-                'no'
-            );
+        // One write. See KEYPAIR_OPTION: this is what makes a lost lock race
+        // survivable, because the row either holds this worker's pair or
+        // another worker's, never one half of each.
+        update_option(
+            self::KEYPAIR_OPTION,
+            [
+                'version'     => 1,
+                'public_key'  => $public_key_pem,
+                'private_key' => $encrypted_payload,
+            ],
+            'no'
+        );
 
-            // Clear the pre-0.3.15 pair if this store still had one, so a later
-            // read cannot migrate a keypair this one just replaced.
-            if ( function_exists( 'delete_option' ) ) {
-                delete_option( 'gecx_public_key' );
-                delete_option( 'gecx_private_key' );
-            }
-        }
+        // Clear the pre-0.3.15 pair if this store still had one, so a later
+        // read cannot migrate a keypair this one just replaced.
+        delete_option( 'gecx_public_key' );
+        delete_option( 'gecx_private_key' );
 
         return [
             'public_key'  => $public_key_pem,
@@ -1963,9 +1929,7 @@ class Auth {
             $fresh = self::generate_and_store_keypair();
             return $fresh['private_key'] ?? null;
         } finally {
-            if ( function_exists( 'delete_option' ) ) {
-                delete_option( 'gecx_keypair_lock' );
-            }
+            delete_option( 'gecx_keypair_lock' );
         }
     }
 
@@ -1999,7 +1963,7 @@ class Auth {
                 return $stored;
             }
 
-            $record = function_exists( 'get_option' ) ? get_option( self::KEYPAIR_OPTION, null ) : null;
+            $record = get_option( self::KEYPAIR_OPTION, null );
 
             if ( is_array( $record ) ) {
                 // read_stored_keypair() already refused this record, and the two
@@ -2011,9 +1975,9 @@ class Auth {
                 );
                 self::discard_keypair();
             } else {
-                $public_key = function_exists( 'get_option' ) ? get_option( 'gecx_public_key', '' ) : '';
-                $encrypted  = function_exists( 'get_option' ) ? get_option( 'gecx_private_key', null ) : null;
-                $has_pub    = ! empty( $public_key ) && is_string( $public_key );
+                $public_key = (string) get_option( 'gecx_public_key', '' );
+                $encrypted  = get_option( 'gecx_private_key', null );
+                $has_pub    = ! empty( $public_key );
                 $has_priv   = ! empty( $encrypted );
 
                 if ( $has_pub && $has_priv ) {
@@ -2037,9 +2001,7 @@ class Auth {
 
             return self::generate_and_store_keypair();
         } finally {
-            if ( function_exists( 'delete_option' ) ) {
-                delete_option( 'gecx_keypair_lock' );
-            }
+            delete_option( 'gecx_keypair_lock' );
         }
     }
 }
