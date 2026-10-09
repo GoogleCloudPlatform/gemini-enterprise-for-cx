@@ -214,14 +214,24 @@ class Auth {
      * callback replaced them with someone else, that user is left alone. The
      * flag stays raised either way, so privileged endpoints keep rejecting.
      *
-     * @param mixed $wp The WP instance.
+     * @param mixed $wp The WP or WP_REST_Request instance, or null.
      */
-    public function drop_cart_token_user_outside_store_api( $wp ): void {
+    public function drop_cart_token_user_outside_store_api( $wp = null ): void {
         if ( ! self::$authenticated_via_cart_token ) {
             return;
         }
 
-        $route = ( is_object( $wp ) && isset( $wp->query_vars['rest_route'] ) ) ? $wp->query_vars['rest_route'] : null;
+        $route = null;
+        if ( $wp instanceof \WP_REST_Request ) {
+            $route = $wp->get_route();
+        } elseif ( is_object( $wp ) && isset( $wp->query_vars['rest_route'] ) ) {
+            $route = $wp->query_vars['rest_route'];
+        } elseif ( is_string( $wp ) ) {
+            $route = $wp;
+        } elseif ( isset( $GLOBALS['wp']->query_vars['rest_route'] ) ) {
+            $route = $GLOBALS['wp']->query_vars['rest_route'];
+        }
+
         if ( self::is_store_api_route( $route ) ) {
             return;
         }
@@ -461,12 +471,18 @@ class Auth {
      * (Authentication::send_cors_headers grants Allow-Origin plus
      * Allow-Credentials to any origin presenting a valid one).
      */
-    public function authenticate_via_cart_token( $user_id ) {
+    public function authenticate_via_cart_token( $user_id, $request = null ) {
         if ( ! empty( $user_id ) || self::$resolving_cart_token ) {
             return $user_id;
         }
 
-        $cart_token = isset( $_SERVER['HTTP_CART_TOKEN'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_CART_TOKEN'] ) ) : '';
+        $cart_token = '';
+        if ( $request instanceof \WP_REST_Request ) {
+            $cart_token = (string) $request->get_header( 'cart_token' );
+        }
+        if ( empty( $cart_token ) && isset( $_SERVER['HTTP_CART_TOKEN'] ) ) {
+            $cart_token = sanitize_text_field( wp_unslash( $_SERVER['HTTP_CART_TOKEN'] ) );
+        }
         if ( empty( $cart_token ) ) {
             return $user_id;
         }
@@ -474,7 +490,7 @@ class Auth {
         // Restrict to the WooCommerce Store API. This plugin's own /gecx/ routes
         // carry administrative capability and authenticate via WooCommerce API
         // keys instead; a shopper credential must never reach them.
-        if ( ! self::is_store_api_request() ) {
+        if ( ! self::is_store_api_request( $request ) ) {
             return $user_id;
         }
 
@@ -905,9 +921,11 @@ class Auth {
 
     /**
      * Whether the current request targets the WooCommerce Store API.
+     *
+     * @param \WP_REST_Request|null $request Optional request instance.
      */
-    private static function is_store_api_request(): bool {
-        return self::is_store_api_route( self::resolve_rest_route() );
+    private static function is_store_api_request( $request = null ): bool {
+        return self::is_store_api_route( self::resolve_rest_route( $request ) );
     }
 
     /**
@@ -938,12 +956,17 @@ class Auth {
      * The fallback tiers additionally require the request to have entered
      * through the front controller. See is_front_controller_request().
      *
+     * @param \WP_REST_Request|null $request Optional request instance.
      * @return mixed Route as WordPress would resolve it, '' when it resolves
      *               none, or null when this request cannot name one at all. A
      *               rest_route[]= parameter arrives as an array and is returned
      *               as one; callers must not assume a string.
      */
-    private static function resolve_rest_route() {
+    private static function resolve_rest_route( $request = null ) {
+        if ( $request instanceof \WP_REST_Request ) {
+            return $request->get_route();
+        }
+
         if ( isset( $GLOBALS['wp']->query_vars['rest_route'] ) ) {
             return $GLOBALS['wp']->query_vars['rest_route'];
         }
@@ -1047,14 +1070,19 @@ class Auth {
      * authenticates there. Confirmed end to end on WP 6.2/WC 7.1.0,
      * WP 7.1/WC 9.9.0 and WP 7.1/WC 11.1.0, under both permalink styles.
      *
-     * @param string[] $routes Routes to match, without a leading slash.
+     * @param string[]                     $routes           Routes to match, without a leading slash.
+     * @param \WP_REST_Request|string|null $route_or_request Optional request or route to match against.
      */
-    public static function is_request_to_route( array $routes ): bool {
-        if ( ! isset( $GLOBALS['wp']->query_vars['rest_route'] ) ) {
-            return false;
+    public static function is_request_to_route( array $routes, $route_or_request = null ): bool {
+        $route = null;
+        if ( $route_or_request instanceof \WP_REST_Request ) {
+            $route = $route_or_request->get_route();
+        } elseif ( is_string( $route_or_request ) ) {
+            $route = $route_or_request;
+        } elseif ( isset( $GLOBALS['wp']->query_vars['rest_route'] ) ) {
+            $route = $GLOBALS['wp']->query_vars['rest_route'];
         }
 
-        $route = $GLOBALS['wp']->query_vars['rest_route'];
         if ( ! is_string( $route ) ) {
             return false;
         }

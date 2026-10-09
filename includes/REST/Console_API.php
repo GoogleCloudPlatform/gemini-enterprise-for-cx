@@ -268,7 +268,7 @@ class Console_API {
      * WordPress does. A request that cannot name a route yet is left to
      * WooCommerce's own answer rather than being granted one.
      */
-    public function enable_wc_auth_for_custom_endpoints( bool $is_rest_api ): bool {
+    public function enable_wc_auth_for_custom_endpoints( bool $is_rest_api, $request = null ): bool {
         if ( $is_rest_api ) {
             // WooCommerce already answers true for its own /wc/ routes, which
             // are never in WC_AUTHENTICATED_ROUTES. Nothing was widened by this
@@ -280,7 +280,7 @@ class Console_API {
             self::$wc_auth_verified_for_dispatch = false;
             return true;
         }
-        if ( Auth::is_request_to_route( self::WC_AUTHENTICATED_ROUTES ) ) {
+        if ( Auth::is_request_to_route( self::WC_AUTHENTICATED_ROUTES, $request ) ) {
             self::$wc_auth_widened_by_gecx       = true;
             self::$wc_auth_verified_for_dispatch = false;
             return true;

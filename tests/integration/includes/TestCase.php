@@ -11,8 +11,6 @@ namespace Google\Gemini_Enterprise_For_CX\Tests\Integration;
 
 use Google\Gemini_Enterprise_For_CX\Auth;
 use Google\Gemini_Enterprise_For_CX\REST\Console_API;
-use WP_Scripts;
-use WP_Styles;
 use Yoast\WPTestUtils\WPIntegration\TestCase as PolyfilledTestCase;
 
 /**
@@ -114,8 +112,9 @@ abstract class TestCase extends PolyfilledTestCase {
 		Auth::reset_cart_token_state();
 		Console_API::reset_wc_auth_state();
 
-		// Clean up custom server headers and cookies.
-		$_COOKIE = [];
+		// Clean up custom server headers, cookies, and settings errors.
+		$_COOKIE                        = [];
+		$GLOBALS['wp_settings_errors'] = [];
 		unset( $_SERVER['HTTP_CART_TOKEN'], $_SERVER['HTTP_AUTHORIZATION'], $_SERVER['HTTP_ORIGIN'], $_SERVER['HTTP_REFERER'], $_SERVER['HTTP_SEC_FETCH_SITE'] );
 
 		parent::tear_down();
@@ -474,11 +473,7 @@ abstract class TestCase extends PolyfilledTestCase {
 	 * @return array<string, mixed> Decoded data array or empty array.
 	 */
 	protected function get_localized_script( string $handle, string $object_name ): array {
-		global $wp_scripts;
-		if ( ! isset( $wp_scripts ) || ! is_object( $wp_scripts ) ) {
-			return [];
-		}
-		$data = $wp_scripts->get_data( $handle, 'data' );
+		$data = wp_scripts()->get_data( $handle, 'data' );
 		if ( ! is_string( $data ) || '' === $data ) {
 			return [];
 		}
@@ -496,11 +491,7 @@ abstract class TestCase extends PolyfilledTestCase {
 	 * @return string Concatenated inline styles.
 	 */
 	protected function get_inline_styles( string $handle ): string {
-		global $wp_styles;
-		if ( ! isset( $wp_styles ) || ! is_object( $wp_styles ) ) {
-			return '';
-		}
-		$after = $wp_styles->get_data( $handle, 'after' );
+		$after = wp_styles()->get_data( $handle, 'after' );
 		return is_array( $after ) ? implode( "\n", $after ) : '';
 	}
 }

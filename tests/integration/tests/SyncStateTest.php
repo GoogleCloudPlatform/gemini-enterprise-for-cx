@@ -31,12 +31,9 @@ class SyncStateTest extends TestCase {
 
     public function set_up(): void {
         parent::set_up();
-        $_REQUEST = &$_POST;
         wp_set_current_user( 1 );
         update_option( 'home', 'https://example.com' );
         update_option( 'siteurl', 'https://example.com' );
-        global $wp_settings_errors;
-        $wp_settings_errors = [];
     }
 
     /**
@@ -557,39 +554,44 @@ class SyncStateTest extends TestCase {
         $this->assertCount( 0, get_settings_errors() );
     }
 
-    public function test_auth_failures_reset_store_authorization_without_unlinking(): void {
-        $cases = [
-            'WOOCOMMERCE_SYNC_STATUS_JWT_AUTH_INVALID'            => 'gecx_sync_jwt_invalid',
-            'WOOCOMMERCE_SYNC_STATUS_WOOCOMMERCE_API_KEYS_INVALID' => 'gecx_sync_api_keys_invalid',
+    /**
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public function provide_auth_failure_statuses(): array {
+        return [
+            'jwt invalid'      => [ 'WOOCOMMERCE_SYNC_STATUS_JWT_AUTH_INVALID', 'gecx_sync_jwt_invalid' ],
+            'api keys invalid' => [ 'WOOCOMMERCE_SYNC_STATUS_WOOCOMMERCE_API_KEYS_INVALID', 'gecx_sync_api_keys_invalid' ],
         ];
+    }
 
-        foreach ( $cases as $status_name => $notice_code ) {
-            $this->setUp();
-            $this->seed_linked_store();
-            update_option( 'gecx_webhook_id', 42 );
-            $this->queue(
-                gecx_test_http_response(
-                    200,
-                    $this->body(
-                        [
-                            'syncStatus' => $status_name,
-                            'shopDomain' => 'example.com',
-                        ]
-                    )
+    /**
+     * @dataProvider provide_auth_failure_statuses
+     */
+    public function test_auth_failures_reset_store_authorization_without_unlinking( string $status_name, string $notice_code ): void {
+        $this->seed_linked_store();
+        update_option( 'gecx_webhook_id', 42 );
+        $this->queue(
+            gecx_test_http_response(
+                200,
+                $this->body(
+                    [
+                        'syncStatus' => $status_name,
+                        'shopDomain' => 'example.com',
+                    ]
                 )
-            );
+            )
+        );
 
-            $status = $this->sync( 'agents/agent_a' );
+        $status = $this->sync( 'agents/agent_a' );
 
-            $this->assertEquals( $status_name, $status );
-            // The agent binding and the webhook survive; only the
-            // authorization is flagged, which sends the settings page back to
-            // the authorize step.
-            $this->assert_still_linked();
-            $this->assertEquals( 42, get_option( 'gecx_webhook_id' ) );
-            $this->assertEquals( 1, get_option( Admin::STORE_AUTH_INVALID_OPTION ) );
-            $this->assert_notice_code( $notice_code );
-        }
+        $this->assertEquals( $status_name, $status );
+        // The agent binding and the webhook survive; only the
+        // authorization is flagged, which sends the settings page back to
+        // the authorize step.
+        $this->assert_still_linked();
+        $this->assertEquals( 42, get_option( 'gecx_webhook_id' ) );
+        $this->assertEquals( 1, get_option( Admin::STORE_AUTH_INVALID_OPTION ) );
+        $this->assert_notice_code( $notice_code );
     }
 
     public function test_synced_clears_a_previous_authorization_failure(): void {
@@ -756,7 +758,7 @@ class SyncStateTest extends TestCase {
         $this->seed_linked_store();
         update_option( 'gecx_button_label', 'Ask AI' );
         update_option( 'gecx_sync_last_attempt', (string) time() );
-        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
         $this->queue( gecx_test_http_response( 200, '' ) );
 
         $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
@@ -771,7 +773,7 @@ class SyncStateTest extends TestCase {
     public function test_explicit_unlink_tells_google_before_clearing_the_binding(): void {
         $this->enable_ajax();
         $this->seed_linked_store();
-        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
         $this->queue( gecx_test_http_response( 200, '' ) );
 
         $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
@@ -792,7 +794,7 @@ class SyncStateTest extends TestCase {
 
     public function test_explicit_unlink_without_an_agent_issues_no_request(): void {
         $this->enable_ajax();
-        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
 
         $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $admin->console_sync->ajax_unlink_agent();
@@ -840,7 +842,7 @@ class SyncStateTest extends TestCase {
         $this->enable_ajax();
         foreach ( [ 400, 403 ] as $status_code ) {
             $this->seed_linked_store( 'agents/stale_agent' );
-            $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+            $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
             $this->queue(
                 [
                     'response' => [

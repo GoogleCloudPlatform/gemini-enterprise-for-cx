@@ -21,7 +21,7 @@ use WP_REST_Request;
 use WP_REST_Response;
 use WP_User;
 
-class AuthTest extends TestCase {
+class AuthTest extends RestTestCase {
 
     private Auth $auth;
     private array $unknown_issuer_reports = [];
@@ -147,15 +147,11 @@ class AuthTest extends TestCase {
         $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
         $_SERVER['REQUEST_URI']     = '/wp-json/wc/store/v1/cart';
 
-        $GLOBALS['wp']             = new stdClass();
-        $GLOBALS['wp']->query_vars = [ 'rest_route' => '/gecx/v1/public-key' ];
-        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+        $request = new WP_REST_Request( 'GET', '/gecx/v1/public-key' );
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0, $request ) );
 
-        $GLOBALS['wp']->query_vars = [ 'rest_route' => '/wc/store/v1/cart' ];
-        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
-
-        // No unset() here: setUp() clears $GLOBALS['wp'], so a failure above
-        // cannot leak resolved-route state into the next test.
+        $request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0, $request ) );
     }
 
     /**
@@ -166,27 +162,23 @@ class AuthTest extends TestCase {
         $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
         $_SERVER['REQUEST_URI']     = '/wp-json/wc/store/v1/cart';
 
-        $GLOBALS['wp']             = new stdClass();
-        $GLOBALS['wp']->query_vars = [ 'rest_route' => '' ];
-
-        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+        $request = new WP_REST_Request( 'GET', '' );
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0, $request ) );
     }
 
     /**
-     * WP::parse_request() reads WP::$extra_query_vars before $_POST, so a
-     * caller that has already named a route there decides the dispatch.
+     * A request with a resolved route takes precedence over POST parameters.
      */
-    public function test_extra_query_vars_outrank_post(): void {
+    public function test_resolved_route_outranks_post(): void {
         $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
         $_SERVER['REQUEST_URI']     = '/wp-json/wc/store/v1/cart';
         $_POST['rest_route']        = '/wc/store/v1/cart';
 
-        $GLOBALS['wp']                   = new stdClass();
-        $GLOBALS['wp']->extra_query_vars = [ 'rest_route' => '/gecx/v1/public-key' ];
-        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+        $request = new WP_REST_Request( 'GET', '/gecx/v1/public-key' );
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0, $request ) );
 
-        $GLOBALS['wp']->extra_query_vars = [ 'rest_route' => '/wc/store/v1/cart' ];
-        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
+        $request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0, $request ) );
     }
 
     /**
@@ -281,9 +273,8 @@ class AuthTest extends TestCase {
         wp_set_current_user( $this->auth->authenticate_via_cart_token( 0 ) );
         $this->assertSame( 456, get_current_user_id() );
 
-        $wp             = new stdClass();
-        $wp->query_vars = [ 'page_id' => '7' ];
-        $this->auth->drop_cart_token_user_outside_store_api( $wp );
+        $request = new WP_REST_Request( 'GET', '/wp/v2/posts' );
+        $this->auth->drop_cart_token_user_outside_store_api( $request );
 
         $this->assertSame( 0, get_current_user_id() );
         $this->assertTrue( Auth::is_cart_token_request() );
@@ -300,9 +291,8 @@ class AuthTest extends TestCase {
             wp_set_current_user( $this->auth->authenticate_via_cart_token( 0 ) );
             $this->assertSame( 456, get_current_user_id() );
 
-            $wp             = new stdClass();
-            $wp->query_vars = [ 'rest_route' => $route ];
-            $this->auth->drop_cart_token_user_outside_store_api( $wp );
+            $request = new WP_REST_Request( 'GET', $route );
+            $this->auth->drop_cart_token_user_outside_store_api( $request );
 
             $this->assertSame( 0, get_current_user_id(), "route '{$route}'" );
         }
@@ -317,9 +307,8 @@ class AuthTest extends TestCase {
         $this->auth->authenticate_via_cart_token( 0 );
         wp_set_current_user( 123 );
 
-        $wp             = new stdClass();
-        $wp->query_vars = [ 'page_id' => '7' ];
-        $this->auth->drop_cart_token_user_outside_store_api( $wp );
+        $request = new WP_REST_Request( 'GET', '/wp/v2/posts' );
+        $this->auth->drop_cart_token_user_outside_store_api( $request );
 
         $this->assertSame( 123, get_current_user_id() );
         $this->assertTrue( Auth::is_cart_token_request() );
@@ -329,9 +318,8 @@ class AuthTest extends TestCase {
         $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
         wp_set_current_user( $this->auth->authenticate_via_cart_token( 0 ) );
 
-        $wp             = new stdClass();
-        $wp->query_vars = [ 'rest_route' => '/wc/store/v1/cart/add-item' ];
-        $this->auth->drop_cart_token_user_outside_store_api( $wp );
+        $request = new WP_REST_Request( 'GET', '/wc/store/v1/cart/add-item' );
+        $this->auth->drop_cart_token_user_outside_store_api( $request );
 
         $this->assertSame( 456, get_current_user_id() );
     }
@@ -343,9 +331,8 @@ class AuthTest extends TestCase {
     public function test_cookie_user_is_untouched_by_the_parse_request_backstop(): void {
         wp_set_current_user( 123 );
 
-        $wp             = new stdClass();
-        $wp->query_vars = [ 'page_id' => '7' ];
-        $this->auth->drop_cart_token_user_outside_store_api( $wp );
+        $request = new WP_REST_Request( 'GET', '/wp/v2/posts' );
+        $this->auth->drop_cart_token_user_outside_store_api( $request );
 
         $this->assertSame( 123, get_current_user_id() );
     }
@@ -391,10 +378,8 @@ class AuthTest extends TestCase {
         $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
         $_SERVER['SCRIPT_NAME']     = '/wp-admin/admin-ajax.php';
 
-        $GLOBALS['wp']             = new stdClass();
-        $GLOBALS['wp']->query_vars = [ 'rest_route' => '/wc/store/v1/cart' ];
-
-        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
+        $request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0, $request ) );
     }
 
     /**
@@ -1379,12 +1364,12 @@ class AuthTest extends TestCase {
         $this->assertSame( 403, $result->get_error_data()['status'] );
     }
 
-    public function test_cart_token_rejected_when_query_vars_rest_route_is_an_array(): void {
+    public function test_cart_token_rejected_when_request_rest_route_param_is_an_array(): void {
         $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
-        $GLOBALS['wp']              = new stdClass();
-        $GLOBALS['wp']->query_vars  = [ 'rest_route' => [ '/wc/store/v1/cart' ] ];
+        $request                    = new WP_REST_Request();
+        $request->set_param( 'rest_route', [ '/wc/store/v1/cart' ] );
 
-        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ) );
+        $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0, $request ) );
     }
 
     public function test_non_integral_and_invalid_exp_claims_are_rejected(): void {

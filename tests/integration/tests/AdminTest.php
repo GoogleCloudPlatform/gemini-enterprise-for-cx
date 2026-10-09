@@ -23,7 +23,6 @@ class AdminTest extends TestCase {
 
     public function set_up(): void {
         parent::set_up();
-        $_REQUEST = &$_POST;
         wp_set_current_user( 1 );
     }
 
@@ -45,8 +44,8 @@ class AdminTest extends TestCase {
 
     public function test_admin_ajax_save_button_config_saves_manual_placement_and_menu_target(): void {
         $this->enable_ajax();
-        $_POST = [
-            'nonce'           => wp_create_nonce( 'gecx_save_agent_nonce' ),
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
+        $_POST             = [
             'placement'       => 'manual',
             'nav_menu_target' => 'location:primary_navigation',
         ];
@@ -65,8 +64,8 @@ class AdminTest extends TestCase {
 
     public function test_admin_ajax_save_button_config(): void {
         $this->enable_ajax();
-        $_POST = [
-            'nonce'             => wp_create_nonce( 'gecx_save_agent_nonce' ),
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
+        $_POST             = [
             'placement'         => 'floating',
             'floating_position' => 'center_right',
             'display_style'     => 'icon-only',
@@ -122,10 +121,8 @@ class AdminTest extends TestCase {
 
     public function test_admin_ajax_toggle_app_embed(): void {
         $this->enable_ajax();
-        $_POST = [
-            'nonce'   => wp_create_nonce( 'gecx_save_agent_nonce' ),
-            'enabled' => '1',
-        ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
+        $_POST['enabled']  = '1';
 
         $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $admin->settings_page->ajax_toggle_app_embed();
@@ -136,9 +133,7 @@ class AdminTest extends TestCase {
 
     public function test_admin_ajax_unlink_agent(): void {
         $this->enable_ajax();
-        $_POST = [
-            'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
-        ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_token_broker_name', 'broker-1' );
         update_option( 'gecx_agent_enabled', 1 );
@@ -163,9 +158,7 @@ class AdminTest extends TestCase {
 
     public function test_admin_ajax_unlink_agent_proceeds_when_backend_returns_404(): void {
         $this->enable_ajax();
-        $_POST = [
-            'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
-        ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_token_broker_name', 'broker-1' );
         update_option( 'gecx_agent_enabled', 1 );
@@ -182,9 +175,7 @@ class AdminTest extends TestCase {
 
     public function test_admin_ajax_unlink_agent_retains_options_when_backend_returns_error(): void {
         $this->enable_ajax();
-        $_POST = [
-            'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
-        ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_token_broker_name', 'broker-1' );
         update_option( 'gecx_agent_enabled', 1 );
@@ -700,9 +691,7 @@ class AdminTest extends TestCase {
 
     public function test_unlink_agent_keeps_keys_and_returns_user_to_step_2(): void {
         $this->enable_ajax();
-        $_POST = [
-            'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
-        ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
 
         $webhook = new WC_Webhook();
         $webhook->set_name( 'GECX Agent Order Created' );
@@ -802,7 +791,7 @@ class AdminTest extends TestCase {
 
     public function test_unlink_proceeds_locally_when_console_url_refused(): void {
         $this->enable_ajax();
-        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
         update_option( 'gecx_auth_complete', 1 );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
@@ -820,7 +809,7 @@ class AdminTest extends TestCase {
 
     public function test_failed_remote_unlink_changes_nothing(): void {
         $this->enable_ajax();
-        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ) ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
         update_option( 'gecx_auth_complete', 1 );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         $this->http_responses[] = gecx_test_http_response( 500, '' );
@@ -916,11 +905,13 @@ class AdminTest extends TestCase {
         $this->enable_ajax();
         $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
-        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ), 'enabled' => '0' ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
+        $_POST['enabled']  = '0';
         $admin->settings_page->ajax_toggle_app_embed();
         $this->assertSame( 1, get_option( Admin::MERCHANT_DISABLED_OPTION ) );
 
-        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ), 'enabled' => '1' ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
+        $_POST['enabled']  = '1';
         $admin->settings_page->ajax_toggle_app_embed();
         $this->assertFalse( get_option( Admin::MERCHANT_DISABLED_OPTION ) );
     }
@@ -936,8 +927,8 @@ class AdminTest extends TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         delete_option( 'gecx_dismiss_activation_notice' );
 
-        $_POST = [
-            'nonce'     => 'forged_nonce',
+        $_REQUEST['nonce'] = 'forged_nonce';
+        $_POST             = [
             'placement' => 'floating',
             'enabled'   => '1',
         ];
@@ -971,8 +962,8 @@ class AdminTest extends TestCase {
         // 2. Subscriber with a valid nonce gets 403 Unauthorized and mutates nothing.
         $subscriber_id = $this->factory()->user->create( [ 'role' => 'subscriber' ] );
         wp_set_current_user( $subscriber_id );
-        $_POST = [
-            'nonce'     => wp_create_nonce( 'gecx_save_agent_nonce' ),
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
+        $_POST             = [
             'placement' => 'floating',
             'enabled'   => '1',
         ];
@@ -999,7 +990,7 @@ class AdminTest extends TestCase {
         $this->assertSame( 403, $this->last_json_response['status'] );
         $this->assertSame( 'projects/123/locations/global/agents/agent-1', get_option( 'gecx_agent_name' ) );
 
-        $_POST['nonce'] = wp_create_nonce( 'gecx_dismiss_notice_nonce' );
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_dismiss_notice_nonce' );
         $admin->settings_page->ajax_dismiss_notice();
         $this->assertSame( false, $this->last_json_response['success'] );
         $this->assertSame( 403, $this->last_json_response['status'] );
@@ -1030,8 +1021,7 @@ class AdminTest extends TestCase {
         $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $admin->settings_page->register_settings();
 
-        global $wp_registered_settings;
-        $registered = $wp_registered_settings;
+        $registered = get_registered_settings();
         $this->assertSame(
             [ Admin::class, 'sanitize_agent_name' ],
             $registered['gecx_agent_name']['sanitize_callback'] ?? null
@@ -1122,8 +1112,7 @@ class AdminTest extends TestCase {
         $admin->settings_page->add_settings_page();
         $admin->settings_page->enqueue_admin_assets( 'marketing_page_gemini-enterprise-for-cx' );
 
-        global $wp_scripts;
-        $this->assertSame( 'gemini-enterprise-for-cx', $wp_scripts->registered['gecx-admin-js']->textdomain );
-        $this->assertSame( '', $wp_scripts->registered['gecx-admin-js']->translations_path );
+        $this->assertSame( 'gemini-enterprise-for-cx', wp_scripts()->registered['gecx-admin-js']->textdomain );
+        $this->assertSame( '', wp_scripts()->registered['gecx-admin-js']->translations_path );
     }
 }

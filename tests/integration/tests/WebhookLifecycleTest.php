@@ -30,7 +30,6 @@ class WebhookLifecycleTest extends TestCase {
 
     public function set_up(): void {
         parent::set_up();
-        $_REQUEST = &$_POST;
         wp_set_current_user( 1 );
         $this->rest_api = new REST_API();
         $this->admin    = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
@@ -283,10 +282,8 @@ class WebhookLifecycleTest extends TestCase {
         $webhook_id = $this->create_gecx_webhook( 'active' );
 
         // Disable widget
-        $_POST = [
-            'nonce'   => wp_create_nonce( 'gecx_save_agent_nonce' ),
-            'enabled' => '0',
-        ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
+        $_POST['enabled']  = '0';
         $this->admin->settings_page->ajax_toggle_app_embed();
 
         $webhook = new WC_Webhook( $webhook_id );
@@ -294,10 +291,8 @@ class WebhookLifecycleTest extends TestCase {
         $this->assertSame( 0, get_option( 'gecx_agent_enabled' ) );
 
         // Enable widget
-        $_POST = [
-            'nonce'   => wp_create_nonce( 'gecx_save_agent_nonce' ),
-            'enabled' => '1',
-        ];
+        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
+        $_POST['enabled']  = '1';
         $this->admin->settings_page->ajax_toggle_app_embed();
 
         $webhook = new WC_Webhook( $webhook_id );
@@ -312,9 +307,7 @@ class WebhookLifecycleTest extends TestCase {
         update_option( 'gecx_api_secret', 'legacy_secret_to_be_deleted' );
         update_option( 'gecx_auth_complete', 1 );
 
-        $_POST = [
-            'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ),
-        ];
+        $_REQUEST['nonce']      = wp_create_nonce( 'gecx_save_agent_nonce' );
         $this->http_responses[] = gecx_test_http_response( 200, '' );
         $this->admin->console_sync->ajax_unlink_agent();
 

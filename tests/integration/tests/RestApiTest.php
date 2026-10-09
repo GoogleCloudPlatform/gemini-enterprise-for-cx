@@ -29,7 +29,7 @@ use WP_REST_Request;
 use WP_REST_Response;
 use WP_User;
 
-class RestApiTest extends TestCase {
+class RestApiTest extends RestTestCase {
 
 	public function set_up(): void {
 		parent::set_up();
@@ -39,31 +39,20 @@ class RestApiTest extends TestCase {
 	}
 
     /**
-     * Puts WordPress in the state it reaches once WP::parse_request() has
-     * resolved a REST route.
-     *
-     * Both permalink styles arrive here: the rewrite rule and a ?rest_route=
-     * parameter both end up in query_vars, because rest_route is a registered
-     * public query var. Nothing else names a route the plugin will act on.
-     *
-     * @param mixed $route Route as WordPress resolved it.
-     */
-    private function given_wordpress_resolved_route( $route ): void {
-        $GLOBALS['wp']             = new stdClass();
-        $GLOBALS['wp']->query_vars = [ 'rest_route' => $route ];
-    }
-
-    /**
      * The link endpoint is how the authoritative record in Google Cloud reaches
      * WordPress, and it is the only writer of gecx_agent_name.
      */
     public function test_link_handler_stores_agent_and_token_broker(): void {
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
-        $request->set_param( 'agent_name', 'projects/123/locations/global/agents/agent-456' );
-        $request->set_param( 'token_broker_name', 'projects/123/locations/global/tokenBrokers/tb-456' );
+        wp_set_current_user( 1 );
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/link-agent' );
+        $request->set_body_params(
+            [
+                'agent_name'        => 'projects/123/locations/global/agents/agent-456',
+                'token_broker_name' => 'projects/123/locations/global/tokenBrokers/tb-456',
+            ]
+        );
 
-        $response = $rest_api->console->link_agent_handler( $request );
+        $response = rest_get_server()->dispatch( $request );
 
         $this->assertInstanceOf( WP_REST_Response::class, $response );
         $this->assertSame( 200, $response->get_status() );
@@ -73,35 +62,43 @@ class RestApiTest extends TestCase {
     }
 
     public function test_link_handler_leaves_token_broker_alone_when_absent(): void {
+        wp_set_current_user( 1 );
         update_option( 'gecx_token_broker_name', 'projects/123/locations/global/tokenBrokers/existing' );
 
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
-        $request->set_param( 'agent_name', 'projects/123/locations/global/agents/agent-456' );
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/link-agent' );
+        $request->set_body_params(
+            [
+                'agent_name' => 'projects/123/locations/global/agents/agent-456',
+            ]
+        );
 
-        $rest_api->console->link_agent_handler( $request );
+        $response = rest_get_server()->dispatch( $request );
 
+        $this->assertSame( 200, $response->get_status() );
         $this->assertSame( 'projects/123/locations/global/tokenBrokers/existing', get_option( 'gecx_token_broker_name' ) );
     }
 
     public function test_link_handler_rejects_missing_agent_name(): void {
-        $rest_api = new REST_API();
-        $response = $rest_api->console->link_agent_handler( new WP_REST_Request() );
+        wp_set_current_user( 1 );
+        $request  = new WP_REST_Request( 'POST', '/gecx/v1/link-agent' );
+        $response = rest_get_server()->dispatch( $request );
 
-        $this->assertInstanceOf( WP_Error::class, $response );
-        $this->assertSame( 400, $response->get_error_data()['status'] );
+        $this->assertErrorResponse( 'rest_missing_callback_param', $response, 400 );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
     }
 
     public function test_link_handler_rejects_malformed_agent_name(): void {
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
-        $request->set_param( 'agent_name', 'projects/123/agents/<script>alert(1)</script>' );
+        wp_set_current_user( 1 );
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/link-agent' );
+        $request->set_body_params(
+            [
+                'agent_name' => 'projects/123/agents/<script>alert(1)</script>',
+            ]
+        );
 
-        $response = $rest_api->console->link_agent_handler( $request );
+        $response = rest_get_server()->dispatch( $request );
 
-        $this->assertInstanceOf( WP_Error::class, $response );
-        $this->assertSame( 'gecx_invalid_agent_name', $response->get_error_code() );
+        $this->assertErrorResponse( 'rest_invalid_param', $response, 400 );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
     }
 
@@ -110,15 +107,18 @@ class RestApiTest extends TestCase {
      * half-applied link behind either.
      */
     public function test_link_handler_rejects_malformed_token_broker_without_writing_agent(): void {
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
-        $request->set_param( 'agent_name', 'projects/123/locations/global/agents/agent-456' );
-        $request->set_param( 'token_broker_name', 'not a valid name!' );
+        wp_set_current_user( 1 );
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/link-agent' );
+        $request->set_body_params(
+            [
+                'agent_name'        => 'projects/123/locations/global/agents/agent-456',
+                'token_broker_name' => 'not a valid name!',
+            ]
+        );
 
-        $response = $rest_api->console->link_agent_handler( $request );
+        $response = rest_get_server()->dispatch( $request );
 
-        $this->assertInstanceOf( WP_Error::class, $response );
-        $this->assertSame( 'gecx_invalid_token_broker', $response->get_error_code() );
+        $this->assertErrorResponse( 'rest_invalid_param', $response, 400 );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
     }
 
@@ -130,14 +130,17 @@ class RestApiTest extends TestCase {
      * pattern and would be written to gecx_agent_name.
      */
     public function test_link_handler_rejects_percent_encoded_agent_name(): void {
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
-        $request->set_param( 'agent_name', 'projects/123/agents%2fagent-456' );
+        wp_set_current_user( 1 );
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/link-agent' );
+        $request->set_body_params(
+            [
+                'agent_name' => 'projects/123/agents%2fagent-456',
+            ]
+        );
 
-        $response = $rest_api->console->link_agent_handler( $request );
+        $response = rest_get_server()->dispatch( $request );
 
-        $this->assertInstanceOf( WP_Error::class, $response );
-        $this->assertSame( 'gecx_invalid_agent_name', $response->get_error_code() );
+        $this->assertErrorResponse( 'rest_invalid_param', $response, 400 );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
     }
 
@@ -149,19 +152,17 @@ class RestApiTest extends TestCase {
      * WordPress resolved, and both styles produce the same one.
      */
     public function test_link_route_accepts_woocommerce_key_auth_pretty_permalink(): void {
-        $rest_api               = new REST_API();
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/link-agent';
-        $this->given_wordpress_resolved_route( '/gecx/v1/link-agent' );
+        $rest_api = new REST_API();
+        $request  = new WP_REST_Request( 'POST', '/gecx/v1/link-agent' );
 
-        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
     }
 
     public function test_link_route_accepts_woocommerce_key_auth_plain_permalink(): void {
-        $rest_api               = new REST_API();
-        $_SERVER['REQUEST_URI'] = '/index.php?rest_route=%2Fgecx%2Fv1%2Flink-agent';
-        $this->given_wordpress_resolved_route( '/gecx/v1/link-agent' );
+        $rest_api = new REST_API();
+        $request  = new WP_REST_Request( 'POST', '/gecx/v1/link-agent' );
 
-        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
     }
 
     /**
@@ -681,8 +682,8 @@ class RestApiTest extends TestCase {
         ];
 
         foreach ( $routes as $route ) {
-            $this->given_wordpress_resolved_route( $route );
-            $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ), $route );
+            $request = new WP_REST_Request( 'POST', $route );
+            $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ), $route );
         }
     }
 
@@ -722,27 +723,28 @@ class RestApiTest extends TestCase {
      */
     public function test_enable_wc_auth_refuses_a_resolved_route_that_is_not_a_string(): void {
         $rest_api = new REST_API();
+        $request  = new WP_REST_Request();
+        $request->set_param( 'rest_route', [ '/gecx/v1/public-key' ] );
 
-        $this->given_wordpress_resolved_route( [ '/gecx/v1/public-key' ] );
-        $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
     }
 
     public function test_enable_wc_auth_for_custom_endpoints_returns_original_for_other_paths(): void {
         $rest_api = new REST_API();
-        $this->given_wordpress_resolved_route( '/gecx/v1/session' );
-        $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
-        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( true ) );
+        $request  = new WP_REST_Request( 'GET', '/gecx/v1/session' );
+        $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
+        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( true, $request ) );
 
-        $this->given_wordpress_resolved_route( '/wp/v2/posts' );
-        $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $request = new WP_REST_Request( 'GET', '/wp/v2/posts' );
+        $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
 
         // False positives: hypothetical subpath.
-        $this->given_wordpress_resolved_route( '/gecx/v1/public-key-rotate' );
-        $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $request = new WP_REST_Request( 'GET', '/gecx/v1/public-key-rotate' );
+        $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
 
         // WordPress resolved no route at all, so nothing is dispatched.
-        $this->given_wordpress_resolved_route( '' );
-        $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $request = new WP_REST_Request( 'GET', '' );
+        $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
     }
 
     /**
@@ -774,14 +776,13 @@ class RestApiTest extends TestCase {
     public function test_enable_wc_auth_honours_resolved_route_over_path(): void {
         $rest_api = new REST_API();
 
-        $GLOBALS['wp']                          = new stdClass();
-        $GLOBALS['wp']->query_vars              = [ 'rest_route' => '/wp/v2/users' ];
-        $_SERVER['REQUEST_URI']                 = '/wp-json/gecx/v1/public-key';
-        $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $request                = new WP_REST_Request( 'GET', '/wp/v2/users' );
+        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/public-key';
+        $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
 
-        $GLOBALS['wp']->query_vars['rest_route'] = '/gecx/v1/public-key';
-        $_SERVER['REQUEST_URI']                  = '/wp-json/wp/v2/users';
-        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $request                = new WP_REST_Request( 'GET', '/gecx/v1/public-key' );
+        $_SERVER['REQUEST_URI'] = '/wp-json/wp/v2/users';
+        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
     }
 
     /**
@@ -834,9 +835,8 @@ class RestApiTest extends TestCase {
 
         // A route WordPress has already resolved is honoured whatever the
         // entry point, because that is what it is going to dispatch.
-        $GLOBALS['wp']             = new stdClass();
-        $GLOBALS['wp']->query_vars = [ 'rest_route' => '/gecx/v1/public-key' ];
-        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $request = new WP_REST_Request( 'GET', '/gecx/v1/public-key' );
+        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
     }
 
     /**
@@ -864,11 +864,11 @@ class RestApiTest extends TestCase {
         $_SERVER['REQUEST_URI'] = '/shop/wp-json/gecx/v1/public-key';
         $this->assertFalse( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
 
-        $this->given_wordpress_resolved_route( '/gecx/v1/public-key' );
-        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $request = new WP_REST_Request( 'GET', '/gecx/v1/public-key' );
+        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
 
         $_SERVER['REQUEST_URI'] = '/api/gecx/v1/public-key';
-        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
     }
 
     public function test_refresh_token_handler_success(): void {
@@ -880,13 +880,14 @@ class RestApiTest extends TestCase {
         );
         wp_set_current_user( $user_id );
 
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
         $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+        $request->set_header( 'Origin', 'http://example.org' );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
 
-        $response = $rest_api->auth_context->refresh_token_handler( $request );
-        $this->assertTrue( $response instanceof WP_REST_Response );
-        $this->assertEquals( 200, $response->get_status() );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertInstanceOf( WP_REST_Response::class, $response );
+        $this->assertSame( 200, $response->get_status() );
         $data = $response->get_data();
         $this->assertTrue( $data['success'] );
         $this->assertFalse( empty( $data['customer_jwt'] ) );
@@ -897,13 +898,14 @@ class RestApiTest extends TestCase {
     public function test_refresh_token_handler_logged_out_returns_guest_jwt(): void {
         wp_set_current_user( 0 );
 
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
         $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+        $request->set_header( 'Origin', 'http://example.org' );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
 
-        $response = $rest_api->auth_context->refresh_token_handler( $request );
-        $this->assertTrue( $response instanceof WP_REST_Response );
-        $this->assertEquals( 200, $response->get_status() );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertInstanceOf( WP_REST_Response::class, $response );
+        $this->assertSame( 200, $response->get_status() );
         $data = $response->get_data();
         $this->assertTrue( $data['success'] );
         $this->assertFalse( empty( $data['customer_jwt'] ) );
@@ -920,45 +922,42 @@ class RestApiTest extends TestCase {
         add_filter( 'salt', '__return_empty_string' );
 
         try {
-            $rest_api = new REST_API();
-            $request  = new WP_REST_Request();
+            $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
             $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+            $request->set_header( 'Origin', 'http://example.org' );
+            $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
 
-            $response = $rest_api->auth_context->refresh_token_handler( $request );
-            $this->assertTrue( $response instanceof WP_Error );
-            $this->assertEquals( 'jwt_generation_failed', $response->get_error_code() );
-            $this->assertEquals( 500, $response->get_error_data()['status'] );
+            $response = rest_get_server()->dispatch( $request );
+            $this->assertErrorResponse( 'jwt_generation_failed', $response, 500 );
         } finally {
             remove_filter( 'salt', '__return_empty_string' );
         }
     }
 
     public function test_get_public_key_handler_success(): void {
+        wp_set_current_user( 1 );
         delete_option( 'gecx_keypair' );
 
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
+        $request  = new WP_REST_Request( 'GET', '/gecx/v1/public-key' );
+        $response = rest_get_server()->dispatch( $request );
 
-        $response = $rest_api->console->get_public_key_handler( $request );
-        $this->assertTrue( $response instanceof WP_REST_Response );
-        $this->assertEquals( 200, $response->get_status() );
+        $this->assertInstanceOf( WP_REST_Response::class, $response );
+        $this->assertSame( 200, $response->get_status() );
         $data = $response->get_data();
         $this->assertTrue( isset( $data['public_key'] ) );
         $this->assertStringContainsString( 'BEGIN PUBLIC KEY', $data['public_key'] );
     }
 
     public function test_get_public_key_handler_failure_returns_500(): void {
+        wp_set_current_user( 1 );
         delete_option( 'gecx_keypair' );
         add_filter( 'salt', '__return_empty_string' );
 
         try {
-            $rest_api = new REST_API();
-            $request  = new WP_REST_Request();
+            $request  = new WP_REST_Request( 'GET', '/gecx/v1/public-key' );
+            $response = rest_get_server()->dispatch( $request );
 
-            $response = $rest_api->console->get_public_key_handler( $request );
-            $this->assertTrue( $response instanceof WP_Error );
-            $this->assertEquals( 'rest_cannot_retrieve_key', $response->get_error_code() );
-            $this->assertEquals( 500, $response->get_error_data()['status'] );
+            $this->assertErrorResponse( 'rest_cannot_retrieve_key', $response, 500 );
         } finally {
             remove_filter( 'salt', '__return_empty_string' );
         }
@@ -966,34 +965,27 @@ class RestApiTest extends TestCase {
 
     public function test_public_key_route_permission_callback_admin_success(): void {
         wp_set_current_user( 1 );
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
+        $request  = new WP_REST_Request( 'GET', '/gecx/v1/public-key' );
+        $response = rest_get_server()->dispatch( $request );
 
-        $perm = $rest_api->console->check_admin_permissions( $request );
-        $this->assertSame( true, $perm );
+        $this->assertSame( 200, $response->get_status() );
     }
 
     public function test_public_key_route_permission_callback_non_admin_failure(): void {
         $this->ensure_user_with_id( 42, 'customer_42', 'customer' );
         wp_set_current_user( 42 );
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
+        $request  = new WP_REST_Request( 'GET', '/gecx/v1/public-key' );
+        $response = rest_get_server()->dispatch( $request );
 
-        $perm = $rest_api->console->check_admin_permissions( $request );
-        $this->assertTrue( $perm instanceof WP_Error );
-        $this->assertEquals( 'rest_forbidden', $perm->get_error_code() );
-        $this->assertEquals( 403, $perm->get_error_data()['status'] );
+        $this->assertErrorResponse( 'rest_forbidden', $response, 403 );
     }
 
     public function test_public_key_route_permission_callback_unauthenticated_failure(): void {
         wp_set_current_user( 0 );
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
+        $request  = new WP_REST_Request( 'GET', '/gecx/v1/public-key' );
+        $response = rest_get_server()->dispatch( $request );
 
-        $perm = $rest_api->console->check_admin_permissions( $request );
-        $this->assertTrue( $perm instanceof WP_Error );
-        $this->assertEquals( 'rest_forbidden', $perm->get_error_code() );
-        $this->assertEquals( 403, $perm->get_error_data()['status'] );
+        $this->assertErrorResponse( 'rest_forbidden', $response, 403 );
     }
 
     /**
@@ -2079,11 +2071,10 @@ class RestApiTest extends TestCase {
         $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
         wp_set_current_user( $admin_id );
         $other_admin = $this->factory()->user->create( [ 'role' => 'administrator' ] );
-        $_SERVER['REQUEST_URI'] = '/wp-json/gecx/v1/webhooks/order-created';
-        $this->given_wordpress_resolved_route( '/gecx/v1/webhooks/order-created' );
+        $request     = new WP_REST_Request( 'POST', '/gecx/v1/webhooks/order-created' );
 
         $rest_api = new REST_API();
-        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
 
         // Before rest_pre_dispatch runs (e.g. during parse_request hook window),
         // widened WC API key auth cannot grant admin/woocommerce capabilities
@@ -2093,7 +2084,6 @@ class RestApiTest extends TestCase {
         $this->assertTrue( user_can( $other_admin, 'manage_woocommerce' ) );
 
         // At rest_pre_dispatch priority 20 on an allowed GECX route, capabilities are unlocked.
-        $request = new WP_REST_Request( 'POST', '/gecx/v1/webhooks/order-created' );
         $rest_api->console->unlock_widened_wc_auth_on_dispatch( null, null, $request );
         $this->assertTrue( current_user_can( 'manage_woocommerce' ) );
         $this->assertTrue( current_user_can( 'manage_options' ) );
@@ -2106,11 +2096,10 @@ class RestApiTest extends TestCase {
     public function test_widened_wc_auth_rejects_a_route_mismatch_with_403_and_keeps_capabilities_withheld(): void {
         $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
         wp_set_current_user( $admin_id );
-        $_SERVER['REQUEST_URI']            = '/wp-json/gecx/v1/public-key';
-        $this->given_wordpress_resolved_route( '/gecx/v1/public-key' );
+        $request  = new WP_REST_Request( 'GET', '/gecx/v1/public-key' );
 
         $rest_api = new REST_API();
-        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
 
         // Baseline, non-gating capabilities stay truthful inside the window so
         // third-party code can still tell that somebody is logged in.
@@ -2142,11 +2131,10 @@ class RestApiTest extends TestCase {
     public function test_widened_wc_auth_state_is_cleared_when_woocommerce_claims_the_request_itself(): void {
         $admin_id = $this->factory()->user->create( [ 'role' => 'administrator' ] );
         wp_set_current_user( $admin_id );
-        $_SERVER['REQUEST_URI']            = '/wp-json/gecx/v1/link-agent';
-        $this->given_wordpress_resolved_route( '/gecx/v1/link-agent' );
+        $request  = new WP_REST_Request( 'POST', '/gecx/v1/link-agent' );
 
         $rest_api = new REST_API();
-        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false ) );
+        $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
         $this->assertFalse( current_user_can( 'manage_woocommerce' ) );
 
         // woocommerce_rest_is_request_to_rest_api can fire more than once per

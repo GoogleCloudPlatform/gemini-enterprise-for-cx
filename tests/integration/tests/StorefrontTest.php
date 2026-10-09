@@ -16,15 +16,15 @@ namespace Google\Gemini_Enterprise_For_CX\Tests\Integration;
 use Google\Gemini_Enterprise_For_CX\Storefront;
 use WP_Block_Type;
 use WP_Block_Type_Registry;
-use WP_Scripts;
-use WP_Styles;
 
 class StorefrontTest extends TestCase {
 
 	public function set_up(): void {
 		parent::set_up();
-		$GLOBALS['wp_scripts'] = new WP_Scripts();
-		$GLOBALS['wp_styles']  = new WP_Styles();
+		wp_scripts()->remove( [ 'gecx-widget-script', 'gecx-storefront-js', 'gecx-editor-blocks' ] );
+		wp_scripts()->queue = [];
+		wp_styles()->remove( 'gecx-widget-style' );
+		wp_styles()->queue = [];
 		\WC_Frontend_Scripts::load_scripts();
 	}
 
@@ -440,7 +440,7 @@ class StorefrontTest extends TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $GLOBALS['wp_scripts'] = new WP_Scripts();
+        wp_scripts()->remove( 'gecx-storefront-js' );
         $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $storefront->enqueue_storefront_assets();
 
@@ -521,8 +521,8 @@ class StorefrontTest extends TestCase {
 
         // 1. is_admin
         set_current_screen( 'dashboard' );
-        $GLOBALS['wp_scripts']->queue = [];
-        $GLOBALS['wp_styles']->queue  = [];
+        wp_scripts()->queue = [];
+        wp_styles()->queue  = [];
         $storefront->enqueue_storefront_assets();
         $this->assertFalse( wp_script_is( 'gecx-widget-script', 'enqueued' ) );
         $this->assertFalse( wp_style_is( 'gecx-widget-style', 'enqueued' ) );
@@ -530,8 +530,8 @@ class StorefrontTest extends TestCase {
 
         // 2. doing_ajax
         add_filter( 'wp_doing_ajax', '__return_true' );
-        $GLOBALS['wp_scripts']->queue = [];
-        $GLOBALS['wp_styles']->queue  = [];
+        wp_scripts()->queue = [];
+        wp_styles()->queue  = [];
         $storefront->enqueue_storefront_assets();
         $this->assertFalse( wp_script_is( 'gecx-widget-script', 'enqueued' ) );
         $this->assertFalse( wp_style_is( 'gecx-widget-style', 'enqueued' ) );
@@ -539,9 +539,9 @@ class StorefrontTest extends TestCase {
 
         // 3. is_feed
         global $wp_query;
-        $wp_query->is_feed            = true;
-        $GLOBALS['wp_scripts']->queue = [];
-        $GLOBALS['wp_styles']->queue  = [];
+        $wp_query->is_feed  = true;
+        wp_scripts()->queue = [];
+        wp_styles()->queue  = [];
         $storefront->enqueue_storefront_assets();
         $this->assertFalse( wp_script_is( 'gecx-widget-script', 'enqueued' ) );
         $this->assertFalse( wp_style_is( 'gecx-widget-style', 'enqueued' ) );
@@ -562,9 +562,8 @@ class StorefrontTest extends TestCase {
 
         $this->assertTrue( wp_script_is( 'gecx-widget-script', 'enqueued' ) );
         $this->assertTrue( wp_script_is( 'gecx-storefront-js', 'enqueued' ) );
-        global $wp_scripts;
-        $this->assertSame( 'gemini-enterprise-for-cx', $wp_scripts->registered['gecx-storefront-js']->textdomain );
-        $this->assertSame( '', $wp_scripts->registered['gecx-storefront-js']->translations_path );
+        $this->assertSame( 'gemini-enterprise-for-cx', wp_scripts()->registered['gecx-storefront-js']->textdomain );
+        $this->assertSame( '', wp_scripts()->registered['gecx-storefront-js']->translations_path );
     }
 
     public function test_agent_button_short_label_falls_back_to_a_translated_shop(): void {
@@ -1526,9 +1525,8 @@ JS;
         $this->assertInstanceOf( WP_Block_Type::class, $block );
         $this->assertSame( 'gecx-editor-blocks', $block->editor_script );
         $this->assertSame( [ $storefront, 'render_agent_button_shortcode' ], $block->render_callback );
-        global $wp_scripts;
-        $this->assertSame( 'gemini-enterprise-for-cx', $wp_scripts->registered['gecx-editor-blocks']->textdomain );
-        $this->assertSame( '', $wp_scripts->registered['gecx-editor-blocks']->translations_path );
+        $this->assertSame( 'gemini-enterprise-for-cx', wp_scripts()->registered['gecx-editor-blocks']->textdomain );
+        $this->assertSame( '', wp_scripts()->registered['gecx-editor-blocks']->translations_path );
     }
 
     public function test_suggested_prompts_block_is_server_rendered(): void {
