@@ -19,8 +19,9 @@ use Google\Gemini_Enterprise_For_CX\Admin;
 use Google\Gemini_Enterprise_For_CX\Auth;
 use WC_Webhook;
 use WP_Error;
+use WP_REST_Request;
 
-class SyncStateTest extends TestCase {
+class SyncStateTest extends RestTestCase {
 
     private const SYNC_URL = 'https://gecx.cloud.google.com/woocommerce/webhook/sync-state';
 
@@ -167,7 +168,7 @@ class SyncStateTest extends TestCase {
      *
      * @return array<string, array{0: string}>
      */
-    public function provide_invalid_resource_names(): array {
+    public static function provide_invalid_resource_names(): array {
         return [
             'markup'         => [ 'agents/<script>alert(1)</script>' ],
             'percent octets' => [ 'agents/agent%2Fb' ],
@@ -557,7 +558,7 @@ class SyncStateTest extends TestCase {
     /**
      * @return array<string, array{0: string, 1: string}>
      */
-    public function provide_auth_failure_statuses(): array {
+    public static function provide_auth_failure_statuses(): array {
         return [
             'jwt invalid'      => [ 'WOOCOMMERCE_SYNC_STATUS_JWT_AUTH_INVALID', 'gecx_sync_jwt_invalid' ],
             'api keys invalid' => [ 'WOOCOMMERCE_SYNC_STATUS_WOOCOMMERCE_API_KEYS_INVALID', 'gecx_sync_api_keys_invalid' ],
@@ -754,30 +755,25 @@ class SyncStateTest extends TestCase {
     }
 
     public function test_explicit_unlink_keeps_appearance_and_releases_the_throttle_window(): void {
-        $this->enable_ajax();
         $this->seed_linked_store();
         update_option( 'gecx_button_label', 'Ask AI' );
         update_option( 'gecx_sync_last_attempt', (string) time() );
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
         $this->queue( gecx_test_http_response( 200, '' ) );
 
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-        $admin->console_sync->ajax_unlink_agent();
+        $response = rest_get_server()->dispatch( new WP_REST_Request( 'POST', '/gecx/v1/unlink-agent' ) );
 
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertEquals( 'Ask AI', get_option( 'gecx_button_label' ) );
         $this->assertFalse( get_option( 'gecx_sync_last_attempt' ) );
-        $this->assertTrue( $this->last_json_response['success'] );
+        $this->assertSame( 200, $response->get_status() );
     }
 
     public function test_explicit_unlink_tells_google_before_clearing_the_binding(): void {
-        $this->enable_ajax();
         $this->seed_linked_store();
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
         $this->queue( gecx_test_http_response( 200, '' ) );
 
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-        $admin->console_sync->ajax_unlink_agent();
+        $response = rest_get_server()->dispatch( new WP_REST_Request( 'POST', '/gecx/v1/unlink-agent' ) );
+        $this->assertSame( 200, $response->get_status() );
 
         // The agent has to be named in the request, so the call must happen
         // while the binding is still readable, not after it is torn down.
@@ -793,17 +789,13 @@ class SyncStateTest extends TestCase {
     }
 
     public function test_explicit_unlink_without_an_agent_issues_no_request(): void {
-        $this->enable_ajax();
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
-
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-        $admin->console_sync->ajax_unlink_agent();
+        $response = rest_get_server()->dispatch( new WP_REST_Request( 'POST', '/gecx/v1/unlink-agent' ) );
 
         // There is nothing to name in the request, and the backend rejects a
         // blank agent_id, so the merchant would get a 502 on a reset that has
         // nothing to release.
         $this->assertCount( 0, $this->http_requests );
-        $this->assertTrue( $this->last_json_response['success'] );
+        $this->assertSame( 200, $response->get_status() );
     }
 
     public function test_link_required_adopt_reactivates_paused_order_webhook(): void {
@@ -839,10 +831,8 @@ class SyncStateTest extends TestCase {
     }
 
     public function test_explicit_unlink_treats_400_and_403_as_unlinked(): void {
-        $this->enable_ajax();
         foreach ( [ 400, 403 ] as $status_code ) {
             $this->seed_linked_store( 'agents/stale_agent' );
-            $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
             $this->queue(
                 [
                     'response' => [
@@ -853,10 +843,9 @@ class SyncStateTest extends TestCase {
                 ]
             );
 
-            $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-            $admin->console_sync->ajax_unlink_agent();
+            $response = rest_get_server()->dispatch( new WP_REST_Request( 'POST', '/gecx/v1/unlink-agent' ) );
 
-            $this->assertTrue( $this->last_json_response['success'] );
+            $this->assertSame( 200, $response->get_status() );
             $this->assertFalse( get_option( 'gecx_agent_name' ) );
         }
     }

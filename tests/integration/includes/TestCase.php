@@ -30,16 +30,6 @@ abstract class TestCase extends PolyfilledTestCase {
 	protected ?int $last_redirect_status = null;
 
 	/**
-	 * Last AJAX JSON response caught during test.
-	 */
-	protected ?array $last_json_response = null;
-
-	/**
-	 * Last HTTP status header code caught during test.
-	 */
-	protected int $last_status_header_code = 200;
-
-	/**
 	 * Recorded HTTP requests.
 	 *
 	 * @var array<int, array{url: string, args: array}>
@@ -66,14 +56,11 @@ abstract class TestCase extends PolyfilledTestCase {
 	public function set_up(): void {
 		parent::set_up();
 
-		$this->last_redirect          = null;
-		$this->last_redirect_status   = null;
-		$this->last_json_response     = null;
-		$this->last_status_header_code = 200;
-		$this->http_requests          = [];
-		$this->http_responses         = [];
-		$this->cookies                = [];
-
+		$this->last_redirect        = null;
+		$this->last_redirect_status = null;
+		$this->http_requests        = [];
+		$this->http_responses       = [];
+		$this->cookies              = [];
 
 		$this->set_permalink_structure( '/%postname%/' );
 
@@ -95,10 +82,7 @@ abstract class TestCase extends PolyfilledTestCase {
 		add_filter( 'pre_http_request', [ $this, 'mock_http_request_handler' ], 10, 3 );
 		add_filter( 'woocommerce_set_cookie_enabled', [ $this, 'capture_wc_cookies' ], 10, 5 );
 
-		add_filter( 'status_header', [ $this, 'record_status_header' ], 10, 2 );
 		add_filter( 'wp_redirect', [ $this, 'catch_redirect' ], 1, 2 );
-		add_filter( 'wp_die_handler', [ $this, 'get_custom_wp_die_handler' ], 1 );
-		add_filter( 'wp_die_ajax_handler', [ $this, 'get_custom_wp_die_handler' ], 1 );
 	}
 
 	/**
@@ -109,10 +93,14 @@ abstract class TestCase extends PolyfilledTestCase {
 		$this->http_responses = [];
 		$this->cookies        = [];
 
+		$this->disable_ajax();
 		Auth::reset_cart_token_state();
 		Console_API::reset_wc_auth_state();
 
-		// Clean up custom server headers, cookies, and settings errors.
+		// Clean up custom server headers, superglobals, cookies, and settings errors.
+		$_GET                           = [];
+		$_POST                          = [];
+		$_REQUEST                       = [];
 		$_COOKIE                        = [];
 		$GLOBALS['wp_settings_errors'] = [];
 		unset( $_SERVER['HTTP_CART_TOKEN'], $_SERVER['HTTP_AUTHORIZATION'], $_SERVER['HTTP_ORIGIN'], $_SERVER['HTTP_REFERER'], $_SERVER['HTTP_SEC_FETCH_SITE'] );
@@ -228,18 +216,6 @@ abstract class TestCase extends PolyfilledTestCase {
 	}
 
 	/**
-	 * Intercepts status_header calls to record the response status code.
-	 *
-	 * @param string $status_header Status header string.
-	 * @param int    $code          Status code.
-	 * @return string Original header string.
-	 */
-	public function record_status_header( $status_header, $code ) {
-		$this->last_status_header_code = (int) $code;
-		return $status_header;
-	}
-
-	/**
 	 * Enable AJAX mode for simulating wp-ajax requests.
 	 */
 	public function enable_ajax(): void {
@@ -251,66 +227,6 @@ abstract class TestCase extends PolyfilledTestCase {
 	 */
 	public function disable_ajax(): void {
 		remove_filter( 'wp_doing_ajax', '__return_true' );
-	}
-
-	/**
-	 * Returns custom die handler.
-	 *
-	 * @return callable
-	 */
-	public function get_custom_wp_die_handler() {
-		return [ $this, 'custom_wp_die_handler' ];
-	}
-
-	/**
-	 * Handles wp_die calls during tests to intercept AJAX JSON responses.
-	 *
-	 * @param string|\WP_Error $message The wp_die message or WP_Error.
-	 * @param string           $title   The wp_die title.
-	 * @param string|array     $args    The wp_die arguments.
-	 */
-	public function custom_wp_die_handler( $message, $title = '', $args = [] ) {
-		$args_arr    = is_array( $args ) ? $args : [];
-		$status_code = ! empty( $args_arr['response'] ) ? (int) $args_arr['response'] : 0;
-
-		if ( $status_code <= 0 ) {
-			$trace = debug_backtrace( 0, 10 );
-			foreach ( $trace as $frame ) {
-				$func = $frame['function'] ?? '';
-				if ( 'wp_send_json' === $func && isset( $frame['args'][1] ) && null !== $frame['args'][1] ) {
-					$status_code = (int) $frame['args'][1];
-					break;
-				}
-				if ( ( 'wp_send_json_error' === $func || 'wp_send_json_success' === $func ) && isset( $frame['args'][1] ) && null !== $frame['args'][1] ) {
-					$status_code = (int) $frame['args'][1];
-					break;
-				}
-			}
-		}
-
-		if ( $status_code <= 0 ) {
-			$status_code = $this->last_status_header_code ?: 200;
-		}
-
-		$buffered = ob_get_contents();
-		ob_clean();
-		if ( ! empty( $buffered ) ) {
-			$json = json_decode( $buffered, true );
-			if ( is_array( $json ) ) {
-				$this->last_json_response = $json;
-				if ( ! isset( $this->last_json_response['status'] ) && $status_code > 0 ) {
-					$this->last_json_response['status'] = $status_code;
-				}
-			}
-		}
-
-		if ( null === $this->last_json_response && ! empty( $message ) ) {
-			$this->last_json_response = [
-				'success' => false,
-				'data'    => is_wp_error( $message ) ? $message->get_error_message() : (string) $message,
-				'status'  => $status_code,
-			];
-		}
 	}
 
 	/**

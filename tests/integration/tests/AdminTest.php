@@ -18,8 +18,9 @@ use Google\Gemini_Enterprise_For_CX\Auth;
 use Google\Gemini_Enterprise_For_CX\Storefront;
 use WC_Product;
 use WC_Webhook;
+use WP_REST_Request;
 
-class AdminTest extends TestCase {
+class AdminTest extends RestTestCase {
 
     public function set_up(): void {
         parent::set_up();
@@ -42,106 +43,106 @@ class AdminTest extends TestCase {
         }
     }
 
-    public function test_admin_ajax_save_button_config_saves_manual_placement_and_menu_target(): void {
-        $this->enable_ajax();
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
-        $_POST             = [
-            'placement'       => 'manual',
-            'nav_menu_target' => 'location:primary_navigation',
-        ];
+    public function test_rest_save_button_config_saves_manual_placement_and_menu_target(): void {
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params(
+            [
+                'gecx_button_placement' => 'manual',
+                'gecx_nav_menu_target'  => 'location:primary_navigation',
+            ]
+        );
+        $response = rest_get_server()->dispatch( $request );
 
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-        $admin->settings_page->ajax_save_button_config();
-
+        $this->assertSame( 200, $response->get_status() );
         $this->assertSame( 'manual', get_option( 'gecx_button_placement' ) );
         $this->assertSame( 'location:primary_navigation', get_option( 'gecx_nav_menu_target' ) );
 
-        $_POST['nav_menu_target'] = 'menu:abc';
-        $admin->settings_page->ajax_save_button_config();
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_nav_menu_target' => 'menu:abc' ] );
+        $response = rest_get_server()->dispatch( $request );
 
+        $this->assertSame( 200, $response->get_status() );
         $this->assertSame( '', get_option( 'gecx_nav_menu_target' ) );
     }
 
-    public function test_admin_ajax_save_button_config(): void {
-        $this->enable_ajax();
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
-        $_POST             = [
-            'placement'         => 'floating',
-            'floating_position' => 'center_right',
-            'display_style'     => 'icon-only',
-            'label'             => 'Ask AI',
-            'short_label'       => 'Chat',
-            'enable_shimmer'    => '1',
-        ];
+    public function test_rest_save_button_config(): void {
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params(
+            [
+                'gecx_button_placement'                   => 'floating',
+                'gecx_floating_position'                  => 'center_right',
+                'gecx_button_display_style'               => 'icon-only',
+                'gecx_button_label'                       => 'Ask AI',
+                'gecx_button_short_label'                 => 'Chat',
+                'gecx_button_enable_shimmer'              => 1,
+                'gecx_defer_widget_until_interaction'     => 1,
+            ]
+        );
+        $response = rest_get_server()->dispatch( $request );
 
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-        $admin->settings_page->ajax_save_button_config();
-
+        $this->assertSame( 200, $response->get_status() );
         $this->assertEquals( 'floating', get_option( 'gecx_button_placement' ) );
         $this->assertEquals( 'center_right', get_option( 'gecx_floating_position' ) );
         $this->assertEquals( 'icon-only', get_option( 'gecx_button_display_style' ) );
         $this->assertEquals( 'Ask AI', get_option( 'gecx_button_label' ) );
         $this->assertEquals( 'Chat', get_option( 'gecx_button_short_label' ) );
         $this->assertEquals( 1, get_option( 'gecx_button_enable_shimmer' ) );
-        $this->assertTrue( $this->last_json_response['success'] );
+        $this->assertEquals( 1, get_option( 'gecx_defer_widget_until_interaction' ) );
 
         // Test bottom_right floating position.
-        $_POST['floating_position'] = 'bottom_right';
-        $admin->settings_page->ajax_save_button_config();
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_floating_position' => 'bottom_right' ] );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertSame( 200, $response->get_status() );
         $this->assertEquals( 'bottom_right', get_option( 'gecx_floating_position' ) );
-        $this->assertTrue( $this->last_json_response['success'] );
 
         // Test bottom_left floating position.
-        $_POST['floating_position'] = 'bottom_left';
-        $admin->settings_page->ajax_save_button_config();
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_floating_position' => 'bottom_left' ] );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertSame( 200, $response->get_status() );
         $this->assertEquals( 'bottom_left', get_option( 'gecx_floating_position' ) );
-        $this->assertTrue( $this->last_json_response['success'] );
 
         // Test center_left floating position.
-        $_POST['floating_position'] = 'center_left';
-        $admin->settings_page->ajax_save_button_config();
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_floating_position' => 'center_left' ] );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertSame( 200, $response->get_status() );
         $this->assertEquals( 'center_left', get_option( 'gecx_floating_position' ) );
-        $this->assertTrue( $this->last_json_response['success'] );
 
         // Test fallback to bottom_center on invalid floating_position.
-        $_POST['floating_position'] = 'invalid_pos';
-        $admin->settings_page->ajax_save_button_config();
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_floating_position' => 'invalid_pos' ] );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertSame( 200, $response->get_status() );
         $this->assertEquals( 'bottom_center', get_option( 'gecx_floating_position' ) );
-        $this->assertTrue( $this->last_json_response['success'] );
-
-        // Reset floating_position to valid state before testing subsequent fields.
-        $_POST['floating_position'] = 'bottom_center';
 
         // Test fallback to responsive on invalid display_style.
-        $_POST['display_style'] = 'invalid_style';
-        $admin->settings_page->ajax_save_button_config();
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_button_display_style' => 'invalid_style' ] );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertSame( 200, $response->get_status() );
         $this->assertEquals( 'responsive', get_option( 'gecx_button_display_style' ) );
-        $this->assertTrue( $this->last_json_response['success'] );
     }
 
-    public function test_admin_ajax_toggle_app_embed(): void {
-        $this->enable_ajax();
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
-        $_POST['enabled']  = '1';
+    public function test_rest_toggle_app_embed(): void {
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_agent_enabled' => 1 ] );
+        $response = rest_get_server()->dispatch( $request );
 
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-        $admin->settings_page->ajax_toggle_app_embed();
-
+        $this->assertSame( 200, $response->get_status() );
         $this->assertEquals( 1, get_option( 'gecx_agent_enabled' ) );
-        $this->assertTrue( $this->last_json_response['success'] );
     }
 
-    public function test_admin_ajax_unlink_agent(): void {
-        $this->enable_ajax();
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
+    public function test_rest_unlink_agent(): void {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_token_broker_name', 'broker-1' );
         update_option( 'gecx_agent_enabled', 1 );
         $this->http_responses[] = gecx_test_http_response( 200, '' );
 
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-        $admin->console_sync->ajax_unlink_agent();
+        $response = rest_get_server()->dispatch( new WP_REST_Request( 'POST', '/gecx/v1/unlink-agent' ) );
 
+        $this->assertSame( 200, $response->get_status() );
         $this->assertCount( 1, $this->http_requests );
         $request = $this->http_requests[0];
         $this->assertEquals( 'https://gecx.cloud.google.com/woocommerce/unlink-agent', $request['url'] );
@@ -153,42 +154,34 @@ class AdminTest extends TestCase {
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertFalse( get_option( 'gecx_token_broker_name' ) );
         $this->assertEquals( 0, get_option( 'gecx_agent_enabled' ) );
-        $this->assertTrue( $this->last_json_response['success'] );
     }
 
-    public function test_admin_ajax_unlink_agent_proceeds_when_backend_returns_404(): void {
-        $this->enable_ajax();
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
+    public function test_rest_unlink_agent_proceeds_when_backend_returns_404(): void {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_token_broker_name', 'broker-1' );
         update_option( 'gecx_agent_enabled', 1 );
         $this->http_responses[] = gecx_test_http_response( 404, '' );
 
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-        $admin->console_sync->ajax_unlink_agent();
+        $response = rest_get_server()->dispatch( new WP_REST_Request( 'POST', '/gecx/v1/unlink-agent' ) );
 
+        $this->assertSame( 200, $response->get_status() );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertFalse( get_option( 'gecx_token_broker_name' ) );
         $this->assertEquals( 0, get_option( 'gecx_agent_enabled' ) );
-        $this->assertTrue( $this->last_json_response['success'] );
     }
 
-    public function test_admin_ajax_unlink_agent_retains_options_when_backend_returns_error(): void {
-        $this->enable_ajax();
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
+    public function test_rest_unlink_agent_retains_options_when_backend_returns_error(): void {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_token_broker_name', 'broker-1' );
         update_option( 'gecx_agent_enabled', 1 );
         $this->http_responses[] = gecx_test_http_response( 500, '' );
 
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-        $admin->console_sync->ajax_unlink_agent();
+        $response = rest_get_server()->dispatch( new WP_REST_Request( 'POST', '/gecx/v1/unlink-agent' ) );
 
         $this->assertEquals( 'projects/123/locations/global/agents/agent-1', get_option( 'gecx_agent_name' ) );
         $this->assertEquals( 'broker-1', get_option( 'gecx_token_broker_name' ) );
         $this->assertEquals( 1, get_option( 'gecx_agent_enabled' ) );
-        $this->assertFalse( $this->last_json_response['success'] );
-        $this->assertEquals( 502, $this->last_json_response['status'] );
+        $this->assertErrorResponse( 'gecx_unlink_failed', $response, 502 );
     }
 
     public function test_handle_connection_callback_rejects_missing_or_invalid_state(): void {
@@ -690,9 +683,6 @@ class AdminTest extends TestCase {
     }
 
     public function test_unlink_agent_keeps_keys_and_returns_user_to_step_2(): void {
-        $this->enable_ajax();
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
-
         $webhook = new WC_Webhook();
         $webhook->set_name( 'GECX Agent Order Created' );
         $webhook->set_topic( 'order.created' );
@@ -746,7 +736,7 @@ class AdminTest extends TestCase {
         );
         $key3 = (int) $wpdb->insert_id;
 
-        // 1. Response for ajax_unlink_agent (/woocommerce/unlink-agent)
+        // 1. Response for rest_unlink_agent (/woocommerce/unlink-agent)
         $this->http_responses[] = gecx_test_http_response( 200, '' );
         // 2. SyncState during render_settings_page. The backend still reports
         // the agent; the store must not adopt it after the merchant unlinked.
@@ -761,10 +751,10 @@ class AdminTest extends TestCase {
             )
         );
 
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-        $admin->console_sync->ajax_unlink_agent();
+        $admin    = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
+        $response = rest_get_server()->dispatch( new WP_REST_Request( 'POST', '/gecx/v1/unlink-agent' ) );
 
-        $this->assertTrue( $this->last_json_response['success'] );
+        $this->assertSame( 200, $response->get_status() );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertSame( $webhook_id, get_option( 'gecx_webhook_id' ) );
         $this->assertSame( 1, get_option( 'gecx_auth_complete' ) );
@@ -790,17 +780,14 @@ class AdminTest extends TestCase {
     }
 
     public function test_unlink_proceeds_locally_when_console_url_refused(): void {
-        $this->enable_ajax();
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
         update_option( 'gecx_auth_complete', 1 );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_console_base_url', 'https://attacker.example' );
 
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-        $admin->console_sync->ajax_unlink_agent();
+        $response = rest_get_server()->dispatch( new WP_REST_Request( 'POST', '/gecx/v1/unlink-agent' ) );
 
-        $this->assertTrue( $this->last_json_response['success'] );
+        $this->assertSame( 200, $response->get_status() );
         $this->assertCount( 0, $this->http_requests );
         $this->assertFalse( get_option( 'gecx_agent_name' ) );
         $this->assertSame( 0, (int) get_option( 'gecx_agent_enabled' ) );
@@ -808,16 +795,13 @@ class AdminTest extends TestCase {
     }
 
     public function test_failed_remote_unlink_changes_nothing(): void {
-        $this->enable_ajax();
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
         update_option( 'gecx_auth_complete', 1 );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         $this->http_responses[] = gecx_test_http_response( 500, '' );
 
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-        $admin->console_sync->ajax_unlink_agent();
+        $response = rest_get_server()->dispatch( new WP_REST_Request( 'POST', '/gecx/v1/unlink-agent' ) );
 
-        $this->assertFalse( $this->last_json_response['success'] );
+        $this->assertErrorResponse( 'gecx_unlink_failed', $response, 502 );
         $this->assertSame( 'projects/123/locations/global/agents/agent-1', get_option( 'gecx_agent_name' ) );
         $this->assertFalse( get_option( Admin::MERCHANT_UNLINKED_OPTION ) );
     }
@@ -902,99 +886,69 @@ class AdminTest extends TestCase {
     }
 
     public function test_toggle_app_embed_records_merchant_intent(): void {
-        $this->enable_ajax();
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
-        $_POST['enabled']  = '0';
-        $admin->settings_page->ajax_toggle_app_embed();
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_agent_enabled' => 0 ] );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertSame( 200, $response->get_status() );
         $this->assertSame( 1, get_option( Admin::MERCHANT_DISABLED_OPTION ) );
 
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
-        $_POST['enabled']  = '1';
-        $admin->settings_page->ajax_toggle_app_embed();
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_agent_enabled' => 1 ] );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertSame( 200, $response->get_status() );
         $this->assertFalse( get_option( Admin::MERCHANT_DISABLED_OPTION ) );
     }
 
-    public function test_ajax_handlers_reject_invalid_nonce_and_unauthorized_subscriber(): void {
-        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
-
-        $this->enable_ajax();
-        // 1. Forged nonces are rejected even for an administrator.
+    public function test_rest_handlers_reject_unauthorized_subscriber(): void {
         update_option( 'gecx_button_placement', 'nav_menu' );
         update_option( 'gecx_agent_enabled', 0 );
         update_option( 'gecx_pdp_prompts_enabled', 1 );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         delete_option( 'gecx_dismiss_activation_notice' );
 
-        $_REQUEST['nonce'] = 'forged_nonce';
-        $_POST             = [
-            'placement' => 'floating',
-            'enabled'   => '1',
-        ];
-
-        $admin->settings_page->ajax_save_button_config();
-        $this->assertSame( false, $this->last_json_response['success'] );
-        $this->assertSame( 403, $this->last_json_response['status'] );
-        $this->assertSame( 'nav_menu', get_option( 'gecx_button_placement' ) );
-
-        $admin->settings_page->ajax_toggle_app_embed();
-        $this->assertSame( false, $this->last_json_response['success'] );
-        $this->assertSame( 403, $this->last_json_response['status'] );
-        $this->assertSame( 0, get_option( 'gecx_agent_enabled' ) );
-
-        $_POST['enabled'] = '0';
-        $admin->settings_page->ajax_toggle_pdp_prompts();
-        $this->assertSame( false, $this->last_json_response['success'] );
-        $this->assertSame( 403, $this->last_json_response['status'] );
-        $this->assertSame( 1, get_option( 'gecx_pdp_prompts_enabled' ) );
-
-        $admin->console_sync->ajax_unlink_agent();
-        $this->assertSame( false, $this->last_json_response['success'] );
-        $this->assertSame( 403, $this->last_json_response['status'] );
+        // 1. Administrator cannot mutate gecx_agent_name via /wp/v2/settings (show_in_rest is false),
+        // while gecx_pdp_prompts_enabled and gecx_dismiss_activation_notice are updatable.
+        $admin_request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $admin_request->set_body_params(
+            [
+                'gecx_agent_name'                => 'projects/999/locations/global/agents/hijack',
+                'gecx_pdp_prompts_enabled'       => 0,
+                'gecx_dismiss_activation_notice' => true,
+            ]
+        );
+        $admin_response = rest_get_server()->dispatch( $admin_request );
+        $this->assertSame( 200, $admin_response->get_status() );
         $this->assertSame( 'projects/123/locations/global/agents/agent-1', get_option( 'gecx_agent_name' ) );
+        $this->assertSame( 0, get_option( 'gecx_pdp_prompts_enabled' ) );
+        $this->assertTrue( (bool) get_option( 'gecx_dismiss_activation_notice', false ) );
 
-        $admin->settings_page->ajax_dismiss_notice();
-        $this->assertSame( false, $this->last_json_response['success'] );
-        $this->assertSame( 403, $this->last_json_response['status'] );
-        $this->assertFalse( get_option( 'gecx_dismiss_activation_notice', false ) );
+        // Reset before testing subscriber rejection.
+        update_option( 'gecx_pdp_prompts_enabled', 1 );
+        delete_option( 'gecx_dismiss_activation_notice' );
 
-        // 2. Subscriber with a valid nonce gets 403 Unauthorized and mutates nothing.
+        // 2. Subscriber gets 403 Forbidden and mutates nothing.
         $subscriber_id = $this->factory()->user->create( [ 'role' => 'subscriber' ] );
         wp_set_current_user( $subscriber_id );
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
-        $_POST             = [
-            'placement' => 'floating',
-            'enabled'   => '1',
-        ];
 
-        $admin->settings_page->ajax_save_button_config();
-        $this->assertSame( false, $this->last_json_response['success'] );
-        $this->assertSame( 403, $this->last_json_response['status'] );
-        $this->assertSame( 'Unauthorized', $this->last_json_response['data']['message'] );
+        $settings_request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $settings_request->set_body_params(
+            [
+                'gecx_button_placement'          => 'floating',
+                'gecx_agent_enabled'             => 1,
+                'gecx_pdp_prompts_enabled'       => 0,
+                'gecx_dismiss_activation_notice' => true,
+            ]
+        );
+        $settings_response = rest_get_server()->dispatch( $settings_request );
+        $this->assertErrorResponse( 'rest_forbidden', $settings_response, 403 );
         $this->assertSame( 'nav_menu', get_option( 'gecx_button_placement' ) );
-
-        $admin->settings_page->ajax_toggle_app_embed();
-        $this->assertSame( false, $this->last_json_response['success'] );
-        $this->assertSame( 403, $this->last_json_response['status'] );
         $this->assertSame( 0, get_option( 'gecx_agent_enabled' ) );
-
-        $_POST['enabled'] = '0';
-        $admin->settings_page->ajax_toggle_pdp_prompts();
-        $this->assertSame( false, $this->last_json_response['success'] );
-        $this->assertSame( 403, $this->last_json_response['status'] );
         $this->assertSame( 1, get_option( 'gecx_pdp_prompts_enabled' ) );
-
-        $admin->console_sync->ajax_unlink_agent();
-        $this->assertSame( false, $this->last_json_response['success'] );
-        $this->assertSame( 403, $this->last_json_response['status'] );
-        $this->assertSame( 'projects/123/locations/global/agents/agent-1', get_option( 'gecx_agent_name' ) );
-
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_dismiss_notice_nonce' );
-        $admin->settings_page->ajax_dismiss_notice();
-        $this->assertSame( false, $this->last_json_response['success'] );
-        $this->assertSame( 403, $this->last_json_response['status'] );
         $this->assertFalse( get_option( 'gecx_dismiss_activation_notice', false ) );
+
+        $unlink_response = rest_get_server()->dispatch( new WP_REST_Request( 'POST', '/gecx/v1/unlink-agent' ) );
+        $this->assertErrorResponse( 'rest_forbidden', $unlink_response, 403 );
+        $this->assertSame( 'projects/123/locations/global/agents/agent-1', get_option( 'gecx_agent_name' ) );
     }
 
     public function test_is_standard_rest_api_enabled_requires_pretty_permalinks_and_wp_json(): void {

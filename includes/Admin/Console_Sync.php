@@ -64,7 +64,7 @@ class Console_Sync {
         add_action( 'admin_init', [ $this, 'maybe_sync_on_version_change' ] );
         add_action( Admin::VERSION_SYNC_CRON_HOOK, [ $this, 'run_scheduled_version_sync' ], 10, 1 );
         add_action( 'admin_notices', [ $this, 'show_pending_sync_notices' ] );
-        add_action( 'wp_ajax_gecx_unlink_agent', [ $this, 'ajax_unlink_agent' ] );
+        add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
     }
 
     /**
@@ -797,36 +797,47 @@ class Console_Sync {
     }
 
     /**
-     * AJAX handler to unlink the agent and reset store status.
+     * Register the REST API route for unlinking the agent.
+     */
+    public function register_rest_routes(): void {
+        register_rest_route(
+            'gecx/v1',
+            '/unlink-agent',
+            [
+                'methods'             => \WP_REST_Server::CREATABLE,
+                'callback'            => [ $this, 'rest_unlink_agent' ],
+                'permission_callback' => static function (): bool {
+                    if ( Auth::is_cart_token_request() ) {
+                        return false;
+                    }
+                    return current_user_can( 'manage_options' );
+                },
+            ]
+        );
+    }
+
+    /**
+     * REST handler to unlink the agent and reset store status.
      *
      * Store authorization and the WooCommerce API keys are kept, so the
      * merchant returns to Step 2 and can link an agent again without
      * re-authorizing. Unlike the automatic unlink in apply_sync_status(), this
      * records the merchant's intent so no later SyncState response can quietly
      * re-link the store.
+     *
+     * @return \WP_REST_Response|\WP_Error
      */
-    public function ajax_unlink_agent(): void {
-        if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
-            wp_send_json_error( [ 'message' => __( 'Invalid nonce', 'gemini-enterprise-for-cx' ) ], 403 );
-            return;
-        }
-        if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( [ 'message' => __( 'Unauthorized', 'gemini-enterprise-for-cx' ) ], 403 );
-            return;
-        }
-
+    public function rest_unlink_agent() {
         $agent_id = (string) get_option( 'gecx_agent_name', '' );
         if ( '' !== $agent_id && ! $this->unlink_agent_remotely( $agent_id ) ) {
-            wp_send_json_error(
-                [
-                    'message' => __(
-                        'The agent could not be disconnected from Google. Nothing was changed. Please try again.',
-                        'gemini-enterprise-for-cx'
-                    ),
-                ],
-                502
+            return new \WP_Error(
+                'gecx_unlink_failed',
+                __(
+                    'The agent could not be disconnected from Google. Nothing was changed. Please try again.',
+                    'gemini-enterprise-for-cx'
+                ),
+                [ 'status' => 502 ]
             );
-            return;
         }
 
         $this->unlink_agent_internal();
@@ -835,6 +846,6 @@ class Console_Sync {
 
         // Re-linking right after an unlink must reconcile immediately.
         self::clear_sync_window();
-        wp_send_json_success();
+        return new \WP_REST_Response( [ 'success' => true ], 200 );
     }
 }

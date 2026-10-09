@@ -47,6 +47,10 @@ tests_add_filter( 'muplugins_loaded', static function () {
 		}
 	}
 
+	// Install WooCommerce tables and roles before init fires.
+	\WC_Install::create_tables();
+	\WC_Install::create_roles();
+
 	// Load plugin under test.
 	require_once dirname( __DIR__, 2 ) . '/gecx-agent.php';
 } );
@@ -54,5 +58,5 @@ tests_add_filter( 'muplugins_loaded', static function () {
 // Bootstrap WordPress and testing framework.
 bootstrap_it();
 
-\WC_Install::create_tables();
-\WC_Install::create_roles();
+// Ensure in-memory WP_Roles contains all WooCommerce roles and capabilities.
+wp_roles()->for_site();

@@ -23,7 +23,7 @@ use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
 
-class WebhookLifecycleTest extends TestCase {
+class WebhookLifecycleTest extends RestTestCase {
 
     private REST_API $rest_api;
     private Admin $admin;
@@ -278,22 +278,23 @@ class WebhookLifecycleTest extends TestCase {
     }
 
     public function test_widget_toggle_pauses_and_resumes_webhook(): void {
-        $this->enable_ajax();
         $webhook_id = $this->create_gecx_webhook( 'active' );
 
         // Disable widget
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
-        $_POST['enabled']  = '0';
-        $this->admin->settings_page->ajax_toggle_app_embed();
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_agent_enabled' => 0 ] );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertSame( 200, $response->get_status() );
 
         $webhook = new WC_Webhook( $webhook_id );
         $this->assertSame( 'paused', $webhook->get_status() );
         $this->assertSame( 0, get_option( 'gecx_agent_enabled' ) );
 
         // Enable widget
-        $_REQUEST['nonce'] = wp_create_nonce( 'gecx_save_agent_nonce' );
-        $_POST['enabled']  = '1';
-        $this->admin->settings_page->ajax_toggle_app_embed();
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_agent_enabled' => 1 ] );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertSame( 200, $response->get_status() );
 
         $webhook = new WC_Webhook( $webhook_id );
         $this->assertSame( 'active', $webhook->get_status() );
@@ -301,15 +302,14 @@ class WebhookLifecycleTest extends TestCase {
     }
 
     public function test_unlink_pauses_webhook_and_preserves_secret(): void {
-        $this->enable_ajax();
         $webhook_id = $this->create_gecx_webhook( 'active' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_api_secret', 'legacy_secret_to_be_deleted' );
         update_option( 'gecx_auth_complete', 1 );
 
-        $_REQUEST['nonce']      = wp_create_nonce( 'gecx_save_agent_nonce' );
         $this->http_responses[] = gecx_test_http_response( 200, '' );
-        $this->admin->console_sync->ajax_unlink_agent();
+        $response               = rest_get_server()->dispatch( new WP_REST_Request( 'POST', '/gecx/v1/unlink-agent' ) );
+        $this->assertSame( 200, $response->get_status() );
 
         $webhook = new WC_Webhook( $webhook_id );
         $this->assertSame( $webhook_id, $webhook->get_id() );

@@ -214,22 +214,25 @@ class Auth {
      * callback replaced them with someone else, that user is left alone. The
      * flag stays raised either way, so privileged endpoints keep rejecting.
      *
-     * @param mixed $wp The WP or WP_REST_Request instance, or null.
+     * @param mixed $wp_or_request The WP or WP_REST_Request instance, or null.
      */
-    public function drop_cart_token_user_outside_store_api( $wp = null ): void {
+    public function drop_cart_token_user_outside_store_api( $wp_or_request = null ): void {
         if ( ! self::$authenticated_via_cart_token ) {
             return;
         }
 
         $route = null;
-        if ( $wp instanceof \WP_REST_Request ) {
-            $route = $wp->get_route();
-        } elseif ( is_object( $wp ) && isset( $wp->query_vars['rest_route'] ) ) {
-            $route = $wp->query_vars['rest_route'];
-        } elseif ( is_string( $wp ) ) {
-            $route = $wp;
-        } elseif ( isset( $GLOBALS['wp']->query_vars['rest_route'] ) ) {
-            $route = $GLOBALS['wp']->query_vars['rest_route'];
+        if ( $wp_or_request instanceof \WP_REST_Request ) {
+            $route = $wp_or_request->get_route();
+        } elseif ( is_object( $wp_or_request ) && isset( $wp_or_request->query_vars['rest_route'] ) ) {
+            $route = $wp_or_request->query_vars['rest_route'];
+        } elseif ( is_string( $wp_or_request ) ) {
+            $route = $wp_or_request;
+        } else {
+            global $wp;
+            if ( isset( $wp->query_vars['rest_route'] ) ) {
+                $route = $wp->query_vars['rest_route'];
+            }
         }
 
         if ( self::is_store_api_route( $route ) ) {
@@ -931,7 +934,7 @@ class Auth {
     /**
      * The REST route WordPress is going to dispatch for this request.
      *
-     * That route is $GLOBALS['wp']->query_vars['rest_route'], which
+     * That route is $wp->query_vars['rest_route'], which
      * WP_REST_Server reads in rest_api_loaded(). It is used whenever it is
      * available, including when it is empty: an empty value means WordPress
      * resolved no REST route, and rest_api_loaded() bails on it, so nothing is
@@ -967,8 +970,10 @@ class Auth {
             return $request->get_route();
         }
 
-        if ( isset( $GLOBALS['wp']->query_vars['rest_route'] ) ) {
-            return $GLOBALS['wp']->query_vars['rest_route'];
+        global $wp;
+
+        if ( isset( $wp->query_vars['rest_route'] ) ) {
+            return $wp->query_vars['rest_route'];
         }
 
         if ( ! self::is_front_controller_request() ) {
@@ -979,8 +984,8 @@ class Auth {
         // WP::$extra_query_vars is assigned inside parse_request(), so in the
         // pre-parse_request path it is always the empty default. Correctly
         // ordered and harmless; defence in depth rather than a live tier.
-        if ( isset( $GLOBALS['wp']->extra_query_vars ) && is_array( $GLOBALS['wp']->extra_query_vars ) ) {
-            $sources[] = $GLOBALS['wp']->extra_query_vars;
+        if ( isset( $wp->extra_query_vars ) && is_array( $wp->extra_query_vars ) ) {
+            $sources[] = $wp->extra_query_vars;
         }
         // Route resolution only, mirroring how WordPress itself reads these
         // superglobals in WP::parse_request() before any handler runs. Nothing
@@ -1079,8 +1084,11 @@ class Auth {
             $route = $route_or_request->get_route();
         } elseif ( is_string( $route_or_request ) ) {
             $route = $route_or_request;
-        } elseif ( isset( $GLOBALS['wp']->query_vars['rest_route'] ) ) {
-            $route = $GLOBALS['wp']->query_vars['rest_route'];
+        } else {
+            global $wp;
+            if ( isset( $wp->query_vars['rest_route'] ) ) {
+                $route = $wp->query_vars['rest_route'];
+            }
         }
 
         if ( ! is_string( $route ) ) {
@@ -1139,10 +1147,12 @@ class Auth {
             return '';
         }
 
+        global $wp_rewrite;
+
         // WP_Rewrite may not exist yet when this runs during plugins_loaded;
         // its index is 'index.php' unless something has replaced it.
-        $index = ( isset( $GLOBALS['wp_rewrite'] ) && is_object( $GLOBALS['wp_rewrite'] ) && is_string( $GLOBALS['wp_rewrite']->index ?? null ) && '' !== $GLOBALS['wp_rewrite']->index )
-            ? trim( $GLOBALS['wp_rewrite']->index, '/' )
+        $index = ( isset( $wp_rewrite ) && is_object( $wp_rewrite ) && is_string( $wp_rewrite->index ?? null ) && '' !== $wp_rewrite->index )
+            ? trim( $wp_rewrite->index, '/' )
             : 'index.php';
 
         foreach ( [ '/' . $prefix . '/', '/' . $index . '/' . $prefix . '/' ] as $expected_prefix ) {

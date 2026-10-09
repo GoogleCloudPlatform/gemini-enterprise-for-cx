@@ -1530,7 +1530,7 @@ class AuthTest extends RestTestCase {
         $this->assertSame( $expected, $method->invoke( null ), $why );
     }
 
-    public function keypair_lock_liveness_cases(): array {
+    public static function keypair_lock_liveness_cases(): array {
         return [
             'no lock at all' => [
                 null,
