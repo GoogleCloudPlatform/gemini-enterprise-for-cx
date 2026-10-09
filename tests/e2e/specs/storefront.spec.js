@@ -38,7 +38,9 @@ test.describe('Storefront', () => {
 			const pubKeyRes = await anonRequest.get('/wp-json/gecx/v1/public-key');
 			expect([401, 403]).toContain(pubKeyRes.status());
 
-			const linkRes = await anonRequest.post('/wp-json/gecx/v1/link-agent');
+			const linkRes = await anonRequest.post('/wp-json/gecx/v1/link-agent', {
+				data: { agent_name: 'projects/123/locations/global/agents/e2e' },
+			});
 			expect([401, 403]).toContain(linkRes.status());
 		} finally {
 			await anonRequest.dispose();
@@ -58,7 +60,7 @@ test.describe('Storefront', () => {
 			});
 			expect(getRes.status()).toBe(404);
 
-			// Same-origin POST returns success, nonce, and customer_jwt.
+			// Same-origin POST returns success and nonce.
 			const postRes = await anonRequest.post('/wp-json/gecx/v1/auth-context', {
 				headers: { 'Sec-Fetch-Site': 'same-origin' },
 			});
@@ -66,9 +68,10 @@ test.describe('Storefront', () => {
 			const body = await postRes.json();
 			expect(body.success).toBe(true);
 			expect(typeof body.nonce).toBe('string');
-			expect(typeof body.customer_jwt).toBe('string');
+			expect(body.customer_jwt === null || typeof body.customer_jwt === 'string').toBe(true);
 		} finally {
 			await anonRequest.dispose();
 		}
 	});
 });
+

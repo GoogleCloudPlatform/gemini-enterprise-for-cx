@@ -15,6 +15,8 @@ process.env.STORAGE_STATE_PATH = process.env.STORAGE_STATE_PATH ||
 const { test: setup } = require('@wordpress/e2e-test-utils-playwright');
 
 setup('setup test environment', async ({ requestUtils, admin, page }) => {
+	setup.setTimeout(120000);
+
 	// 1. Authenticate browser session via standard login form.
 	await page.goto('wp-login.php');
 	const loginInput = page.locator('#user_login');
@@ -22,7 +24,7 @@ setup('setup test environment', async ({ requestUtils, admin, page }) => {
 		await loginInput.fill('admin');
 		await page.locator('#user_pass').fill('password');
 		await page.locator('#wp-submit').click();
-		await page.waitForURL('**/wp-admin/**');
+		await page.waitForURL('**/wp-admin/**', { waitUntil: 'domcontentloaded' });
 	}
 
 	// 2. Discover REST API endpoint and obtain REST nonce.

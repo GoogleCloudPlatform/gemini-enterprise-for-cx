@@ -6,6 +6,7 @@ vendor/
 node_modules/
 test-results/
 playwright-report/
+artifacts/
 tests/e2e/env/
 packages/*/build/
 packages/*/build-module/
