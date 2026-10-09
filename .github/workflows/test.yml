@@ -37,10 +37,14 @@ jobs:
 
     steps:
       - name: Configure database host
-        run: echo "WP_DB_HOST=127.0.0.1:${{ job.services.mysql.ports[3306] }}" >> "$GITHUB_ENV"
+        env:
+          MYSQL_PORT: ${{ job.services.mysql.ports[3306] }}
+        run: echo "WP_DB_HOST=127.0.0.1:${MYSQL_PORT}" >> "$GITHUB_ENV"
 
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up PHP
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
@@ -69,8 +73,10 @@ jobs:
           rm woocommerce.zip
 
       - name: Wait for database
+        env:
+          MYSQL_PORT: ${{ job.services.mysql.ports[3306] }}
         run: |
-          while ! mysqladmin ping -h"127.0.0.1" -P"${{ job.services.mysql.ports[3306] }}" --silent; do
+          while ! mysqladmin ping -h"127.0.0.1" -P"${MYSQL_PORT}" --silent; do
             sleep 1
           done
 

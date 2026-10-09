@@ -30,6 +30,7 @@ class WebhookLifecycleTest extends TestCase {
 
     public function set_up(): void {
         parent::set_up();
+        $_REQUEST = &$_POST;
         wp_set_current_user( 1 );
         $this->rest_api = new REST_API();
         $this->admin    = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );

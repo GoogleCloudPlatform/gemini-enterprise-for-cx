@@ -31,6 +31,7 @@ class SyncStateTest extends TestCase {
 
     public function set_up(): void {
         parent::set_up();
+        $_REQUEST = &$_POST;
         wp_set_current_user( 1 );
         update_option( 'home', 'https://example.com' );
         update_option( 'siteurl', 'https://example.com' );

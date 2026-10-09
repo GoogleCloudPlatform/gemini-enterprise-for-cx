@@ -55,3 +55,4 @@ tests_add_filter( 'muplugins_loaded', static function () {
 bootstrap_it();
 
 \WC_Install::create_tables();
+\WC_Install::create_roles();

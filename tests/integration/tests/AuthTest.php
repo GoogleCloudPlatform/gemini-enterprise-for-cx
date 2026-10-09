@@ -28,6 +28,8 @@ class AuthTest extends TestCase {
 
     public function set_up(): void {
         parent::set_up();
+        $_SERVER['SCRIPT_FILENAME']    = ABSPATH . 'index.php';
+        $_SERVER['SCRIPT_NAME']        = '/index.php';
         $_SERVER['REQUEST_URI']        = '/wp-json/wc/store/v1/cart';
         $this->auth                    = new Auth();
         $this->unknown_issuer_reports = [];

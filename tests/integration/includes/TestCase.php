@@ -77,11 +77,6 @@ abstract class TestCase extends PolyfilledTestCase {
 		$this->cookies                = [];
 
 
-		$_SERVER['SCRIPT_FILENAME'] = ABSPATH . 'index.php';
-		$_SERVER['SCRIPT_NAME']     = '/index.php';
-
-		$_REQUEST = &$_POST;
-
 		$this->set_permalink_structure( '/%postname%/' );
 
 		Auth::reset_cart_token_state();
@@ -101,10 +96,6 @@ abstract class TestCase extends PolyfilledTestCase {
 
 		add_filter( 'pre_http_request', [ $this, 'mock_http_request_handler' ], 10, 3 );
 		add_filter( 'woocommerce_set_cookie_enabled', [ $this, 'capture_wc_cookies' ], 10, 5 );
-
-		$GLOBALS['wp_scripts'] = new WP_Scripts();
-		$GLOBALS['wp_styles']  = new WP_Styles();
-		\WC_Frontend_Scripts::load_scripts();
 
 		add_filter( 'status_header', [ $this, 'record_status_header' ], 10, 2 );
 		add_filter( 'wp_redirect', [ $this, 'catch_redirect' ], 1, 2 );

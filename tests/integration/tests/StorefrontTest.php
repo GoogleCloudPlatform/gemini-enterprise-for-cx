@@ -23,6 +23,9 @@ class StorefrontTest extends TestCase {
 
 	public function set_up(): void {
 		parent::set_up();
+		$GLOBALS['wp_scripts'] = new WP_Scripts();
+		$GLOBALS['wp_styles']  = new WP_Styles();
+		\WC_Frontend_Scripts::load_scripts();
 	}
 
     public function test_storefront_never_renders_customer_jwt_or_wp_nonce_in_html(): void {

@@ -33,6 +33,8 @@ class RestApiTest extends TestCase {
 
 	public function set_up(): void {
 		parent::set_up();
+		$_SERVER['SCRIPT_FILENAME'] = ABSPATH . 'index.php';
+		$_SERVER['SCRIPT_NAME']     = '/index.php';
 		wp_set_current_user( 0 );
 	}
 
