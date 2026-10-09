@@ -12,6 +12,18 @@ const THEME = process.env.GECX_THEME || '';
 
 test.describe(THEME || 'active theme', () => {
 	test.beforeAll(async ({ requestUtils }) => {
+		try {
+			await requestUtils.rest({
+				path: '/gecx/v1/link-agent',
+				method: 'POST',
+				data: {
+					agent_name: 'projects/123/locations/global/agents/e2e',
+				},
+			});
+		} catch {
+			// Already linked.
+		}
+
 		if (THEME) {
 			await requestUtils.activateTheme(THEME);
 			// Assign main menu to theme locations if available

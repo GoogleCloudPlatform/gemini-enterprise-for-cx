@@ -32,12 +32,43 @@ test.describe('Storefront', () => {
 		}
 	});
 
-	test('REST API protected endpoints reject unauthenticated requests', async ({ request }) => {
-		const pubKeyRes = await request.get('/wp-json/gecx/v1/public-key');
-		expect([401, 403]).toContain(pubKeyRes.status());
+	test('REST API protected endpoints reject unauthenticated requests', async ({ playwright, baseURL }) => {
+		const anonRequest = await playwright.request.newContext({ baseURL });
+		try {
+			const pubKeyRes = await anonRequest.get('/wp-json/gecx/v1/public-key');
+			expect([401, 403]).toContain(pubKeyRes.status());
 
-		const linkRes = await request.post('/wp-json/gecx/v1/link-agent');
-		expect([401, 403]).toContain(linkRes.status());
+			const linkRes = await anonRequest.post('/wp-json/gecx/v1/link-agent');
+			expect([401, 403]).toContain(linkRes.status());
+		} finally {
+			await anonRequest.dispose();
+		}
+	});
+
+	test('auth-context route requires same-origin attribute and serves session data', async ({ playwright, baseURL }) => {
+		const anonRequest = await playwright.request.newContext({ baseURL });
+		try {
+			// Bare POST without same-origin headers is forbidden.
+			const bareRes = await anonRequest.post('/wp-json/gecx/v1/auth-context');
+			expect(bareRes.status()).toBe(403);
+
+			// GET is not allowed.
+			const getRes = await anonRequest.get('/wp-json/gecx/v1/auth-context', {
+				headers: { 'Sec-Fetch-Site': 'same-origin' },
+			});
+			expect(getRes.status()).toBe(404);
+
+			// Same-origin POST returns success, nonce, and customer_jwt.
+			const postRes = await anonRequest.post('/wp-json/gecx/v1/auth-context', {
+				headers: { 'Sec-Fetch-Site': 'same-origin' },
+			});
+			expect(postRes.status()).toBe(200);
+			const body = await postRes.json();
+			expect(body.success).toBe(true);
+			expect(typeof body.nonce).toBe('string');
+			expect(typeof body.customer_jwt).toBe('string');
+		} finally {
+			await anonRequest.dispose();
+		}
 	});
 });
-
