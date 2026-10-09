@@ -4,18 +4,16 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * storefront.js placement against static pages modeled on the markup of real
- * themes, in a real browser. The plugin's own CSS and markup are printed by
- * tests/e2e/bin/print-storefront-assets.php, so a change to either is tested
- * as shipped.
+ * themes, in a real browser. The plugin's CSS and markup are loaded from
+ * fixtures so changes are tested against expected styles.
  */
 const { test, expect } = require('@playwright/test');
-const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { stubWidgetBundle, visibleLaunchers, settle } = require('../support/launchers');
+const assets = require('../support/storefront-assets');
 
 const ROOT = path.join(__dirname, '..', '..', '..');
-const assets = JSON.parse(execFileSync('php', [path.join(ROOT, 'tests/e2e/bin/print-storefront-assets.php')]).toString());
 const STOREFRONT_JS = fs.existsSync(path.join(ROOT, 'build/scripts/storefront/index.min.js'))
   ? fs.readFileSync(path.join(ROOT, 'build/scripts/storefront/index.min.js'), 'utf8')
   : fs.readFileSync(path.join(ROOT, 'packages/storefront/src/index.js'), 'utf8');
