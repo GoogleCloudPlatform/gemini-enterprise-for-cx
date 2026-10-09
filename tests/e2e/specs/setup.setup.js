@@ -5,13 +5,28 @@
  *
  * Environment setup for e2e tests running against WordPress + WooCommerce in wp-env.
  */
+process.env.WP_BASE_URL = process.env.WP_BASE_URL || 'http://localhost:8888';
+
 const { test: setup } = require('@wordpress/e2e-test-utils-playwright');
 
 setup('setup test environment', async ({ requestUtils, admin, page }) => {
 	// 1. Authenticate admin user and save storage-state to disk for all test workers.
 	await requestUtils.setupRest();
 
-	// 2. Disable WooCommerce "Coming Soon" mode so storefront is public.
+	// 2. Ensure pretty permalinks are enabled so /wp-json/ and product URLs resolve.
+	try {
+		await admin.visitAdminPage('options-permalink.php');
+		const postnameRadio = page.locator('input[value="/%postname%/"]');
+		if (await postnameRadio.isVisible()) {
+			await postnameRadio.check();
+			await page.locator('#submit').click();
+			await page.waitForLoadState('networkidle');
+		}
+	} catch {
+		// Non-fatal if already configured.
+	}
+
+	// 3. Disable WooCommerce "Coming Soon" mode so storefront is public.
 	try {
 		await requestUtils.rest({
 			path: '/wp/v2/settings',
@@ -22,7 +37,7 @@ setup('setup test environment', async ({ requestUtils, admin, page }) => {
 		// Setting may not be in core settings schema on all versions.
 	}
 
-	// 3. Configure plugin settings via the Admin UI.
+	// 4. Configure plugin settings via the Admin UI.
 	await admin.visitAdminPage('admin.php?page=gecx-settings');
 	const agentInput = page.locator('input[name="gecx_agent_name"]');
 	if (await agentInput.isVisible()) {
@@ -43,7 +58,7 @@ setup('setup test environment', async ({ requestUtils, admin, page }) => {
 		await page.waitForLoadState('networkidle');
 	}
 
-	// 4. Ensure E2E Mug product exists for single product page tests.
+	// 5. Ensure E2E Mug product exists for single product page tests.
 	try {
 		await requestUtils.rest({
 			path: '/wc/v3/products',
@@ -69,7 +84,7 @@ setup('setup test environment', async ({ requestUtils, admin, page }) => {
 		}
 	}
 
-	// 5. Ensure E2E Main menu exists and assign it to available header locations.
+	// 6. Ensure E2E Main menu exists and assign it to available header locations.
 	try {
 		const menus = await requestUtils.rest({ path: '/wp/v2/menus' }).catch(() => []);
 		let menu = Array.isArray(menus) ? menus.find((m) => m.name === 'E2E Main') : null;
@@ -94,4 +109,3 @@ setup('setup test environment', async ({ requestUtils, admin, page }) => {
 		// Block themes use navigation blocks rather than classic menus.
 	}
 });
-

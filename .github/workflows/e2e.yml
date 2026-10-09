@@ -130,6 +130,7 @@ jobs:
 
       - name: Run theme tests
         env:
+          WP_BASE_URL: http://localhost:8888
           GECX_THEME: ${{ matrix.theme }}
         run: npx playwright test --project=themes
 

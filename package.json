@@ -13,9 +13,9 @@
     "lint:js": "oxlint packages/ && eslint packages/",
     "lint": "npm run lint:js",
     "test:e2e": "playwright test --project=placement",
-    "test:e2e:wp-env": "playwright test --project=e2e",
-    "test:e2e:themes": "playwright test --project=themes",
-    "test:e2e:all": "playwright test"
+    "test:e2e:wp-env": "WP_BASE_URL=${WP_BASE_URL:-http://localhost:8888} playwright test --project=e2e",
+    "test:e2e:themes": "WP_BASE_URL=${WP_BASE_URL:-http://localhost:8888} playwright test --project=themes",
+    "test:e2e:all": "WP_BASE_URL=${WP_BASE_URL:-http://localhost:8888} playwright test"
   },
   "wpPlugin": {
     "name": "gecx",

@@ -13,10 +13,12 @@
 const path = require('path');
 const { defineConfig, devices } = require('@playwright/test');
 
-const STORAGE_STATE_PATH = process.env.STORAGE_STATE_PATH ||
+process.env.WP_BASE_URL = process.env.WP_BASE_URL || 'http://localhost:8888';
+process.env.STORAGE_STATE_PATH = process.env.STORAGE_STATE_PATH ||
 	path.join(process.cwd(), 'artifacts/storage-states/admin.json');
 
-const WP_BASE_URL = process.env.WP_BASE_URL || 'http://localhost:8888';
+const STORAGE_STATE_PATH = process.env.STORAGE_STATE_PATH;
+const WP_BASE_URL = process.env.WP_BASE_URL;
 
 module.exports = defineConfig({
 	timeout: 30000,
