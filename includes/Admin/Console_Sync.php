@@ -49,7 +49,7 @@ class Console_Sync {
     /**
      * Option holding the unix timestamp of the last attempted sync.
      */
-    private const SYNC_THROTTLE_OPTION = 'gecx_sync_last_attempt';
+    public const SYNC_THROTTLE_OPTION = 'gecx_sync_last_attempt';
 
     /**
      * Whether notices raised by a sync should be persisted for a later page
@@ -361,6 +361,19 @@ class Console_Sync {
     }
 
     /**
+     * Stamp the sync throttle window so subsequent page loads do not sync immediately.
+     *
+     * @param int|null $timestamp Optional timestamp to record. Defaults to current time.
+     */
+    public static function stamp_sync_window( ?int $timestamp = null ): void {
+        $time  = null !== $timestamp ? $timestamp : time();
+        $stamp = defined( 'GECX_VERSION' ) && '' !== (string) GECX_VERSION
+            ? $time . ':' . (string) GECX_VERSION
+            : (string) $time;
+        update_option( self::SYNC_THROTTLE_OPTION, $stamp, false );
+    }
+
+    /**
      * Release the throttle window so the next page load syncs immediately.
      */
     public static function clear_sync_window(): void {
@@ -444,6 +457,17 @@ class Console_Sync {
      *                response was obtained.
      */
     public function sync_agent_state( string $current_agent, bool $force = false, ?int $user_id = null ): string {
+        /**
+         * Filters whether to reconcile the agent binding with the backend.
+         *
+         * @param bool   $should_sync   Whether to sync with the backend.
+         * @param string $current_agent Currently configured agent resource name.
+         */
+        if ( ! apply_filters( 'gecx_should_sync_agent_state', true, $current_agent ) ) {
+            $this->log_sync( 'skipped via gecx_should_sync_agent_state filter' );
+            return '';
+        }
+
         $auth_complete = (bool) get_option( Admin::AUTH_COMPLETE_OPTION, false );
         if ( ! $auth_complete && $this->has_existing_state( $current_agent ) ) {
             update_option( Admin::AUTH_COMPLETE_OPTION, 1, 'no' );
