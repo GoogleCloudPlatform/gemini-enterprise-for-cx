@@ -151,9 +151,7 @@ class Admin {
      * Pauses the order webhook so no orders are transmitted while deactivated.
      */
     public static function deactivate_plugin(): void {
-        if ( function_exists( 'wp_clear_scheduled_hook' ) ) {
-            wp_clear_scheduled_hook( self::VERSION_SYNC_CRON_HOOK );
-        }
+        wp_clear_scheduled_hook( self::VERSION_SYNC_CRON_HOOK );
         if ( function_exists( 'as_unschedule_all_actions' ) ) {
             as_unschedule_all_actions( self::VERSION_SYNC_CRON_HOOK, [], 'gecx' );
         }
@@ -200,21 +198,17 @@ class Admin {
             return false;
         }
 
-        $prefix = function_exists( 'rest_get_url_prefix' )
-            ? trim( (string) rest_get_url_prefix(), '/' )
-            : 'wp-json';
+        $prefix = trim( (string) rest_get_url_prefix(), '/' );
         if ( 'wp-json' !== $prefix ) {
             return false;
         }
 
-        if ( function_exists( 'rest_url' ) && function_exists( 'home_url' ) ) {
-            $expected_rest_base = untrailingslashit( (string) home_url() ) . '/wp-json';
-            $actual_rest_base   = untrailingslashit( (string) rest_url() );
-            $expected_no_scheme = (string) preg_replace( '#^https?://#i', '', $expected_rest_base );
-            $actual_no_scheme   = (string) preg_replace( '#^https?://#i', '', $actual_rest_base );
-            if ( $expected_no_scheme !== $actual_no_scheme ) {
-                return false;
-            }
+        $expected_rest_base = untrailingslashit( (string) home_url() ) . '/wp-json';
+        $actual_rest_base   = untrailingslashit( (string) rest_url() );
+        $expected_no_scheme = (string) preg_replace( '#^https?://#i', '', $expected_rest_base );
+        $actual_no_scheme   = (string) preg_replace( '#^https?://#i', '', $actual_rest_base );
+        if ( $expected_no_scheme !== $actual_no_scheme ) {
+            return false;
         }
 
         return true;

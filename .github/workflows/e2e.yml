@@ -101,10 +101,38 @@ jobs:
       - name: Build JS assets
         run: npm run build
 
+      - name: Configure wp-env
+        run: |
+          cat << 'EOF' > .wp-env.json
+          {
+            "plugins": [
+              "https://downloads.wordpress.org/plugin/woocommerce.zip",
+              "."
+            ],
+            "themes": [
+              "https://downloads.wordpress.org/theme/storefront.zip",
+              "https://downloads.wordpress.org/theme/astra.zip",
+              "https://downloads.wordpress.org/theme/kadence.zip",
+              "https://downloads.wordpress.org/theme/oceanwp.zip"
+            ],
+            "testsEnvironment": false,
+            "config": {
+              "WP_DEBUG": true,
+              "WP_DEBUG_LOG": true,
+              "WP_DEBUG_DISPLAY": false,
+              "SCRIPT_DEBUG": true
+            }
+          }
+          EOF
+
+      - name: Start wp-env
+        run: npx --yes @wordpress/env start
+
       - name: Run theme tests
         env:
-          THEME: ${{ matrix.theme }}
-        run: bash tests/e2e/bin/run-theme-matrix.sh "${THEME}"
+          WP_BASE_URL: http://localhost:8888
+          GECX_THEME: ${{ matrix.theme }}
+        run: npx playwright test --project=themes
 
       - name: Upload traces
         if: failure()
@@ -116,5 +144,4 @@ jobs:
 
       - name: Stop wp-env
         if: always()
-        working-directory: tests/e2e/env
-        run: npx wp-env stop || true
+        run: npx --yes @wordpress/env stop || true

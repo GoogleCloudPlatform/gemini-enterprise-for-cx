@@ -69,11 +69,11 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         $gecx_agent_name  = get_option( 'gecx_agent_name', '' );
         // Same allowlist as every other outbound call; '' means do not notify.
         $gecx_console_url = class_exists( Auth::class ) ? Auth::get_console_base_url() : '';
-        $gecx_store_url   = function_exists( 'home_url' ) ? home_url() : '';
+        $gecx_store_url   = home_url();
 
         // 1. Delete the order.created webhook if present.
         $gecx_webhook_id   = get_option( 'gecx_webhook_id' );
-        $gecx_wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+        $gecx_wc_available = class_exists( 'WC_Webhook' );
 
         if ( $gecx_wc_available ) {
             if ( ! empty( $gecx_webhook_id ) ) {
@@ -90,16 +90,17 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                 }
             }
 
-            if ( function_exists( 'wc_get_webhooks' ) ) {
+            if ( class_exists( 'WC_Data_Store' ) ) {
                 try {
-                    $gecx_webhooks = wc_get_webhooks( [
-                        'status' => 'any',
+                    $gecx_data_store  = \WC_Data_Store::load( 'webhook' );
+                    $gecx_webhook_ids = $gecx_data_store->search_webhooks( [
                         'search' => 'GECX Agent Order Created',
                         'limit'  => 25,
                     ] );
-                    if ( is_array( $gecx_webhooks ) ) {
-                        foreach ( $gecx_webhooks as $gecx_candidate ) {
-                            if ( $gecx_candidate instanceof \WC_Webhook && 'order.created' === $gecx_candidate->get_topic() && 'GECX Agent Order Created' === $gecx_candidate->get_name() ) {
+                    if ( is_array( $gecx_webhook_ids ) ) {
+                        foreach ( $gecx_webhook_ids as $gecx_candidate_id ) {
+                            $gecx_candidate = new \WC_Webhook( (int) $gecx_candidate_id );
+                            if ( $gecx_candidate->get_id() && 'order.created' === $gecx_candidate->get_topic() && 'GECX Agent Order Created' === $gecx_candidate->get_name() ) {
                                 $gecx_candidate->delete( true );
                             }
                         }
@@ -304,6 +305,9 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                     $gecx_esc_iss_t
                 )
             );
+            if ( function_exists( 'wp_cache_flush' ) ) {
+                wp_cache_flush();
+            }
         }
 
         // Strip gecx_session_id from active WooCommerce customer session rows.

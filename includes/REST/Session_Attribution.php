@@ -65,7 +65,7 @@ class Session_Attribution {
         }
         $cookie_path   = defined( 'COOKIEPATH' ) && '' !== (string) COOKIEPATH ? (string) COOKIEPATH : '/';
         $cookie_domain = defined( 'COOKIE_DOMAIN' ) ? (string) COOKIE_DOMAIN : '';
-        $is_secure     = function_exists( 'is_ssl' ) && is_ssl();
+        $is_secure     = is_ssl();
         setcookie(
             self::SESSION_COOKIE_NAME,
             $session_id,
@@ -171,7 +171,7 @@ class Session_Attribution {
         // when it names a numeric user ID matching the logged-in user, or when
         // the caller is an unauthenticated guest and the token names a guest
         // session key minted by the agent via the Store API.
-        $current_user_key = ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() )
+        $current_user_key = is_user_logged_in()
             ? (string) get_current_user_id()
             : '';
         $wc_customer_key  = method_exists( WC()->session, 'get_customer_id' )
@@ -218,7 +218,7 @@ class Session_Attribution {
         }
 
         $has_active_session = Cart_Session::has_woocommerce_session_cookie()
-            || ( function_exists( 'is_user_logged_in' ) && is_user_logged_in() )
+            || is_user_logged_in()
             || ( method_exists( WC()->session, 'has_session' ) && WC()->session->has_session() )
             || ( isset( WC()->cart ) && method_exists( WC()->cart, 'is_empty' ) && ! WC()->cart->is_empty() );
 
@@ -337,7 +337,7 @@ class Session_Attribution {
             if ( isset( WC()->session ) && method_exists( WC()->session, 'get_customer_id' ) ) {
                 $session_key = (string) WC()->session->get_customer_id();
             }
-            if ( empty( $session_key ) && function_exists( 'get_current_user_id' ) ) {
+            if ( empty( $session_key ) ) {
                 $user_id = get_current_user_id();
                 if ( $user_id > 0 ) {
                     $session_key = (string) $user_id;

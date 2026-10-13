@@ -294,7 +294,6 @@ class Storefront {
         ];
         $blocks_file       = defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ? 'build/scripts/editor-blocks/index.js' : 'build/scripts/editor-blocks/index.min.js';
         $blocks_url        = plugins_url( $blocks_file, $this->plugin_file );
-
         wp_register_script(
             'gecx-editor-blocks',
             $blocks_url,
@@ -566,7 +565,7 @@ class Storefront {
             return;
         }
 
-        $is_block_theme = function_exists( 'wp_is_block_theme' ) && wp_is_block_theme();
+        $is_block_theme = wp_is_block_theme();
 
         /**
          * Filters whether the plugin enqueues wc-cart-fragments so classic
@@ -745,13 +744,13 @@ class Storefront {
      * @param string $location The 'theme_location' argument.
      */
     private function resolve_nav_menu_id( $menu, string $location ): int {
-        if ( ! empty( $menu ) && function_exists( 'wp_get_nav_menu_object' ) ) {
+        if ( ! empty( $menu ) ) {
             $object = wp_get_nav_menu_object( $menu );
             if ( $object && isset( $object->term_id ) ) {
                 return (int) $object->term_id;
             }
         }
-        if ( '' !== $location && function_exists( 'get_nav_menu_locations' ) ) {
+        if ( '' !== $location ) {
             $locations = get_nav_menu_locations();
             if ( isset( $locations[ $location ] ) ) {
                 return (int) $locations[ $location ];
@@ -960,10 +959,7 @@ class Storefront {
      */
     protected function get_active_agent_name(): string {
         $agent_name = (string) get_option( 'gecx_agent_name', '' );
-        if ( function_exists( 'apply_filters' ) ) {
-            return (string) apply_filters( 'gecx_active_agent_name', $agent_name );
-        }
-        return $agent_name;
+        return (string) apply_filters( 'gecx_active_agent_name', $agent_name );
     }
 
     /**
@@ -978,7 +974,7 @@ class Storefront {
      */
     protected function is_amp_request(): bool {
         $is_amp = false;
-        if ( function_exists( 'did_action' ) && did_action( 'parse_query' ) ) {
+        if ( did_action( 'parse_query' ) ) {
             if ( function_exists( 'amp_is_request' ) ) {
                 $is_amp = (bool) amp_is_request();
             } elseif ( function_exists( 'is_amp_endpoint' ) ) {
@@ -996,10 +992,7 @@ class Storefront {
 
     protected function is_widget_enabled(): bool {
         $enabled = (bool) get_option( 'gecx_agent_enabled', 0 );
-        if ( function_exists( 'apply_filters' ) ) {
-            return (bool) apply_filters( 'gecx_is_widget_enabled', $enabled );
-        }
-        return $enabled;
+        return (bool) apply_filters( 'gecx_is_widget_enabled', $enabled );
     }
 
     /**
@@ -1007,10 +1000,7 @@ class Storefront {
      */
     protected function get_token_broker(): string {
         $token_broker = (string) get_option( 'gecx_token_broker_name', '' );
-        if ( function_exists( 'apply_filters' ) ) {
-            return (string) apply_filters( 'gecx_token_broker_name', $token_broker );
-        }
-        return $token_broker;
+        return (string) apply_filters( 'gecx_token_broker_name', $token_broker );
     }
 
     /**
@@ -1038,7 +1028,7 @@ class Storefront {
         // prompts above the add-to-cart button. There the add-to-cart block
         // filter places them instead, and storefront.js covers a block theme
         // still using the classic template.
-        if ( function_exists( 'wp_is_block_theme' ) && wp_is_block_theme() ) {
+        if ( wp_is_block_theme() ) {
             return;
         }
 
@@ -1154,16 +1144,16 @@ class Storefront {
      * [product_page] shortcode or the WooCommerce Single Product block.
      */
     protected function page_embeds_single_product(): bool {
-        if ( ! function_exists( 'is_singular' ) || ! is_singular() ) {
+        if ( ! is_singular() ) {
             return false;
         }
-        $post = function_exists( 'get_post' ) ? get_post() : null;
+        $post = get_post();
         if ( ! $post || ! isset( $post->post_content ) ) {
             return false;
         }
         $content = (string) $post->post_content;
-        return ( function_exists( 'has_shortcode' ) && has_shortcode( $content, 'product_page' ) )
-            || ( function_exists( 'has_block' ) && has_block( 'woocommerce/single-product', $post ) );
+        return has_shortcode( $content, 'product_page' )
+            || has_block( 'woocommerce/single-product', $post );
     }
 
     /**
@@ -1193,11 +1183,7 @@ class Storefront {
             return $product_id;
         }
 
-        if ( function_exists( 'get_queried_object_id' ) ) {
-            return (int) get_queried_object_id();
-        }
-
-        return 0;
+        return (int) get_queried_object_id();
     }
 
     /**
@@ -1256,9 +1242,6 @@ class Storefront {
             $override = ( $product && method_exists( $product, 'get_meta' ) )
                 ? $product->get_meta( '_gecx_suggested_prompts_override', true )
                 : get_post_meta( $product_id, '_gecx_suggested_prompts_override', true );
-            if ( '' === (string) $override && function_exists( 'get_post_meta' ) ) {
-                $override = get_post_meta( $product_id, '_gecx_suggested_prompts_override', true );
-            }
             if ( ! empty( $override ) ) {
                 $prompts_array = array_filter( array_map( 'trim', preg_split( '/\r\n|\r|\n/', (string) $override ) ) );
                 if ( ! empty( $prompts_array ) ) {
@@ -1291,7 +1274,7 @@ class Storefront {
      */
     public function get_floating_container_style( string $position ): string {
         $position   = self::sanitize_floating_position( $position );
-        $is_rtl     = function_exists( 'is_rtl' ) && is_rtl();
+        $is_rtl     = is_rtl();
         $right_side = $is_rtl ? 'left' : 'right';
         $left_side  = $is_rtl ? 'right' : 'left';
 

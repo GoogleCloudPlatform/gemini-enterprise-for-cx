@@ -27,8 +27,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 /**
  * The plugin's settings page under WooCommerce: its menu entry, settings,
- * assets and AJAX actions, and the activation redirect and notice that lead
- * to it.
+ * assets, and the activation redirect and notice that lead to it.
  */
 class Settings_Page {
 
@@ -64,18 +63,14 @@ class Settings_Page {
     public function register_hooks(): void {
         add_action( 'admin_menu', [ $this, 'add_settings_page' ] );
         add_action( 'admin_init', [ $this, 'register_settings' ] );
+        add_action( 'rest_api_init', [ $this, 'register_settings' ] );
+        add_filter( 'rest_pre_update_setting', [ $this, 'handle_rest_update_setting' ], 10, 3 );
         add_action( 'admin_init', [ $this, 'redirect_on_activation' ] );
         add_action( 'admin_notices', [ $this, 'show_activation_notice' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
 
         // Register plugin action link next to Deactivate.
         add_filter( 'plugin_action_links_' . plugin_basename( $this->plugin_file ), [ $this, 'add_plugin_action_links' ] );
-
-        // Register AJAX handlers for saving agent details and embed state.
-        add_action( 'wp_ajax_gecx_save_button_config', [ $this, 'ajax_save_button_config' ] );
-        add_action( 'wp_ajax_gecx_toggle_app_embed', [ $this, 'ajax_toggle_app_embed' ] );
-        add_action( 'wp_ajax_gecx_toggle_pdp_prompts', [ $this, 'ajax_toggle_pdp_prompts' ] );
-        add_action( 'wp_ajax_gecx_dismiss_notice', [ $this, 'ajax_dismiss_notice' ] );
     }
 
     /**
@@ -117,7 +112,7 @@ class Settings_Page {
 
         $admin_asset_file = dirname( $this->plugin_file ) . '/build/scripts/admin/index.min.asset.php';
         $admin_asset      = file_exists( $admin_asset_file ) ? require $admin_asset_file : [
-            'dependencies' => [ 'jquery' ],
+            'dependencies' => [ 'jquery', 'wp-api-fetch' ],
             'version'      => $admin_js_ver,
         ];
         $admin_file       = defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ? 'build/scripts/admin/index.js' : 'build/scripts/admin/index.min.js';
@@ -137,8 +132,6 @@ class Settings_Page {
         );
 
         wp_localize_script( 'gecx-admin-js', 'gecx_admin_params', [
-            'save_nonce'           => wp_create_nonce( 'gecx_save_agent_nonce' ),
-            'dismiss_nonce'        => wp_create_nonce( 'gecx_dismiss_notice_nonce' ),
             'statusActive'         => __( 'Connection Status: Active', 'gemini-enterprise-for-cx' ),
             'statusInactive'       => __( 'Connection Status: Inactive', 'gemini-enterprise-for-cx' ),
             'errorToggleWidget'    => __( 'Failed to update storefront chat widget status. Please try again.', 'gemini-enterprise-for-cx' ),
@@ -213,42 +206,93 @@ class Settings_Page {
     }
 
     /**
-     * Register option setting in WordPress database.
+     * Register option setting in WordPress database and REST API.
      */
     public function register_settings(): void {
         register_setting( 'gecx_agent_group', 'gecx_agent_name', [
+            'type'              => 'string',
             'sanitize_callback' => [ Admin::class, 'sanitize_agent_name' ],
+            'show_in_rest'      => false,
         ] );
         register_setting( 'gecx_agent_group', 'gecx_agent_enabled', [
+            'type'              => 'integer',
             'sanitize_callback' => 'absint',
+            'show_in_rest'      => true,
         ] );
         register_setting( 'gecx_agent_group', 'gecx_pdp_prompts_enabled', [
+            'type'              => 'integer',
             'sanitize_callback' => 'absint',
+            'show_in_rest'      => true,
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_placement', [
+            'type'              => 'string',
             'sanitize_callback' => [ Storefront::class, 'sanitize_button_placement' ],
+            'show_in_rest'      => true,
         ] );
         register_setting( 'gecx_agent_group', 'gecx_nav_menu_target', [
+            'type'              => 'string',
             'sanitize_callback' => [ Storefront::class, 'sanitize_nav_menu_target' ],
+            'show_in_rest'      => true,
         ] );
         register_setting( 'gecx_agent_group', 'gecx_floating_position', [
+            'type'              => 'string',
             'sanitize_callback' => [ Storefront::class, 'sanitize_floating_position' ],
+            'show_in_rest'      => true,
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_display_style', [
+            'type'              => 'string',
             'sanitize_callback' => [ Storefront::class, 'sanitize_button_display_style' ],
+            'show_in_rest'      => true,
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_label', [
+            'type'              => 'string',
             'sanitize_callback' => 'sanitize_text_field',
+            'show_in_rest'      => true,
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_short_label', [
+            'type'              => 'string',
             'sanitize_callback' => 'sanitize_text_field',
+            'show_in_rest'      => true,
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_enable_shimmer', [
+            'type'              => 'integer',
             'sanitize_callback' => 'absint',
+            'show_in_rest'      => true,
         ] );
         register_setting( 'gecx_agent_group', 'gecx_defer_widget_until_interaction', [
+            'type'              => 'integer',
             'sanitize_callback' => 'absint',
+            'show_in_rest'      => true,
         ] );
+        register_setting( 'gecx_agent_group', 'gecx_dismiss_activation_notice', [
+            'type'              => 'boolean',
+            'sanitize_callback' => 'rest_sanitize_boolean',
+            'show_in_rest'      => true,
+        ] );
+    }
+
+    /**
+     * Handle side effects when gecx_agent_enabled is updated via the REST API.
+     *
+     * @param bool   $result Whether the setting update has already been handled.
+     * @param string $name   Setting name.
+     * @param mixed  $value  Updated setting value.
+     * @return bool True if handled, original $result otherwise.
+     */
+    public function handle_rest_update_setting( bool $result, string $name, $value ): bool {
+        if ( 'gecx_agent_enabled' !== $name ) {
+            return $result;
+        }
+
+        $enabled = ! empty( $value ) ? 1 : 0;
+        update_option( 'gecx_agent_enabled', $enabled );
+        if ( 1 === $enabled ) {
+            delete_option( Admin::MERCHANT_DISABLED_OPTION );
+        } else {
+            update_option( Admin::MERCHANT_DISABLED_OPTION, 1, false );
+        }
+        Order_Webhook::set_order_webhook_status( 1 === $enabled ? 'active' : 'paused' );
+        return true;
     }
 
     /**
@@ -276,8 +320,8 @@ class Settings_Page {
         $pdp_prompts_enabled   = (bool) get_option( 'gecx_pdp_prompts_enabled', 1 );
         $button_placement      = (string) get_option( 'gecx_button_placement', 'nav_menu' );
         $nav_menu_target       = Storefront::sanitize_nav_menu_target( get_option( 'gecx_nav_menu_target', '' ) );
-        $nav_menu_locations    = function_exists( 'get_registered_nav_menus' ) ? (array) get_registered_nav_menus() : [];
-        $nav_menus             = function_exists( 'wp_get_nav_menus' ) ? (array) wp_get_nav_menus() : [];
+        $nav_menu_locations    = (array) get_registered_nav_menus();
+        $nav_menus             = (array) wp_get_nav_menus();
         $floating_position     = (string) get_option( 'gecx_floating_position', 'bottom_center' );
         $display_style         = (string) get_option( 'gecx_button_display_style', 'responsive' );
         $button_label          = (string) get_option( 'gecx_button_label', '' );
@@ -694,80 +738,6 @@ class Settings_Page {
     }
 
     /**
-     * AJAX handler to save storefront button placement, size, and styling options.
-     */
-    public function ajax_save_button_config(): void {
-        if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
-            wp_send_json_error( [ 'message' => __( 'Invalid nonce', 'gemini-enterprise-for-cx' ) ], 403 );
-            return;
-        }
-        if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( [ 'message' => __( 'Unauthorized', 'gemini-enterprise-for-cx' ) ], 403 );
-            return;
-        }
-
-        $placement      = Storefront::sanitize_button_placement( isset( $_POST['placement'] ) ? sanitize_text_field( wp_unslash( $_POST['placement'] ) ) : null );
-        $floating_pos   = Storefront::sanitize_floating_position( isset( $_POST['floating_position'] ) ? sanitize_text_field( wp_unslash( $_POST['floating_position'] ) ) : null );
-        $display_style  = Storefront::sanitize_button_display_style( isset( $_POST['display_style'] ) ? sanitize_text_field( wp_unslash( $_POST['display_style'] ) ) : null );
-        $label          = isset( $_POST['label'] ) ? sanitize_text_field( wp_unslash( $_POST['label'] ) ) : '';
-        $short_label    = isset( $_POST['short_label'] ) ? sanitize_text_field( wp_unslash( $_POST['short_label'] ) ) : '';
-        $enable_shimmer = isset( $_POST['enable_shimmer'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enable_shimmer'] ) ) ? 1 : 0;
-        $menu_target    = Storefront::sanitize_nav_menu_target( isset( $_POST['nav_menu_target'] ) ? sanitize_text_field( wp_unslash( $_POST['nav_menu_target'] ) ) : '' );
-
-        update_option( 'gecx_button_placement', $placement );
-        update_option( 'gecx_floating_position', $floating_pos );
-        update_option( 'gecx_button_display_style', $display_style );
-        update_option( 'gecx_button_label', $label );
-        update_option( 'gecx_button_short_label', $short_label );
-        update_option( 'gecx_button_enable_shimmer', $enable_shimmer );
-        update_option( 'gecx_nav_menu_target', $menu_target );
-
-        wp_send_json_success();
-    }
-
-    /**
-     * AJAX handler to toggle the storefront chat widget embed state.
-     */
-    public function ajax_toggle_app_embed(): void {
-        if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
-            wp_send_json_error( [ 'message' => __( 'Invalid nonce', 'gemini-enterprise-for-cx' ) ], 403 );
-            return;
-        }
-        if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( [ 'message' => __( 'Unauthorized', 'gemini-enterprise-for-cx' ) ], 403 );
-            return;
-        }
-
-        $enabled = isset( $_POST['enabled'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enabled'] ) ) ? 1 : 0;
-        update_option( 'gecx_agent_enabled', $enabled );
-        if ( 1 === $enabled ) {
-            delete_option( Admin::MERCHANT_DISABLED_OPTION );
-        } else {
-            update_option( Admin::MERCHANT_DISABLED_OPTION, 1, false );
-        }
-        Order_Webhook::set_order_webhook_status( 1 === $enabled ? 'active' : 'paused' );
-        wp_send_json_success( [ 'enabled' => $enabled ] );
-    }
-
-    /**
-     * AJAX handler to toggle the suggested PDP prompts state.
-     */
-    public function ajax_toggle_pdp_prompts(): void {
-        if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
-            wp_send_json_error( [ 'message' => __( 'Invalid nonce', 'gemini-enterprise-for-cx' ) ], 403 );
-            return;
-        }
-        if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( [ 'message' => __( 'Unauthorized', 'gemini-enterprise-for-cx' ) ], 403 );
-            return;
-        }
-
-        $enabled = isset( $_POST['enabled'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enabled'] ) ) ? 1 : 0;
-        update_option( 'gecx_pdp_prompts_enabled', $enabled );
-        wp_send_json_success( [ 'enabled' => $enabled ] );
-    }
-
-    /**
      * Show site-wide admin notice if plugin is activated but setup is incomplete.
      */
     public function show_activation_notice(): void {
@@ -792,7 +762,8 @@ class Settings_Page {
                 return;
             }
         }
-        if ( ! empty( $this->settings_page_hook ) && isset( $GLOBALS['hook_suffix'] ) && $GLOBALS['hook_suffix'] === $this->settings_page_hook ) {
+        global $hook_suffix;
+        if ( ! empty( $this->settings_page_hook ) && isset( $hook_suffix ) && $hook_suffix === $this->settings_page_hook ) {
             return;
         }
 
@@ -810,21 +781,5 @@ class Settings_Page {
             </p>
         </div>
         <?php
-    }
-
-    /**
-     * AJAX handler to dismiss the activation notice.
-     */
-    public function ajax_dismiss_notice(): void {
-        if ( false === check_ajax_referer( 'gecx_dismiss_notice_nonce', 'nonce', false ) ) {
-            wp_send_json_error( [ 'message' => __( 'Invalid nonce', 'gemini-enterprise-for-cx' ) ], 403 );
-            return;
-        }
-        if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( [ 'message' => __( 'Unauthorized', 'gemini-enterprise-for-cx' ) ], 403 );
-            return;
-        }
-        update_option( 'gecx_dismiss_activation_notice', true );
-        wp_send_json_success();
     }
 }

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit
+    bootstrap="tests/integration/bootstrap.php"
+    backupGlobals="false"
+    colors="true"
+    processIsolation="false"
+    stopOnFailure="false">
+    <php>
+        <const name="WP_TESTS_MULTISITE" value="1" />
+    </php>
+    <testsuites>
+        <testsuite name="Gemini Enterprise for CX Multisite Integration Tests">
+            <directory suffix="Test.php">./tests/integration/tests</directory>
+        </testsuite>
+    </testsuites>
+    <groups>
+        <exclude>
+            <group>ms-excluded</group>
+        </exclude>
+    </groups>
+    <coverage>
+        <include>
+            <directory suffix=".php">./includes</directory>
+        </include>
+    </coverage>
+</phpunit>
+

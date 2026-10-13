@@ -16,6 +16,8 @@ declare(strict_types=1);
 
 namespace Google\Gemini_Enterprise_For_CX\REST;
 
+use Google\Gemini_Enterprise_For_CX\Admin;
+use Google\Gemini_Enterprise_For_CX\Admin\Console_Sync;
 use Google\Gemini_Enterprise_For_CX\Auth;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -160,6 +162,11 @@ class Console_API {
         // An explicit link ends the merchant's earlier unlink: from here on
         // SyncState reconciles this binding again.
         delete_option( Auth::MERCHANT_UNLINKED_OPTION );
+        delete_option( Admin::STORE_AUTH_INVALID_OPTION );
+        Console_Sync::stamp_sync_window();
+        if ( defined( 'GECX_VERSION' ) && '' !== (string) GECX_VERSION ) {
+            update_option( Admin::PLUGIN_VERSION_OPTION, (string) GECX_VERSION, false );
+        }
 
         // A widget the merchant switched off stays off until they switch it
         // back on, and so does the order webhook.
@@ -216,8 +223,7 @@ class Console_API {
             return new \WP_Error( 'rest_forbidden', __( 'Invalid or missing nonce.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
 
-        if ( ! function_exists( 'current_user_can' ) ||
-             ( ! current_user_can( 'manage_woocommerce' ) && ! current_user_can( 'manage_options' ) ) ) {
+        if ( ! current_user_can( 'manage_woocommerce' ) && ! current_user_can( 'manage_options' ) ) {
             return new \WP_Error( 'rest_forbidden', __( 'Unauthorized.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
 
@@ -269,7 +275,7 @@ class Console_API {
      * WordPress does. A request that cannot name a route yet is left to
      * WooCommerce's own answer rather than being granted one.
      */
-    public function enable_wc_auth_for_custom_endpoints( bool $is_rest_api ): bool {
+    public function enable_wc_auth_for_custom_endpoints( bool $is_rest_api, $request = null ): bool {
         if ( $is_rest_api ) {
             // WooCommerce already answers true for its own /wc/ routes, which
             // are never in WC_AUTHENTICATED_ROUTES. Nothing was widened by this
@@ -281,7 +287,7 @@ class Console_API {
             self::$wc_auth_verified_for_dispatch = false;
             return true;
         }
-        if ( Auth::is_request_to_route( self::WC_AUTHENTICATED_ROUTES ) ) {
+        if ( Auth::is_request_to_route( self::WC_AUTHENTICATED_ROUTES, $request ) ) {
             self::$wc_auth_widened_by_gecx       = true;
             self::$wc_auth_verified_for_dispatch = false;
             return true;

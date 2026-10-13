@@ -9,25 +9,32 @@
  * @package GECX
  */
 
-require_once __DIR__ . '/bootstrap.php';
+declare(strict_types=1);
+
+namespace Google\Gemini_Enterprise_For_CX\Tests\Integration;
 
 use Google\Gemini_Enterprise_For_CX\Storefront;
+use WP_Block_Type;
+use WP_Block_Type_Registry;
 
-class StorefrontTest extends GECX_TestCase {
+class StorefrontTest extends TestCase {
 
-    protected function setUp(): void {
-        parent::setUp();
-        $GLOBALS['gecx_test_is_product']        = false;
-        $GLOBALS['gecx_test_the_id']            = 0;
-        $GLOBALS['gecx_test_queried_object_id'] = 0;
-    }
+	public function set_up(): void {
+		parent::set_up();
+		wp_scripts()->remove( [ 'gecx-widget-script', 'gecx-storefront-js', 'gecx-editor-blocks' ] );
+		wp_scripts()->queue = [];
+		wp_styles()->remove( 'gecx-widget-style' );
+		wp_styles()->queue = [];
+		\WC_Frontend_Scripts::load_scripts();
+	}
 
     public function test_storefront_never_renders_customer_jwt_or_wp_nonce_in_html(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 77, 'buyer@shop.test' );
+        $user_id = $this->factory()->user->create();
+        wp_set_current_user( $user_id );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
         ob_start();
         $storefront->inject_chat_widget();
@@ -39,11 +46,11 @@ class StorefrontTest extends GECX_TestCase {
     }
 
     public function test_storefront_omits_customer_jwt_and_wp_nonce_for_guests(): void {
-        $GLOBALS['gecx_test_current_user'] = null;
+        wp_set_current_user( 0 );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
         ob_start();
         $storefront->inject_chat_widget();
@@ -63,7 +70,7 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
         ob_start();
         $storefront->inject_chat_widget();
@@ -73,29 +80,35 @@ class StorefrontTest extends GECX_TestCase {
     public function test_storefront_passes_rest_root_to_widget(): void {
         $html = $this->render_widget_html();
 
-        $this->assertStringContainsString( 'rest-url="https://example.com/wp-json/"', $html );
+        $this->assertStringContainsString( 'rest-url="' . esc_attr( rest_url() ) . '"', $html );
     }
 
     public function test_storefront_rest_url_follows_a_renamed_rest_prefix(): void {
-        $GLOBALS['gecx_test_rest_url_prefix'] = 'api';
+        add_filter( 'rest_url_prefix', static function (): string {
+            return 'api';
+        } );
 
         $html = $this->render_widget_html();
 
-        $this->assertStringContainsString( 'rest-url="https://example.com/api/"', $html );
+        $this->assertStringContainsString( 'rest-url="' . esc_attr( rest_url() ) . '"', $html );
+        $this->assertStringContainsString( '/api/', $html );
     }
 
     public function test_storefront_rest_url_follows_plain_permalinks(): void {
-        $GLOBALS['gecx_test_rest_plain_permalinks'] = true;
+        update_option( 'permalink_structure', '' );
 
         $html = $this->render_widget_html();
 
         // On plain permalinks /wp-json/ does not resolve, so the widget must be
         // told to use the query-string form instead of assuming a path prefix.
-        $this->assertStringContainsString( 'rest-url="https://example.com/?rest_route=/"', $html );
+        $this->assertStringContainsString( 'rest-url="' . esc_attr( rest_url() ) . '"', $html );
+        $this->assertStringContainsString( '?rest_route=/', $html );
     }
 
     public function test_storefront_rest_url_follows_a_subdirectory_install(): void {
-        $GLOBALS['gecx_test_home_url'] = 'https://example.com/shop';
+        add_filter( 'home_url', static function ( $url, $path ) {
+            return 'https://example.com/shop' . ( '' !== $path ? '/' . ltrim( $path, '/' ) : '' );
+        }, 10, 2 );
 
         $html = $this->render_widget_html();
 
@@ -107,7 +120,7 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_button_placement', 'nav_menu' );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $args = (object) [ 'theme_location' => 'primary' ];
         $items = '<li class="menu-item">Home</li>';
         $result = $storefront->inject_nav_menu_agent_button( $items, $args );
@@ -121,7 +134,7 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_button_placement', 'nav_menu' );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $items = '<li class="menu-item">Privacy Policy</li>';
 
         // Empty location (e.g. unassigned or default footer menu)
@@ -154,7 +167,7 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_button_placement', 'nav_menu' );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $block = [ 'blockName' => 'core/navigation', 'attrs' => [ 'ariaLabel' => 'Header' ] ];
         $content = '<nav class="wp-block-navigation"><ul class="wp-block-navigation__container"><li>Link</li></ul></nav>';
         $result = $storefront->inject_block_navigation_agent_button( $content, $block );
@@ -168,7 +181,7 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_button_placement', 'nav_menu' );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $block = [ 'blockName' => 'core/navigation', 'attrs' => [ 'ariaLabel' => 'Footer Navigation', 'className' => 'footer-nav' ] ];
         $content = '<nav class="wp-block-navigation"><ul class="wp-block-navigation__container"><li>Footer Link</li></ul></nav>';
         $result = $storefront->inject_block_navigation_agent_button( $content, $block );
@@ -182,7 +195,7 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_button_placement', 'nav_menu' );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $args = (object) [ 'theme_location' => 'primary' ];
         $items_first = '<li class="menu-item">Header Menu</li>';
         $result_first = $storefront->inject_nav_menu_agent_button( $items_first, $args );
@@ -200,7 +213,7 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_button_placement', 'nav_menu' );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $block = [ 'blockName' => 'core/navigation', 'attrs' => [ 'ariaLabel' => 'Header' ] ];
         $content_first = '<nav class="wp-block-navigation"><ul class="wp-block-navigation__container"><li>Header Link</li></ul></nav>';
         $result_first = $storefront->inject_block_navigation_agent_button( $content_first, $block );
@@ -214,13 +227,13 @@ class StorefrontTest extends GECX_TestCase {
     }
 
     public function test_suggested_prompts_injection_on_product_page(): void {
-        $GLOBALS['gecx_test_is_product'] = true;
-        $GLOBALS['gecx_test_the_id']     = 101;
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        $this->go_to( get_permalink( $product_id ) );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_pdp_prompts_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
         ob_start();
         $storefront->inject_suggested_prompts();
@@ -231,13 +244,13 @@ class StorefrontTest extends GECX_TestCase {
     }
 
     public function test_suggested_prompts_block_injection(): void {
-        $GLOBALS['gecx_test_is_product'] = true;
-        $GLOBALS['gecx_test_the_id']     = 101;
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        $this->go_to( get_permalink( $product_id ) );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_pdp_prompts_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $block_html = '<div class="wp-block-woocommerce-add-to-cart-form"><button>Add to Cart</button></div>';
 
         $output = $storefront->inject_block_suggested_prompts( $block_html, [ 'blockName' => 'woocommerce/add-to-cart-form' ] );
@@ -247,13 +260,13 @@ class StorefrontTest extends GECX_TestCase {
     }
 
     public function test_suggested_prompts_duplicate_prevention(): void {
-        $GLOBALS['gecx_test_is_product'] = true;
-        $GLOBALS['gecx_test_the_id']     = 101;
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        $this->go_to( get_permalink( $product_id ) );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_pdp_prompts_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
         ob_start();
         $storefront->inject_suggested_prompts();
@@ -273,14 +286,12 @@ class StorefrontTest extends GECX_TestCase {
     }
 
     public function test_suggested_prompts_shortcode_rendering(): void {
-        $GLOBALS['gecx_test_is_product'] = false;
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $GLOBALS['gecx_test_products'][101] = new WC_Product( 101 );
-
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
-        $html       = $storefront->render_suggested_prompts_shortcode( [ 'id' => 101 ] );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
+        $html       = $storefront->render_suggested_prompts_shortcode( [ 'id' => $product_id ] );
 
         $this->assertStringContainsString( '<gecx-suggested-prompts', $html );
     }
@@ -289,23 +300,23 @@ class StorefrontTest extends GECX_TestCase {
      * @dataProvider hidden_product_cases
      */
     public function test_prompts_for_a_named_product_the_visitor_cannot_see_are_not_shown( string $status, bool $password ): void {
-        $GLOBALS['gecx_test_is_product'] = false;
-        $storefront                      = $this->activate_widget( 'manual' );
-        $product                         = new WC_Product( 404 );
-        $product->update_meta_data( '_gecx_suggested_prompts_override', 'Secret launch question?' );
-        $GLOBALS['gecx_test_products'][404]          = $product;
-        $GLOBALS['gecx_test_post_statuses'][404]     = $status;
-        $GLOBALS['gecx_test_password_required'][404] = $password;
+        $storefront = $this->activate_widget( 'manual' );
+        $product_id = $this->factory()->post->create( [
+            'post_type'     => 'product',
+            'post_status'   => $status,
+            'post_password' => $password ? 'secret' : '',
+        ] );
+        update_post_meta( $product_id, '_gecx_suggested_prompts_override', 'Secret launch question?' );
 
-        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode( [ 'id' => 404 ] ) );
-        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode( [ 'product_id' => 404 ] ) );
-        $this->assertSame( '', $storefront->render_suggested_prompts_block( [ 'productId' => 404 ] ) );
-        $this->assertSame( '', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => 404 ] ] ) );
+        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode( [ 'id' => $product_id ] ) );
+        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode( [ 'product_id' => $product_id ] ) );
+        $this->assertSame( '', $storefront->render_suggested_prompts_block( [ 'productId' => $product_id ] ) );
+        $this->assertSame( '', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => $product_id ] ] ) );
 
         // Someone who can read the product, such as the admin previewing the
         // page, still sees its prompts.
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
-        $this->assertStringContainsString( 'Secret launch question?', $storefront->render_suggested_prompts_shortcode( [ 'id' => 404 ] ) );
+        wp_set_current_user( 1 );
+        $this->assertStringContainsString( 'Secret launch question?', $storefront->render_suggested_prompts_shortcode( [ 'id' => $product_id ] ) );
     }
 
     public static function hidden_product_cases(): array {
@@ -318,21 +329,21 @@ class StorefrontTest extends GECX_TestCase {
     }
 
     public function test_prompts_for_a_named_post_that_is_not_a_product_are_not_shown(): void {
-        $GLOBALS['gecx_test_is_product'] = false;
-        $GLOBALS['gecx_test_post_meta'][77]['_gecx_suggested_prompts_override'] = 'Not a product?';
+        $post_id    = $this->factory()->post->create( [ 'post_type' => 'post' ] );
+        update_post_meta( $post_id, '_gecx_suggested_prompts_override', 'Not a product?' );
         $storefront = $this->activate_widget( 'manual' );
 
-        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode( [ 'id' => 77 ] ) );
+        $this->assertSame( '', $storefront->render_suggested_prompts_shortcode( [ 'id' => $post_id ] ) );
     }
 
     public function test_suggested_prompts_shortcode_marks_injected_and_prevents_auto_injection(): void {
-        $GLOBALS['gecx_test_is_product'] = true;
-        $GLOBALS['gecx_test_the_id']     = 101;
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        $this->go_to( get_permalink( $product_id ) );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_pdp_prompts_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $shortcode_html = $storefront->render_suggested_prompts_shortcode();
         $this->assertStringContainsString( '<gecx-suggested-prompts', $shortcode_html );
 
@@ -349,40 +360,42 @@ class StorefrontTest extends GECX_TestCase {
     }
 
     public function test_suggested_prompts_with_post_meta_override(): void {
-        $GLOBALS['gecx_test_is_product'] = true;
-        $GLOBALS['gecx_test_the_id']     = 101;
-        $GLOBALS['gecx_test_post_meta'][101]['_gecx_suggested_prompts_override'] = "Is it waterproof?\nWhat sizes are available?";
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        update_post_meta( $product_id, '_gecx_suggested_prompts_override', "Is it waterproof?\nWhat sizes are available?" );
+        $this->go_to( get_permalink( $product_id ) );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
-        $html       = $storefront->get_suggested_prompts_html( 101 );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
+        $html       = $storefront->get_suggested_prompts_html( $product_id );
 
         $this->assertStringContainsString( 'static-prompts="[&quot;Is it waterproof?&quot;,&quot;What sizes are available?&quot;]"', $html );
     }
 
     public function test_suggested_prompts_resolves_queried_object_id_outside_loop(): void {
-        $GLOBALS['gecx_test_is_product']          = true;
-        $GLOBALS['gecx_test_the_id']              = 0;
-        $GLOBALS['gecx_test_queried_object_id']   = 202;
-        $GLOBALS['gecx_test_post_meta'][202]['_gecx_suggested_prompts_override'] = "Custom question outside loop?";
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        update_post_meta( $product_id, '_gecx_suggested_prompts_override', 'Custom question outside loop?' );
+        $this->go_to( get_permalink( $product_id ) );
+        global $post;
+        $post = null;
+
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $html       = $storefront->get_suggested_prompts_html();
 
         $this->assertStringContainsString( 'static-prompts="[&quot;Custom question outside loop?&quot;]"', $html );
     }
 
     public function test_suggested_prompts_block_injection_ignores_empty_content(): void {
-        $GLOBALS['gecx_test_is_product'] = true;
-        $GLOBALS['gecx_test_the_id']     = 101;
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        $this->go_to( get_permalink( $product_id ) );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_pdp_prompts_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
         // Empty block content should return empty unmodified and not mark injected
         $empty_output = $storefront->inject_block_suggested_prompts( '   ' );
@@ -395,13 +408,13 @@ class StorefrontTest extends GECX_TestCase {
     }
 
     public function test_suggested_prompts_shortcode_works_when_auto_inject_disabled(): void {
-        $GLOBALS['gecx_test_is_product'] = true;
-        $GLOBALS['gecx_test_the_id']     = 101;
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        $this->go_to( get_permalink( $product_id ) );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_pdp_prompts_enabled', 0 ); // Auto-injection disabled
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $html       = $storefront->render_suggested_prompts_shortcode();
 
         $this->assertStringContainsString( '<gecx-suggested-prompts', $html );
@@ -411,11 +424,11 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $storefront->enqueue_storefront_assets();
 
-        $this->assertTrue( in_array( 'gecx-widget-style', $GLOBALS['gecx_test_enqueued_styles'], true ) );
-        $this->assertTrue( in_array( 'gecx-widget-script', $GLOBALS['gecx_test_enqueued_scripts'], true ) );
+        $this->assertTrue( wp_style_is( 'gecx-widget-style', 'enqueued' ) );
+        $this->assertTrue( wp_script_is( 'gecx-widget-script', 'enqueued' ) );
     }
 
     /**
@@ -427,10 +440,11 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        wp_scripts()->remove( 'gecx-storefront-js' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $storefront->enqueue_storefront_assets();
 
-        return (array) ( $GLOBALS['gecx_test_localized_scripts']['gecx-storefront-js']['gecxStorefrontConfig'] ?? [] );
+        return $this->get_localized_script( 'gecx-storefront-js', 'gecxStorefrontConfig' );
     }
 
     public function test_storefront_config_carries_the_store_api_cart_url(): void {
@@ -439,17 +453,19 @@ class StorefrontTest extends GECX_TestCase {
         // The script used to hardcode /wp-json/wc/store/v1/cart, which 404s on
         // any store that is not at the domain root with the default prefix.
         $this->assertEquals(
-            'https://example.com/wp-json/wc/store/v1/cart',
+            rest_url( 'wc/store/v1/cart' ),
             $config['cartRestUrl']
         );
         $this->assertEquals(
-            'https://example.com/wp-json/gecx/v1/auth-context',
+            rest_url( 'gecx/v1/auth-context' ),
             $config['authContextUrl']
         );
     }
 
     public function test_storefront_cart_url_follows_a_subdirectory_install(): void {
-        $GLOBALS['gecx_test_home_url'] = 'https://example.com/shop';
+        add_filter( 'home_url', static function ( $url, $path ) {
+            return 'https://example.com/shop' . ( '' !== $path ? '/' . ltrim( $path, '/' ) : '' );
+        }, 10, 2 );
 
         $config = $this->localized_storefront_config();
 
@@ -464,18 +480,22 @@ class StorefrontTest extends GECX_TestCase {
     }
 
     public function test_storefront_cart_url_follows_a_renamed_rest_prefix(): void {
-        $GLOBALS['gecx_test_rest_url_prefix'] = 'api';
+        add_filter( 'rest_url_prefix', static function (): string {
+            return 'api';
+        } );
 
         $config = $this->localized_storefront_config();
 
         $this->assertEquals(
-            'https://example.com/api/wc/store/v1/cart',
+            rest_url( 'wc/store/v1/cart' ),
             $config['cartRestUrl']
         );
+        $this->assertStringContainsString( '/api/wc/store/v1/cart', $config['cartRestUrl'] );
         $this->assertEquals(
-            'https://example.com/api/gecx/v1/auth-context',
+            rest_url( 'gecx/v1/auth-context' ),
             $config['authContextUrl']
         );
+        $this->assertStringContainsString( '/api/gecx/v1/auth-context', $config['authContextUrl'] );
     }
 
     public function test_storefront_config_reports_cart_and_checkout_pages(): void {
@@ -484,40 +504,48 @@ class StorefrontTest extends GECX_TestCase {
         // which would interrupt the conversation.
         $this->assertSame( '', $this->localized_storefront_config()['isCartOrCheckout'] );
 
-        $GLOBALS['gecx_test_is_cart'] = true;
+        add_filter( 'woocommerce_is_cart', '__return_true' );
         $this->assertSame( '1', $this->localized_storefront_config()['isCartOrCheckout'] );
+        remove_filter( 'woocommerce_is_cart', '__return_true' );
 
-        $GLOBALS['gecx_test_is_cart']     = false;
-        $GLOBALS['gecx_test_is_checkout'] = true;
+        add_filter( 'woocommerce_is_checkout', '__return_true' );
         $this->assertSame( '1', $this->localized_storefront_config()['isCartOrCheckout'] );
+        remove_filter( 'woocommerce_is_checkout', '__return_true' );
     }
-
 
     public function test_storefront_assets_are_not_enqueued_off_a_page_render(): void {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
-        // wp_enqueue_scripts fires on each of these, and none of them renders a
-        // storefront page.
-        $contexts = [
-            'gecx_test_is_admin',
-            'gecx_test_doing_ajax',
-            'gecx_test_is_feed',
-        ];
-        foreach ( $contexts as $context ) {
-            $GLOBALS['gecx_test_enqueued_styles']  = [];
-            $GLOBALS['gecx_test_enqueued_scripts'] = [];
-            $GLOBALS[ $context ]                   = true;
+        // 1. is_admin
+        set_current_screen( 'dashboard' );
+        wp_scripts()->queue = [];
+        wp_styles()->queue  = [];
+        $storefront->enqueue_storefront_assets();
+        $this->assertFalse( wp_script_is( 'gecx-widget-script', 'enqueued' ) );
+        $this->assertFalse( wp_style_is( 'gecx-widget-style', 'enqueued' ) );
+        set_current_screen( 'front' );
 
-            $storefront->enqueue_storefront_assets();
+        // 2. doing_ajax
+        add_filter( 'wp_doing_ajax', '__return_true' );
+        wp_scripts()->queue = [];
+        wp_styles()->queue  = [];
+        $storefront->enqueue_storefront_assets();
+        $this->assertFalse( wp_script_is( 'gecx-widget-script', 'enqueued' ) );
+        $this->assertFalse( wp_style_is( 'gecx-widget-style', 'enqueued' ) );
+        remove_filter( 'wp_doing_ajax', '__return_true' );
 
-            $GLOBALS[ $context ] = false;
-
-            $this->assertEquals( [], $GLOBALS['gecx_test_enqueued_styles'] );
-            $this->assertEquals( [], $GLOBALS['gecx_test_enqueued_scripts'] );
-        }
+        // 3. is_feed
+        global $wp_query;
+        $wp_query->is_feed  = true;
+        wp_scripts()->queue = [];
+        wp_styles()->queue  = [];
+        $storefront->enqueue_storefront_assets();
+        $this->assertFalse( wp_script_is( 'gecx-widget-script', 'enqueued' ) );
+        $this->assertFalse( wp_style_is( 'gecx-widget-style', 'enqueued' ) );
+        $wp_query->is_feed = false;
     }
 
     public function test_storefront_assets_are_enqueued_when_the_page_request_accepts_json(): void {
@@ -527,22 +555,29 @@ class StorefrontTest extends GECX_TestCase {
         // it must include the scripts that define the launcher.
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
-        $GLOBALS['gecx_test_is_json_request'] = true;
+        $_SERVER['HTTP_ACCEPT'] = 'application/json';
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $storefront->enqueue_storefront_assets();
 
-        $this->assertContains( 'gecx-widget-script', $GLOBALS['gecx_test_enqueued_scripts'] );
-        $this->assertContains( 'gecx-storefront-js', $GLOBALS['gecx_test_enqueued_scripts'] );
-        $this->assertSame( 'gemini-enterprise-for-cx', $GLOBALS['gecx_test_script_translations']['gecx-storefront-js']['domain'] );
-        $this->assertSame( '', $GLOBALS['gecx_test_script_translations']['gecx-storefront-js']['path'] );
+        $this->assertTrue( wp_script_is( 'gecx-widget-script', 'enqueued' ) );
+        $this->assertTrue( wp_script_is( 'gecx-storefront-js', 'enqueued' ) );
+        $this->assertSame( 'gemini-enterprise-for-cx', wp_scripts()->registered['gecx-storefront-js']->textdomain );
+        $this->assertSame( '', wp_scripts()->registered['gecx-storefront-js']->translations_path );
     }
 
     public function test_agent_button_short_label_falls_back_to_a_translated_shop(): void {
         delete_option( 'gecx_button_short_label' );
-        $GLOBALS['gecx_test_translations']['Shop'] = 'Boutique';
+        add_filter(
+            'gettext',
+            static function ( $translation, $text, $domain ) {
+                return 'Shop' === $text && 'gemini-enterprise-for-cx' === $domain ? 'Boutique' : $translation;
+            },
+            10,
+            3
+        );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
         $this->assertStringContainsString( 'short-label="Boutique"', $storefront->get_agent_button_html() );
 
@@ -554,9 +589,16 @@ class StorefrontTest extends GECX_TestCase {
 
     public function test_agent_button_short_label_prefers_the_configured_value(): void {
         update_option( 'gecx_button_short_label', 'Ask us' );
-        $GLOBALS['gecx_test_translations']['Shop'] = 'Boutique';
+        add_filter(
+            'gettext',
+            static function ( $translation, $text, $domain ) {
+                return 'Shop' === $text && 'gemini-enterprise-for-cx' === $domain ? 'Boutique' : $translation;
+            },
+            10,
+            3
+        );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
         $this->assertStringContainsString( 'short-label="Ask us"', $storefront->get_agent_button_html() );
     }
@@ -565,10 +607,10 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $storefront->enqueue_storefront_assets();
 
-        $inline_styles = $GLOBALS['gecx_test_inline_styles']['gecx-widget-style'] ?? '';
+        $inline_styles = $this->get_inline_styles( 'gecx-widget-style' );
         // Menu item versus mobile button is decided in storefront.js from the
         // theme's hamburger, not from breakpoints that only fit some themes.
         $this->assertStringNotContainsString( '@media (max-width: 767.98px) { .main-navigation .gecx-nav-menu-item', $inline_styles );
@@ -588,10 +630,10 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $storefront->enqueue_storefront_assets();
 
-        $inline_styles = $GLOBALS['gecx_test_inline_styles']['gecx-widget-style'] ?? '';
+        $inline_styles = $this->get_inline_styles( 'gecx-widget-style' );
         $this->assertStringContainsString( '.gecx-floating-button-container { transition: transform 0.5s cubic-bezier(0.32, 0.72, 0, 1); }', $inline_styles );
         $this->assertStringContainsString( 'body.gecx-chat-no-transition .gecx-floating-button-container { transition: none !important; }', $inline_styles );
         $this->assertStringContainsString( 'body.gecx-chat-open .gecx-floating-button-container--center-right', $inline_styles );
@@ -609,7 +651,7 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_button_placement', 'floating' );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
         // Default: bottom_center
         update_option( 'gecx_floating_position', 'bottom_center' );
@@ -666,7 +708,8 @@ class StorefrontTest extends GECX_TestCase {
         $this->assertStringContainsString( 'position: fixed; bottom: calc(24px + var(--gecx-floating-offset, 0px) + var(--gecx-floating-extra-offset, 0px) + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%);', $html_unknown );
 
         // RTL locales mirror horizontal placement
-        $GLOBALS['gecx_test_is_rtl'] = true;
+        global $wp_locale;
+        $wp_locale->text_direction = 'rtl';
 
         update_option( 'gecx_floating_position', 'bottom_right' );
         ob_start();
@@ -692,16 +735,16 @@ class StorefrontTest extends GECX_TestCase {
         $html_rtl_center_left = ob_get_clean();
         $this->assertStringContainsString( 'position: fixed; top: 50%; right: 0; transform: translateY(-50%); z-index: 999999;', $html_rtl_center_left );
 
-        $GLOBALS['gecx_test_is_rtl'] = false;
+        $wp_locale->text_direction = 'ltr';
     }
     public function test_widget_stylesheet_is_served_from_the_plugin_directory(): void {
-        $storefront = new StorefrontUrlProbe( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new StorefrontUrlProbe( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
         $urls = $storefront->widget_urls();
 
         $this->assertStringContainsString( 'assets/css/theme.css', $urls['style'] );
         $this->assertStringNotContainsString( 'gstatic.com', $urls['style'] );
-        $this->assertFileExists( dirname( __DIR__ ) . '/assets/css/theme.css' );
+        $this->assertFileExists( dirname( __DIR__, 3 ) . '/assets/css/theme.css' );
     }
 
     public function test_widget_stylesheet_url_remains_filterable(): void {
@@ -712,7 +755,7 @@ class StorefrontTest extends GECX_TestCase {
             }
         );
 
-        $storefront = new StorefrontUrlProbe( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new StorefrontUrlProbe( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
 
         $this->assertSame(
             'https://cdn.example.test/custom-theme.css',
@@ -725,13 +768,13 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_defer_widget_until_interaction', true );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $storefront->enqueue_storefront_assets();
 
-        $this->assertFalse( in_array( 'gecx-widget-script', $GLOBALS['gecx_test_enqueued_scripts'], true ) );
-        $this->assertTrue( in_array( 'gecx-storefront-js', $GLOBALS['gecx_test_enqueued_scripts'], true ) );
+        $this->assertFalse( wp_script_is( 'gecx-widget-script', 'enqueued' ) );
+        $this->assertTrue( wp_script_is( 'gecx-storefront-js', 'enqueued' ) );
 
-        $config = $GLOBALS['gecx_test_localized_scripts']['gecx-storefront-js']['gecxStorefrontConfig'] ?? [];
+        $config = $this->get_localized_script( 'gecx-storefront-js', 'gecxStorefrontConfig' );
         $this->assertSame( '', $config['shouldLoadWidget'] );
         $this->assertStringContainsString( 'woocommerce-chat-widget.js', $config['widgetScriptUrl'] );
     }
@@ -740,13 +783,13 @@ class StorefrontTest extends GECX_TestCase {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $storefront->enqueue_storefront_assets();
 
-        $inline_css = $GLOBALS['gecx_test_inline_styles']['gecx-widget-style'] ?? '';
+        $inline_css = $this->get_inline_styles( 'gecx-widget-style' );
         $this->assertStringContainsString( 'prefers-reduced-motion: reduce', $inline_css );
 
-        $theme_css = (string) file_get_contents( dirname( __DIR__ ) . '/assets/css/theme.css' );
+        $theme_css = (string) file_get_contents( dirname( __DIR__, 3 ) . '/assets/css/theme.css' );
         $this->assertStringContainsString( 'prefers-reduced-motion: reduce', $theme_css );
         $this->assertStringNotContainsString( 'sourceMappingURL', $theme_css );
     }
@@ -757,7 +800,7 @@ class StorefrontTest extends GECX_TestCase {
             $this->markTestSkipped( 'Node.js is not available to test storefront.js runtime.' );
         }
 
-        $script_path = dirname( __DIR__ ) . '/packages/storefront/src/index.js';
+        $script_path = dirname( __DIR__, 3 ) . '/packages/storefront/src/index.js';
         $js_code     = file_get_contents( $script_path );
         $this->assertNotEmpty( $js_code );
 
@@ -832,7 +875,7 @@ JS;
             $this->markTestSkipped( 'Node.js is not available to test storefront.js runtime.' );
         }
 
-        $script_path = dirname( __DIR__ ) . '/packages/storefront/src/index.js';
+        $script_path = dirname( __DIR__, 3 ) . '/packages/storefront/src/index.js';
         $test_runner = <<<'JS'
 const fs = require('fs');
 const vm = require('vm');
@@ -979,19 +1022,20 @@ JS;
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
 
-        ( new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' ) )->enqueue_cart_fragments();
+        ( new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' ) )->enqueue_cart_fragments();
 
-        $this->assertContains( 'wc-cart-fragments', $GLOBALS['gecx_test_enqueued_scripts'] );
+        $this->assertTrue( wp_script_is( 'wc-cart-fragments', 'enqueued' ) );
     }
 
     public function test_cart_fragments_are_not_enqueued_on_block_themes(): void {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
-        $GLOBALS['gecx_test_is_block_theme'] = true;
+        $this->set_block_theme( true );
 
-        ( new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' ) )->enqueue_cart_fragments();
+        ( new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' ) )->enqueue_cart_fragments();
 
-        $this->assertNotContains( 'wc-cart-fragments', $GLOBALS['gecx_test_enqueued_scripts'] );
+        $this->assertFalse( wp_script_is( 'wc-cart-fragments', 'enqueued' ) );
+        $this->set_block_theme( false );
     }
 
     public function test_cart_fragments_enqueue_is_filterable(): void {
@@ -999,21 +1043,21 @@ JS;
         update_option( 'gecx_agent_enabled', 1 );
         add_filter( 'gecx_enqueue_cart_fragments', static function (): bool { return false; } );
 
-        ( new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' ) )->enqueue_cart_fragments();
+        ( new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' ) )->enqueue_cart_fragments();
 
-        $this->assertNotContains( 'wc-cart-fragments', $GLOBALS['gecx_test_enqueued_scripts'] );
+        $this->assertFalse( wp_script_is( 'wc-cart-fragments', 'enqueued' ) );
     }
 
     public function test_cart_fragments_are_not_enqueued_without_a_linked_agent_or_when_unregistered(): void {
         update_option( 'gecx_agent_enabled', 1 );
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         $storefront->enqueue_cart_fragments();
-        $this->assertNotContains( 'wc-cart-fragments', $GLOBALS['gecx_test_enqueued_scripts'] );
+        $this->assertFalse( wp_script_is( 'wc-cart-fragments', 'enqueued' ) );
 
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
-        $GLOBALS['gecx_test_registered_scripts'] = [];
+        wp_deregister_script( 'wc-cart-fragments' );
         $storefront->enqueue_cart_fragments();
-        $this->assertNotContains( 'wc-cart-fragments', $GLOBALS['gecx_test_enqueued_scripts'] );
+        $this->assertFalse( wp_script_is( 'wc-cart-fragments', 'enqueued' ) );
     }
 
     public function test_storefront_config_carries_typed_cart_refresh_settings(): void {
@@ -1166,7 +1210,7 @@ JS;
             '%s %s %s %s',
             escapeshellcmd( $node ),
             escapeshellarg( $temp_runner ),
-            escapeshellarg( dirname( __DIR__ ) . '/packages/storefront/src/index.js' ),
+            escapeshellarg( dirname( __DIR__, 3 ) . '/packages/storefront/src/index.js' ),
             escapeshellarg( (string) wp_json_encode( $scenario ) )
         );
         $output = [];
@@ -1343,7 +1387,7 @@ JS;
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_agent_enabled', 1 );
         update_option( 'gecx_button_placement', $placement );
-        return new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        return new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
     }
 
     public function test_nav_menu_injection_reaches_desktop_and_mobile_menu_locations(): void {
@@ -1375,9 +1419,9 @@ JS;
     }
 
     public function test_nav_menu_target_menu_reaches_page_builder_menus_without_a_location(): void {
-        $storefront                        = $this->activate_widget();
-        $GLOBALS['gecx_test_nav_menus']    = [ (object) [ 'term_id' => 7, 'slug' => 'shop-header', 'name' => 'Shop header' ] ];
-        update_option( 'gecx_nav_menu_target', 'menu:7' );
+        $storefront = $this->activate_widget();
+        $menu_id    = wp_create_nav_menu( 'shop-header' );
+        update_option( 'gecx_nav_menu_target', 'menu:' . $menu_id );
 
         // Elementor's Nav Menu widget passes the menu slug and no location.
         $this->assertStringContainsString( 'gecx-agent-button', $storefront->inject_nav_menu_agent_button( '', (object) [ 'theme_location' => '', 'menu' => 'shop-header' ] ) );
@@ -1385,9 +1429,10 @@ JS;
     }
 
     public function test_nav_menu_target_menu_matches_the_menu_assigned_to_a_location(): void {
-        $storefront                                  = $this->activate_widget();
-        $GLOBALS['gecx_test_nav_menu_locations']     = [ 'primary' => 9 ];
-        update_option( 'gecx_nav_menu_target', 'menu:9' );
+        $storefront = $this->activate_widget();
+        $menu_id    = wp_create_nav_menu( 'primary-nav' );
+        set_theme_mod( 'nav_menu_locations', [ 'primary' => $menu_id ] );
+        update_option( 'gecx_nav_menu_target', 'menu:' . $menu_id );
 
         $this->assertStringContainsString( 'gecx-agent-button', $storefront->inject_nav_menu_agent_button( '', (object) [ 'theme_location' => 'primary' ] ) );
     }
@@ -1469,53 +1514,63 @@ JS;
 
     public function test_agent_button_block_is_server_rendered(): void {
         $storefront = $this->activate_widget( 'manual' );
+        foreach ( [ 'gecx/agent-button', 'gecx/suggested-prompts' ] as $block_name ) {
+            if ( WP_Block_Type_Registry::get_instance()->is_registered( $block_name ) ) {
+                WP_Block_Type_Registry::get_instance()->unregister( $block_name );
+            }
+        }
         $storefront->register_blocks();
 
-        $block = $GLOBALS['gecx_test_block_types']['gecx/agent-button'] ?? null;
-        $this->assertIsArray( $block );
-        $this->assertSame( 'gecx-editor-blocks', $block['editor_script'] );
-        $this->assertSame( [ $storefront, 'render_agent_button_shortcode' ], $block['render_callback'] );
-        $this->assertSame( 'gemini-enterprise-for-cx', $GLOBALS['gecx_test_script_translations']['gecx-editor-blocks']['domain'] );
-        $this->assertSame( '', $GLOBALS['gecx_test_script_translations']['gecx-editor-blocks']['path'] );
+        $block = WP_Block_Type_Registry::get_instance()->get_registered( 'gecx/agent-button' );
+        $this->assertInstanceOf( WP_Block_Type::class, $block );
+        $this->assertSame( 'gecx-editor-blocks', $block->editor_script );
+        $this->assertSame( [ $storefront, 'render_agent_button_shortcode' ], $block->render_callback );
+        $this->assertSame( 'gemini-enterprise-for-cx', wp_scripts()->registered['gecx-editor-blocks']->textdomain );
+        $this->assertSame( '', wp_scripts()->registered['gecx-editor-blocks']->translations_path );
     }
 
     public function test_suggested_prompts_block_is_server_rendered(): void {
         $storefront = $this->activate_widget( 'manual' );
+        foreach ( [ 'gecx/agent-button', 'gecx/suggested-prompts' ] as $block_name ) {
+            if ( WP_Block_Type_Registry::get_instance()->is_registered( $block_name ) ) {
+                WP_Block_Type_Registry::get_instance()->unregister( $block_name );
+            }
+        }
         $storefront->register_blocks();
 
-        $block = $GLOBALS['gecx_test_block_types']['gecx/suggested-prompts'] ?? null;
-        $this->assertIsArray( $block );
-        $this->assertSame( 'gecx-editor-blocks', $block['editor_script'] );
-        $this->assertSame( [ 'postId' ], $block['uses_context'] );
-        $this->assertSame( [ $storefront, 'render_suggested_prompts_block' ], $block['render_callback'] );
+        $block = WP_Block_Type_Registry::get_instance()->get_registered( 'gecx/suggested-prompts' );
+        $this->assertInstanceOf( WP_Block_Type::class, $block );
+        $this->assertSame( 'gecx-editor-blocks', $block->editor_script );
+        $this->assertSame( [ 'postId' ], $block->uses_context );
+        $this->assertSame( [ $storefront, 'render_suggested_prompts_block' ], $block->render_callback );
     }
 
     public function test_suggested_prompts_block_renders_for_the_chosen_or_context_product(): void {
-        $GLOBALS['gecx_test_is_product'] = false;
-        $storefront                      = $this->activate_widget( 'manual' );
+        $storefront = $this->activate_widget( 'manual' );
         update_option( 'gecx_pdp_prompts_enabled', 0 );
 
         // No product ID and no product in context or on the page: nothing.
         $this->assertSame( '', $storefront->render_suggested_prompts_block( [] ) );
 
         // A post that isn't a product in the block context is ignored.
-        $this->assertSame( '', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => 55 ] ] ) );
+        $post_id = $this->factory()->post->create( [ 'post_type' => 'post' ] );
+        $this->assertSame( '', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => $post_id ] ] ) );
 
         // The Product ID setting works anywhere, even with auto prompts off.
-        $GLOBALS['gecx_test_products'][101] = new WC_Product( 101 );
-        $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->render_suggested_prompts_block( [ 'productId' => 101 ] ) );
+        $product_101 = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->render_suggested_prompts_block( [ 'productId' => $product_101 ] ) );
 
         // A product in the block context (Single Product block or template).
-        $GLOBALS['gecx_test_products'][303] = new WC_Product( 303 );
-        $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => 303 ] ] ) );
+        $product_303 = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->render_suggested_prompts_block( [], '', (object) [ 'context' => [ 'postId' => $product_303 ] ] ) );
     }
 
     public function test_nothing_is_output_on_amp_pages(): void {
-        $storefront                  = $this->activate_widget( 'floating' );
-        $GLOBALS['gecx_test_is_amp'] = true;
+        $storefront = $this->activate_widget( 'floating' );
+        add_filter( 'gecx_is_amp_request', '__return_true' );
 
         $storefront->enqueue_storefront_assets();
-        $this->assertNotContains( 'gecx-storefront-js', $GLOBALS['gecx_test_enqueued_scripts'] );
+        $this->assertFalse( wp_script_is( 'gecx-storefront-js', 'enqueued' ) );
 
         ob_start();
         $storefront->inject_chat_widget();
@@ -1524,6 +1579,7 @@ JS;
         $this->assertSame( '', $storefront->render_agent_button_shortcode() );
         update_option( 'gecx_button_placement', 'nav_menu' );
         $this->assertSame( '', $storefront->inject_nav_menu_agent_button( '', (object) [ 'theme_location' => 'primary' ] ) );
+        remove_filter( 'gecx_is_amp_request', '__return_true' );
     }
 
     public function test_launcher_scripts_opt_out_of_js_delay_optimizers(): void {
@@ -1567,9 +1623,9 @@ JS;
         // Themes that switch pages without a reload keep the first page's
         // config, so the markup used for later products must not carry this
         // product's overrides.
-        $GLOBALS['gecx_test_is_product'] = true;
-        $GLOBALS['gecx_test_the_id']     = 101;
-        $GLOBALS['gecx_test_post_meta'][101]['_gecx_suggested_prompts_override'] = 'Is it grain free?';
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        update_post_meta( $product_id, '_gecx_suggested_prompts_override', 'Is it grain free?' );
+        $this->go_to( get_permalink( $product_id ) );
 
         $config = $this->localized_storefront_config();
 
@@ -1583,9 +1639,9 @@ JS;
         // wp_localize_script() decodes entities in top-level strings, which
         // turned &quot; back into " and ended the attribute early.
         update_option( 'gecx_button_label', 'Ask "Woo"' );
-        $GLOBALS['gecx_test_is_product'] = true;
-        $GLOBALS['gecx_test_the_id']     = 101;
-        $GLOBALS['gecx_test_post_meta'][101]['_gecx_suggested_prompts_override'] = 'What does "grain free" mean?';
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        update_post_meta( $product_id, '_gecx_suggested_prompts_override', 'What does "grain free" mean?' );
+        $this->go_to( get_permalink( $product_id ) );
 
         $markup = $this->localized_storefront_config()['markup'];
 
@@ -1594,17 +1650,19 @@ JS;
     }
 
     public function test_password_protected_product_prompts_stay_hidden_until_the_password_is_entered(): void {
-        $GLOBALS['gecx_test_is_product'] = true;
-        $GLOBALS['gecx_test_the_id']     = 101;
-        $GLOBALS['gecx_test_post_meta'][101]['_gecx_suggested_prompts_override'] = 'Is the private-sale blend grain free?';
-        $GLOBALS['gecx_test_password_required'][101] = true;
+        $product_id = $this->factory()->post->create( [
+            'post_type'     => 'product',
+            'post_password' => 'secret_pass',
+        ] );
+        update_post_meta( $product_id, '_gecx_suggested_prompts_override', 'Is the private-sale blend grain free?' );
+        $this->go_to( get_permalink( $product_id ) );
         update_option( 'gecx_pdp_prompts_enabled', 1 );
 
         $config = $this->localized_storefront_config();
         $this->assertArrayNotHasKey( 'productPrompts', $config['markup'] );
         $this->assertStringNotContainsString( 'private-sale', (string) wp_json_encode( $config ) );
 
-        $storefront = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $storefront = new Storefront( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
         ob_start();
         $storefront->inject_suggested_prompts();
         $this->assertSame( '', (string) ob_get_clean() );
@@ -1614,9 +1672,10 @@ JS;
         $this->assertSame( '', $storefront->render_suggested_prompts_block( [] ) );
 
         // Once the shopper has entered the password, the prompts come back.
-        $GLOBALS['gecx_test_password_required'][101] = false;
+        add_filter( 'post_password_required', '__return_false' );
         $this->assertStringContainsString( 'private-sale', $storefront->render_suggested_prompts_shortcode() );
         $this->assertStringContainsString( 'private-sale', $this->localized_storefront_config()['markup']['productPrompts'] );
+        remove_filter( 'post_password_required', '__return_false' );
     }
 
     public function test_config_has_no_product_prompts_markup_off_product_pages(): void {
@@ -1624,10 +1683,12 @@ JS;
     }
 
     public function test_pages_embedding_a_product_count_as_product_pages(): void {
-        $GLOBALS['gecx_test_post'] = (object) [ 'post_content' => 'Intro [product_page id="12"]' ];
+        $post_1 = $this->factory()->post->create( [ 'post_content' => 'Intro [product_page id="12"]' ] );
+        $this->go_to( get_permalink( $post_1 ) );
         $this->assertSame( '1', $this->localized_storefront_config()['isPdp'] );
 
-        $GLOBALS['gecx_test_post'] = (object) [ 'post_content' => '<!-- wp:woocommerce/single-product {"productId":12} /-->' ];
+        $post_2 = $this->factory()->post->create( [ 'post_content' => '<!-- wp:woocommerce/single-product {"productId":12} /-->' ] );
+        $this->go_to( get_permalink( $post_2 ) );
         $this->assertSame( '1', $this->localized_storefront_config()['isPdp'] );
     }
 
@@ -1639,9 +1700,10 @@ JS;
         $this->assertStringContainsString( 'env(safe-area-inset-bottom, 0px)', $style );
     }
     public function test_classic_prompts_hook_is_skipped_on_block_themes(): void {
-        $storefront                           = $this->activate_widget();
-        $GLOBALS['gecx_test_is_product']      = true;
-        $GLOBALS['gecx_test_is_block_theme']  = true;
+        $storefront = $this->activate_widget();
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        $this->go_to( get_permalink( $product_id ) );
+        $this->set_block_theme( true );
 
         ob_start();
         $storefront->inject_suggested_prompts();
@@ -1649,26 +1711,6 @@ JS;
 
         // The add-to-cart block filter still places them.
         $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->inject_block_suggested_prompts( '<div class="wp-block-woocommerce-add-to-cart-form"></div>', [] ) );
-    }
-}
-
-/**
- * Exposes the protected URL resolver so asset origins can be asserted.
- */
-class StorefrontUrlProbe extends Storefront {
-
-    /**
-     * @return array{script: string, style: string}
-     */
-    public function widget_urls(): array {
-        return $this->resolve_widget_urls();
-    }
-}
-
-if ( php_sapi_name() === 'cli' ) {
-    // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-    $argv0 = isset( $_SERVER['argv'][0] ) ? sanitize_text_field( wp_unslash( $_SERVER['argv'][0] ) ) : '';
-    if ( empty( $argv0 ) || basename( $argv0 ) === basename( __FILE__ ) ) {
-        gecx_run_test_class( StorefrontTest::class );
+        $this->set_block_theme( false );
     }
 }

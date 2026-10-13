@@ -6,6 +6,7 @@
 # Tests and development tools
 tests
 phpunit.xml.dist
+phpunit-multisite.xml.dist
 phpcs.xml.dist
 playwright.config.js
 

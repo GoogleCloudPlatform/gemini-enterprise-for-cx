@@ -12,22 +12,38 @@
             "Google\\Gemini_Enterprise_For_CX\\": "includes/"
         }
     },
+    "autoload-dev": {
+        "psr-4": {
+            "Google\\Gemini_Enterprise_For_CX\\Tests\\Integration\\": [
+                "tests/integration/includes",
+                "tests/integration/tests"
+            ]
+        }
+    },
     "require-dev": {
         "phpunit/phpunit": "^9.6",
         "wp-coding-standards/wpcs": "^3.1",
         "phpcompatibility/phpcompatibility-wp": "^2.1",
-        "woocommerce/qit-cli": "^1.3"
+        "woocommerce/qit-cli": "^1.3",
+        "yoast/wp-test-utils": "^1.2",
+        "wp-phpunit/wp-phpunit": "^6.7",
+        "roots/wordpress": "^6.7"
     },
     "config": {
         "allow-plugins": {
-            "dealerdirect/phpcodesniffer-composer-installer": true
+            "dealerdirect/phpcodesniffer-composer-installer": true,
+            "roots/wordpress-core-installer": true
         },
         "platform": {
             "php": "7.4"
         }
     },
+    "extra": {
+        "wordpress-install-dir": "vendor/roots/wordpress"
+    },
     "scripts": {
         "test": "phpunit --configuration phpunit.xml.dist",
+        "test:multisite": "phpunit --configuration phpunit-multisite.xml.dist",
         "lint": "phpcs",
         "lint:all": "phpcs",
         "lint:fix": "phpcbf",

@@ -49,7 +49,7 @@ class Console_Sync {
     /**
      * Option holding the unix timestamp of the last attempted sync.
      */
-    private const SYNC_THROTTLE_OPTION = 'gecx_sync_last_attempt';
+    public const SYNC_THROTTLE_OPTION = 'gecx_sync_last_attempt';
 
     /**
      * Whether notices raised by a sync should be persisted for a later page
@@ -64,7 +64,7 @@ class Console_Sync {
         add_action( 'admin_init', [ $this, 'maybe_sync_on_version_change' ] );
         add_action( Admin::VERSION_SYNC_CRON_HOOK, [ $this, 'run_scheduled_version_sync' ], 10, 1 );
         add_action( 'admin_notices', [ $this, 'show_pending_sync_notices' ] );
-        add_action( 'wp_ajax_gecx_unlink_agent', [ $this, 'ajax_unlink_agent' ] );
+        add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
     }
 
     /**
@@ -125,7 +125,7 @@ class Console_Sync {
             }
         }
 
-        $admin_user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+        $admin_user_id = (int) get_current_user_id();
         if ( $admin_user_id > 0 ) {
             update_option( Admin::VERSION_SYNC_USER_OPTION, $admin_user_id, false );
         }
@@ -140,8 +140,8 @@ class Console_Sync {
         }
 
         $cron_disabled = defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON;
-        if ( ! $cron_disabled && function_exists( 'wp_schedule_single_event' ) ) {
-            if ( ! function_exists( 'wp_next_scheduled' ) || ! wp_next_scheduled( Admin::VERSION_SYNC_CRON_HOOK ) ) {
+        if ( ! $cron_disabled ) {
+            if ( ! wp_next_scheduled( Admin::VERSION_SYNC_CRON_HOOK ) ) {
                 wp_schedule_single_event( time(), Admin::VERSION_SYNC_CRON_HOOK );
             }
             return;
@@ -361,6 +361,19 @@ class Console_Sync {
     }
 
     /**
+     * Stamp the sync throttle window so subsequent page loads do not sync immediately.
+     *
+     * @param int|null $timestamp Optional timestamp to record. Defaults to current time.
+     */
+    public static function stamp_sync_window( ?int $timestamp = null ): void {
+        $time  = null !== $timestamp ? $timestamp : time();
+        $stamp = defined( 'GECX_VERSION' ) && '' !== (string) GECX_VERSION
+            ? $time . ':' . (string) GECX_VERSION
+            : (string) $time;
+        update_option( self::SYNC_THROTTLE_OPTION, $stamp, false );
+    }
+
+    /**
      * Release the throttle window so the next page load syncs immediately.
      */
     public static function clear_sync_window(): void {
@@ -444,6 +457,17 @@ class Console_Sync {
      *                response was obtained.
      */
     public function sync_agent_state( string $current_agent, bool $force = false, ?int $user_id = null ): string {
+        /**
+         * Filters whether to reconcile the agent binding with the backend.
+         *
+         * @param bool   $should_sync   Whether to sync with the backend.
+         * @param string $current_agent Currently configured agent resource name.
+         */
+        if ( ! apply_filters( 'gecx_should_sync_agent_state', true, $current_agent ) ) {
+            $this->log_sync( 'skipped via gecx_should_sync_agent_state filter' );
+            return '';
+        }
+
         $auth_complete = (bool) get_option( Admin::AUTH_COMPLETE_OPTION, false );
         if ( ! $auth_complete && $this->has_existing_state( $current_agent ) ) {
             update_option( Admin::AUTH_COMPLETE_OPTION, 1, 'no' );
@@ -797,36 +821,47 @@ class Console_Sync {
     }
 
     /**
-     * AJAX handler to unlink the agent and reset store status.
+     * Register the REST API route for unlinking the agent.
+     */
+    public function register_rest_routes(): void {
+        register_rest_route(
+            'gecx/v1',
+            '/unlink-agent',
+            [
+                'methods'             => \WP_REST_Server::CREATABLE,
+                'callback'            => [ $this, 'rest_unlink_agent' ],
+                'permission_callback' => static function (): bool {
+                    if ( Auth::is_cart_token_request() ) {
+                        return false;
+                    }
+                    return current_user_can( 'manage_options' );
+                },
+            ]
+        );
+    }
+
+    /**
+     * REST handler to unlink the agent and reset store status.
      *
      * Store authorization and the WooCommerce API keys are kept, so the
      * merchant returns to Step 2 and can link an agent again without
      * re-authorizing. Unlike the automatic unlink in apply_sync_status(), this
      * records the merchant's intent so no later SyncState response can quietly
      * re-link the store.
+     *
+     * @return \WP_REST_Response|\WP_Error
      */
-    public function ajax_unlink_agent(): void {
-        if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
-            wp_send_json_error( [ 'message' => __( 'Invalid nonce', 'gemini-enterprise-for-cx' ) ], 403 );
-            return;
-        }
-        if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( [ 'message' => __( 'Unauthorized', 'gemini-enterprise-for-cx' ) ], 403 );
-            return;
-        }
-
+    public function rest_unlink_agent() {
         $agent_id = (string) get_option( 'gecx_agent_name', '' );
         if ( '' !== $agent_id && ! $this->unlink_agent_remotely( $agent_id ) ) {
-            wp_send_json_error(
-                [
-                    'message' => __(
-                        'The agent could not be disconnected from Google. Nothing was changed. Please try again.',
-                        'gemini-enterprise-for-cx'
-                    ),
-                ],
-                502
+            return new \WP_Error(
+                'gecx_unlink_failed',
+                __(
+                    'The agent could not be disconnected from Google. Nothing was changed. Please try again.',
+                    'gemini-enterprise-for-cx'
+                ),
+                [ 'status' => 502 ]
             );
-            return;
         }
 
         $this->unlink_agent_internal();
@@ -835,6 +870,6 @@ class Console_Sync {
 
         // Re-linking right after an unlink must reconcile immediately.
         self::clear_sync_window();
-        wp_send_json_success();
+        return new \WP_REST_Response( [ 'success' => true ], 200 );
     }
 }
