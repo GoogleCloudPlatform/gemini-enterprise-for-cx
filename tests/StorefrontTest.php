@@ -1650,6 +1650,249 @@ JS;
         // The add-to-cart block filter still places them.
         $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->inject_block_suggested_prompts( '<div class="wp-block-woocommerce-add-to-cart-form"></div>', [] ) );
     }
+
+    /**
+     * Activates the widget on a search results page for $query.
+     *
+     * @param string $query Search query.
+     * @return Storefront
+     */
+    private function activate_search( string $query = 'chicken treats' ): Storefront {
+        $GLOBALS['gecx_test_is_search']    = true;
+        $GLOBALS['gecx_test_search_query'] = $query;
+        return $this->activate_widget();
+    }
+
+    /**
+     * Runs the automatic AI Overview placement and returns its output.
+     *
+     * @param Storefront $storefront Storefront.
+     * @return string Rendered HTML.
+     */
+    private function render_auto_ai_overview( Storefront $storefront ): string {
+        ob_start();
+        $storefront->inject_ai_overview();
+        return (string) ob_get_clean();
+    }
+
+    /**
+     * The registered priority of $callback on $hook, or null.
+     *
+     * @param string $hook     Action name.
+     * @param array  $callback Callback.
+     * @return int|null
+     */
+    private function registered_priority( string $hook, array $callback ): ?int {
+        $priority = null;
+        foreach ( $GLOBALS['gecx_test_action_priorities'][ $hook ] ?? [] as [ $registered, $registered_priority ] ) {
+            if ( $callback === $registered ) {
+                $priority = $registered_priority;
+            }
+        }
+        return $priority;
+    }
+
+    public function test_ai_overview_is_rendered_for_the_search_with_the_agent_config(): void {
+        $html = $this->render_auto_ai_overview( $this->activate_search() );
+
+        $this->assertStringContainsString( '<!-- Start Gemini Enterprise for CX AI Overview -->', $html );
+        $this->assertStringContainsString(
+            '<gecx-ai-overview chat-widget-selector="gecx-woocommerce-chat-widget" agent-name="projects/123/locations/global/agents/agent-1" environment="prod" query="chicken treats"></gecx-ai-overview>',
+            $html
+        );
+        // No token broker is configured, and this is not a Customizer preview.
+        $this->assertStringNotContainsString( 'token-broker', $html );
+        $this->assertStringNotContainsString( 'preview', $html );
+    }
+
+    public function test_ai_overview_passes_the_token_broker_and_customizer_preview(): void {
+        $storefront = $this->activate_search();
+        update_option( 'gecx_token_broker_name', 'projects/123/locations/global/omnichannelTokenBrokers/tb-1' );
+        $GLOBALS['gecx_test_is_customize_preview'] = true;
+
+        $html = $this->render_auto_ai_overview( $storefront );
+
+        $this->assertStringContainsString( ' token-broker="projects/123/locations/global/omnichannelTokenBrokers/tb-1"', $html );
+        $this->assertStringContainsString( ' preview="true"', $html );
+    }
+
+    public function test_ai_overview_query_is_trimmed_and_escaped_once(): void {
+        $html = $this->render_auto_ai_overview( $this->activate_search( '  "><script>alert(1)</script> & co  ' ) );
+
+        $this->assertStringContainsString( ' query="&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt; &amp; co"', $html );
+        $this->assertStringNotContainsString( '<script>', $html );
+        $this->assertStringNotContainsString( '&amp;quot;', $html );
+    }
+
+    public function test_ai_overview_renders_nothing_without_a_search_query(): void {
+        $storefront = $this->activate_widget();
+
+        // Not a search results page, even one that has an s query var.
+        $GLOBALS['gecx_test_search_query'] = 'chicken treats';
+        $this->assertSame( '', $this->render_auto_ai_overview( $storefront ) );
+        $this->assertSame( '', $storefront->render_ai_overview_shortcode() );
+
+        // A search for nothing but spaces.
+        $GLOBALS['gecx_test_is_search']    = true;
+        $GLOBALS['gecx_test_search_query'] = '   ';
+        $this->assertSame( '', $this->render_auto_ai_overview( $storefront ) );
+
+        // Neither attempt used up the page's one overview.
+        $GLOBALS['gecx_test_search_query'] = 'chicken treats';
+        $this->assertStringContainsString( '<gecx-ai-overview', $this->render_auto_ai_overview( $storefront ) );
+    }
+
+    public function test_ai_overview_is_rendered_once_per_request(): void {
+        $storefront = $this->activate_search();
+
+        $this->assertStringContainsString( '<gecx-ai-overview', $this->render_auto_ai_overview( $storefront ) );
+        $this->assertSame( '', $this->render_auto_ai_overview( $storefront ) );
+        $this->assertSame( '', $storefront->render_ai_overview_shortcode() );
+
+        // Placed first, the shortcode or block keeps the automatic placement off the page.
+        $storefront = $this->activate_search();
+        $this->assertStringContainsString( '<gecx-ai-overview', $storefront->render_ai_overview_shortcode() );
+        $this->assertSame( '', $this->render_auto_ai_overview( $storefront ) );
+    }
+
+    public function test_ai_overview_automatic_placement_follows_its_setting_and_the_widget(): void {
+        $storefront = $this->activate_search();
+        update_option( 'gecx_ai_overview_enabled', 0 );
+        $this->assertSame( '', $this->render_auto_ai_overview( $storefront ) );
+
+        // The shortcode and block still work with the automatic placement off.
+        $this->assertStringContainsString( '<gecx-ai-overview', $storefront->render_ai_overview_shortcode() );
+
+        update_option( 'gecx_ai_overview_enabled', 1 );
+        foreach ( [ 'widget off' => [ 'gecx_agent_enabled', 0 ], 'no agent' => [ 'gecx_agent_name', '' ] ] as $case => [ $option, $value ] ) {
+            $storefront = $this->activate_search();
+            update_option( $option, $value );
+            $this->assertSame( '', $this->render_auto_ai_overview( $storefront ), $case );
+            $this->assertSame( '', $storefront->render_ai_overview_shortcode(), $case );
+        }
+    }
+
+    public function test_ai_overview_is_not_rendered_on_amp_pages_feeds_or_admin_screens(): void {
+        $storefront                  = $this->activate_search();
+        $GLOBALS['gecx_test_is_amp'] = true;
+        $this->assertSame( '', $this->render_auto_ai_overview( $storefront ) );
+        $this->assertSame( '', $storefront->render_ai_overview_shortcode() );
+
+        $GLOBALS['gecx_test_is_amp']  = false;
+        $GLOBALS['gecx_test_is_feed'] = true;
+        $this->assertSame( '', $this->render_auto_ai_overview( $storefront ) );
+
+        $GLOBALS['gecx_test_is_feed']  = false;
+        $GLOBALS['gecx_test_is_admin'] = true;
+        $this->assertSame( '', $this->render_auto_ai_overview( $storefront ) );
+        $this->assertSame( '', $storefront->render_ai_overview_shortcode() );
+    }
+
+    public function test_ai_overview_is_hooked_on_init_above_the_product_grid(): void {
+        $storefront = $this->activate_widget();
+
+        // Hooked on init, after a theme's functions.php has added its filters.
+        $this->assertSame( 10, $this->registered_priority( 'init', [ $storefront, 'register_ai_overview_hooks' ] ) );
+        $this->assertNull( $this->registered_priority( 'woocommerce_before_shop_loop', [ $storefront, 'inject_ai_overview' ] ) );
+
+        $storefront->register_ai_overview_hooks();
+
+        // After the toolbars Storefront (9 to 31) and OceanWP (10 to 40) open there.
+        $this->assertSame( 50, $this->registered_priority( 'woocommerce_before_shop_loop', [ $storefront, 'inject_ai_overview' ] ) );
+        $this->assertSame( 10, $this->registered_priority( 'loop_start', [ $storefront, 'inject_ai_overview_before_search_loop' ] ) );
+    }
+
+    public function test_ai_overview_hook_and_priority_are_filterable(): void {
+        add_filter( 'gecx_ai_overview_hook', static function (): string {
+            return 'woocommerce_archive_description';
+        } );
+        add_filter( 'gecx_ai_overview_priority', static function (): int {
+            return 5;
+        } );
+        $storefront = $this->activate_widget();
+
+        $storefront->register_ai_overview_hooks();
+
+        $this->assertSame( 5, $this->registered_priority( 'woocommerce_archive_description', [ $storefront, 'inject_ai_overview' ] ) );
+        $this->assertNull( $this->registered_priority( 'woocommerce_before_shop_loop', [ $storefront, 'inject_ai_overview' ] ) );
+    }
+
+    public function test_ai_overview_attributes_are_filterable(): void {
+        $seen_query = null;
+        add_filter(
+            'gecx_ai_overview_attributes',
+            static function ( array $attrs, string $query ) use ( &$seen_query ): array {
+                $seen_query           = $query;
+                $attrs['show-chips']  = 'false';
+                $attrs['title-text']  = 'Our take';
+                $attrs['auto-fetch']  = true;
+                $attrs['environment'] = null;
+                return $attrs;
+            },
+            10,
+            2
+        );
+
+        $html = $this->render_auto_ai_overview( $this->activate_search() );
+
+        $this->assertSame( 'chicken treats', $seen_query );
+        $this->assertStringContainsString( ' show-chips="false" title-text="Our take" auto-fetch>', $html );
+        $this->assertStringNotContainsString( 'environment=', $html );
+    }
+
+    public function test_ai_overview_search_loop_fallback_only_runs_for_the_main_search_loop_of_classic_themes(): void {
+        $storefront  = $this->activate_search();
+        $main_search = new WP_Query( [ 'is_main_query' => true, 'is_search' => true ] );
+        $fallback    = static function ( $query ) use ( $storefront ): string {
+            ob_start();
+            $storefront->inject_ai_overview_before_search_loop( $query );
+            return (string) ob_get_clean();
+        };
+
+        $this->assertSame( '', $fallback( null ) );
+        // A secondary loop, such as a widget's, on the search results page.
+        $this->assertSame( '', $fallback( new WP_Query( [ 'is_main_query' => false, 'is_search' => true ] ) ) );
+        $this->assertSame( '', $fallback( new WP_Query( [ 'is_main_query' => true, 'is_search' => false ] ) ) );
+
+        // Block templates render before the page's <html>: a block theme's,
+        // or one a classic theme opts into.
+        $GLOBALS['gecx_test_is_block_theme'] = true;
+        $this->assertSame( '', $fallback( $main_search ) );
+        $GLOBALS['gecx_test_is_block_theme'] = false;
+        $GLOBALS['_wp_current_template_content'] = '<!-- wp:query {"query":{"inherit":true}} /-->';
+        try {
+            $this->assertSame( '', $fallback( $main_search ) );
+        } finally {
+            unset( $GLOBALS['_wp_current_template_content'] );
+        }
+
+        // WooCommerce's product archive starts its loop inside the product grid.
+        $GLOBALS['gecx_test_did_actions']['woocommerce_before_shop_loop'] = 1;
+        $this->assertSame( '', $fallback( $main_search ) );
+        unset( $GLOBALS['gecx_test_did_actions']['woocommerce_before_shop_loop'] );
+
+        $this->assertStringContainsString( 'query="chicken treats"', $fallback( $main_search ) );
+    }
+
+    public function test_ai_overview_block_is_server_rendered(): void {
+        $storefront = $this->activate_widget();
+        $storefront->register_blocks();
+
+        $block = $GLOBALS['gecx_test_block_types']['gecx/ai-overview'] ?? null;
+        $this->assertIsArray( $block );
+        $this->assertSame( 'Gemini Enterprise for CX AI Overview', $block['title'] );
+        $this->assertSame( 'gecx-editor-blocks', $block['editor_script'] );
+        $this->assertSame( [ $storefront, 'render_ai_overview_shortcode' ], $block['render_callback'] );
+        $this->assertFalse( $block['supports']['multiple'] );
+    }
+
+    public function test_ai_overview_takes_no_space_until_defined_and_spans_result_grids(): void {
+        $this->activate_widget()->enqueue_storefront_assets();
+
+        $inline_css = $GLOBALS['gecx_test_inline_styles']['gecx-widget-style'] ?? '';
+        $this->assertStringContainsString( 'gecx-ai-overview:not(:defined) { display: none; }', $inline_css );
+        $this->assertStringContainsString( 'gecx-ai-overview { clear: both; flex-basis: 100%; grid-column: 1 / -1; }', $inline_css );
+    }
 }
 
 /**

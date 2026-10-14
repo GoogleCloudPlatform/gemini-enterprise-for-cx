@@ -78,6 +78,10 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_is_product']           = false;
     $GLOBALS['gecx_test_is_cart']              = false;
     $GLOBALS['gecx_test_is_checkout']          = false;
+    // Search results context, read by is_search() and get_search_query().
+    $GLOBALS['gecx_test_is_search']            = false;
+    $GLOBALS['gecx_test_search_query']         = '';
+    $GLOBALS['gecx_test_is_customize_preview'] = false;
     $GLOBALS['gecx_test_is_rtl']               = false;
     $GLOBALS['gecx_test_the_id']               = 101;
     $GLOBALS['gecx_test_queried_object_id']    = 101;
@@ -1272,7 +1276,43 @@ if ( ! function_exists( 'restore_current_blog' ) ) {
 
 if ( ! function_exists( 'is_customize_preview' ) ) {
     function is_customize_preview(): bool {
-        return false;
+        return ! empty( $GLOBALS['gecx_test_is_customize_preview'] );
+    }
+}
+
+if ( ! function_exists( 'is_search' ) ) {
+    function is_search(): bool {
+        return ! empty( $GLOBALS['gecx_test_is_search'] );
+    }
+}
+
+if ( ! function_exists( 'get_search_query' ) ) {
+    function get_search_query( bool $escaped = true ): string {
+        $query = (string) ( $GLOBALS['gecx_test_search_query'] ?? '' );
+        return $escaped ? esc_attr( $query ) : $query;
+    }
+}
+
+if ( ! class_exists( 'WP_Query' ) ) {
+    /**
+     * The query whose loop is starting, as loop_start passes it. Built from
+     * the answers its conditional tags should give.
+     */
+    class WP_Query {
+        /** @var array<string, bool> */
+        private array $flags;
+
+        public function __construct( array $flags = [] ) {
+            $this->flags = $flags;
+        }
+
+        public function is_main_query(): bool {
+            return ! empty( $this->flags['is_main_query'] );
+        }
+
+        public function is_search(): bool {
+            return ! empty( $this->flags['is_search'] );
+        }
     }
 }
 

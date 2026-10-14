@@ -31,7 +31,7 @@ $(function() {
     const $checkbox = $(this);
     const isChecked = $checkbox.is(':checked');
     const isEnabled = isChecked ? '1' : '0';
-    $('#gecx_pdp_prompts_enabled').prop('disabled', !isChecked);
+    $('#gecx_pdp_prompts_enabled, #gecx_ai_overview_enabled').prop('disabled', !isChecked);
     if (typeof gecx_admin_params !== 'undefined') {
       $('#gecx-status-indicator').css('background-color', isChecked ? '#46b450' : '#787c82');
       $('#gecx-status-text').text(isChecked ? gecx_admin_params.statusActive : gecx_admin_params.statusInactive);
@@ -40,7 +40,7 @@ $(function() {
     function revertAgentToggle() {
       const revertedState = !isChecked;
       $checkbox.prop('checked', revertedState);
-      $('#gecx_pdp_prompts_enabled').prop('disabled', !revertedState);
+      $('#gecx_pdp_prompts_enabled, #gecx_ai_overview_enabled').prop('disabled', !revertedState);
       if (typeof gecx_admin_params !== 'undefined') {
         $('#gecx-status-indicator').css('background-color', revertedState ? '#46b450' : '#787c82');
         $('#gecx-status-text').text(revertedState ? gecx_admin_params.statusActive : gecx_admin_params.statusInactive);
@@ -84,6 +84,31 @@ $(function() {
      }).fail(function(err) {
        console.error('Error saving PDP prompts toggle state:', err);
        revertPdpToggle();
+     });
+  });
+
+  // Toggle the AI Overview on search results pages
+  $(document).on('change', '#gecx_ai_overview_enabled', function() {
+    const $checkbox = $(this);
+    const isChecked = $checkbox.is(':checked');
+    const isEnabled = isChecked ? '1' : '0';
+
+    function revertAiOverviewToggle() {
+      $checkbox.prop('checked', !isChecked);
+      showNotice('error', gecx_admin_params.errorToggleOverview);
+    }
+
+    $.post(ajaxurl, {
+       action: 'gecx_toggle_ai_overview',
+       enabled: isEnabled,
+       nonce: saveNonce
+     }).done(function(res) {
+       if (!res || !res.success) {
+         revertAiOverviewToggle();
+       }
+     }).fail(function(err) {
+       console.error('Error saving AI Overview toggle state:', err);
+       revertAiOverviewToggle();
      });
   });
 

@@ -10,10 +10,11 @@
  */
 
 /**
- * @fileoverview Editor side of the gecx/agent-button and
- * gecx/suggested-prompts blocks. Both are rendered on the server; the editor
- * shows placeholders because the launcher and prompts are custom elements
- * from the Google-hosted widget bundle, which the editor does not load.
+ * @fileoverview Editor side of the gecx/agent-button, gecx/suggested-prompts
+ * and gecx/ai-overview blocks. All are rendered on the server; the editor
+ * shows placeholders because the launcher, prompts and AI Overview are custom
+ * elements from the Google-hosted widget bundle, which the editor does not
+ * load.
  */
 import { registerBlockType } from '@wordpress/blocks';
 import '@wordpress/element';
@@ -105,6 +106,23 @@ registerBlockType('gecx/suggested-prompts', {
         <Placeholder label={label} />
       </>
     );
+  },
+  save: function() {
+    return null;
+  }
+});
+
+registerBlockType('gecx/ai-overview', {
+  apiVersion: 2,
+  title: __('Gemini Enterprise for CX AI Overview', 'gemini-enterprise-for-cx'),
+  description: __(
+      'An AI-generated overview of the search, with recommended products. Place it above the results in a search results template.',
+      'gemini-enterprise-for-cx'),
+  category: 'widgets',
+  icon: 'format-chat',
+  supports: {html: false, multiple: false},
+  edit: function() {
+    return <Placeholder label={__('AI Overview', 'gemini-enterprise-for-cx')} />;
   },
   save: function() {
     return null;

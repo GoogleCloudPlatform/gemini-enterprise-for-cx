@@ -902,6 +902,91 @@ class AdminTest extends GECX_TestCase {
         $this->assertFalse( get_option( Admin::MERCHANT_DISABLED_OPTION ) );
     }
 
+    /**
+     * Renders the settings page of a connected store and returns the
+     * AI Overview checkbox tag.
+     *
+     * @return string The <input> tag, or '' when it is missing.
+     */
+    private function render_ai_overview_checkbox(): string {
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        ob_start();
+        try {
+            $admin->settings_page->render_settings_page();
+        } finally {
+            $html = (string) ob_get_clean();
+        }
+        $this->assertStringContainsString( 'Show AI Overview on search results pages', $html );
+        $this->assertStringContainsString( '<code>[gecx_ai_overview]</code>', $html );
+        $this->assertStringContainsString( '<code>Gemini Enterprise for CX AI Overview</code>', $html );
+        $this->assertMatchesRegularExpression( '/id="gecx-ai-overview-manual-tip"[^>]*aria-describedby="gecx-ai-overview-manual-tip-text"\s*>/', $html );
+        return preg_match( '/<input[^>]*id="gecx_ai_overview_enabled"[^>]*>/', $html, $match ) ? $match[0] : '';
+    }
+
+    public function test_settings_page_ai_overview_toggle_is_on_by_default_and_follows_the_widget(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_webhook_id', 4242 );
+        update_option( 'gecx_auth_complete', 1 );
+        update_option( 'gecx_agent_enabled', 1 );
+
+        $checkbox = $this->render_ai_overview_checkbox();
+        $this->assertStringContainsString( 'name="gecx_ai_overview_enabled"', $checkbox );
+        $this->assertStringContainsString( 'checked="checked"', $checkbox );
+        $this->assertStringNotContainsString( 'disabled="disabled"', $checkbox );
+
+        // Turned off, and locked while the chat widget is off.
+        update_option( 'gecx_ai_overview_enabled', 0 );
+        update_option( 'gecx_agent_enabled', 0 );
+        $checkbox = $this->render_ai_overview_checkbox();
+        $this->assertStringNotContainsString( 'checked="checked"', $checkbox );
+        $this->assertStringContainsString( 'disabled="disabled"', $checkbox );
+    }
+
+    public function test_toggle_ai_overview_saves_the_setting(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ), 'enabled' => '0' ];
+        $admin->settings_page->ajax_toggle_ai_overview();
+        $this->assertSame( [ 'success' => true, 'data' => [ 'enabled' => 0 ] ], $GLOBALS['gecx_test_last_json_response'] );
+        $this->assertSame( 0, get_option( 'gecx_ai_overview_enabled' ) );
+
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ), 'enabled' => '1' ];
+        $admin->settings_page->ajax_toggle_ai_overview();
+        $this->assertSame( [ 'success' => true, 'data' => [ 'enabled' => 1 ] ], $GLOBALS['gecx_test_last_json_response'] );
+        $this->assertSame( 1, get_option( 'gecx_ai_overview_enabled' ) );
+    }
+
+    public function test_toggle_ai_overview_rejects_a_forged_nonce_and_non_admins(): void {
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        update_option( 'gecx_ai_overview_enabled', 1 );
+
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $_POST                             = [ 'nonce' => 'forged_nonce', 'enabled' => '0' ];
+        $admin->settings_page->ajax_toggle_ai_overview();
+        $this->assertSame( false, $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertSame( 1, get_option( 'gecx_ai_overview_enabled' ) );
+
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 5, 'sub@example.com', [ 'subscriber' ] );
+        $_POST                             = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ), 'enabled' => '0' ];
+        $admin->settings_page->ajax_toggle_ai_overview();
+        $this->assertSame( false, $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertSame( 'Unauthorized', $GLOBALS['gecx_test_last_json_response']['data']['message'] );
+        $this->assertSame( 1, get_option( 'gecx_ai_overview_enabled' ) );
+    }
+
+    public function test_ai_overview_setting_is_registered_as_an_integer(): void {
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $admin->settings_page->register_settings();
+
+        $registered = $GLOBALS['gecx_test_registered_settings']['gecx_ai_overview_enabled'] ?? null;
+        $this->assertSame( 'gecx_agent_group', $registered['group'] ?? null );
+        $this->assertSame( 'absint', $registered['args']['sanitize_callback'] ?? null );
+    }
+
     public function test_ajax_handlers_reject_invalid_nonce_and_unauthorized_subscriber(): void {
         $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
 

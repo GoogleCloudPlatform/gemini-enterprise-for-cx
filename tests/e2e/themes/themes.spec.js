@@ -11,6 +11,8 @@ const { test, expect } = require('@playwright/test');
 const { stubWidgetBundle, visibleLaunchers, settle } = require('../support/launchers');
 
 const THEME = process.env.GECX_THEME || 'active theme';
+// Block themes in tests/e2e/bin/run-theme-matrix.sh.
+const BLOCK_THEMES = ['twentytwentyfive'];
 
 test.describe(THEME, () => {
   test.beforeEach(async ({ page }) => {
@@ -42,5 +44,48 @@ test.describe(THEME, () => {
       };
     });
     expect(placement).toEqual({ count: 1, afterForm: true, inStickyBar: false });
+  });
+
+  test('places one AI Overview above the product search results', async ({ page }) => {
+    await page.goto('/?s=E2E&post_type=product');
+    await settle(page);
+    const placement = await page.evaluate(() => {
+      const overviews = document.querySelectorAll('gecx-ai-overview');
+      const overview = overviews[0];
+      const grid = document.querySelector(
+          'ul.products, ul.wc-block-product-template, .wp-block-woocommerce-product-template');
+      const firstProduct = grid ? grid.firstElementChild : null;
+      return {
+        count: overviews.length,
+        query: overview ? overview.getAttribute('query') : null,
+        aboveGrid: !!(overview && grid && !grid.contains(overview) &&
+            (overview.compareDocumentPosition(grid) & Node.DOCUMENT_POSITION_FOLLOWING)),
+        spansGrid: !!(overview && firstProduct &&
+            overview.getBoundingClientRect().width >= firstProduct.getBoundingClientRect().width - 1),
+      };
+    });
+    expect(placement).toEqual({ count: 1, query: 'E2E', aboveGrid: true, spansGrid: true });
+  });
+
+  test('places the AI Overview before the first result of other searches on classic themes', async ({ page }) => {
+    await page.goto('/?s=E2E');
+    await settle(page);
+    const placement = await page.evaluate(() => {
+      const overviews = document.querySelectorAll('gecx-ai-overview');
+      const overview = overviews[0];
+      const firstResult = document.querySelector('.type-product');
+      return {
+        count: overviews.length,
+        beforeFirstResult: !overview || !!(firstResult &&
+            (overview.compareDocumentPosition(firstResult) & Node.DOCUMENT_POSITION_FOLLOWING)),
+        spansResult: !overview || !!(firstResult &&
+            overview.getBoundingClientRect().width >= firstResult.getBoundingClientRect().width - 1),
+      };
+    });
+    // Block themes render their templates before the page's <html>, so the
+    // plugin leaves these searches to the AI Overview block there.
+    expect(placement.count, JSON.stringify(placement)).toBe(BLOCK_THEMES.includes(THEME) ? 0 : 1);
+    expect(placement.beforeFirstResult).toBe(true);
+    expect(placement.spansResult).toBe(true);
   });
 });

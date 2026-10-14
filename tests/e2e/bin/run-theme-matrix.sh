@@ -84,9 +84,15 @@ wp option update gecx_agent_name 'projects/123/locations/global/agents/e2e'
 wp option update gecx_agent_enabled 1
 wp option update gecx_button_placement nav_menu
 wp option update gecx_pdp_prompts_enabled 1
+wp option update gecx_ai_overview_enabled 1
 
 if [[ -z "$(wp post list --post_type=product --name=e2e-mug --field=ID 2>/dev/null | tr -d '[:space:]')" ]]; then
   wp wc product create --name='E2E Mug' --slug=e2e-mug --type=simple --regular_price=12 --user=1 --porcelain
+fi
+# A second match, so a product search for "E2E" lists results instead of
+# WooCommerce redirecting a single result to its product page.
+if [[ -z "$(wp post list --post_type=product --name=e2e-bowl --field=ID 2>/dev/null | tr -d '[:space:]')" ]]; then
+  wp wc product create --name='E2E Bowl' --slug=e2e-bowl --type=simple --regular_price=9 --user=1 --porcelain
 fi
 
 if ! wp menu list --format=csv --fields=slug | grep -qx 'e2e-main'; then

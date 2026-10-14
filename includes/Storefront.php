@@ -46,6 +46,11 @@ class Storefront {
     protected bool $pdp_prompts_injected = false;
 
     /**
+     * Track whether the AI Overview has already been rendered for the request.
+     */
+    protected bool $ai_overview_injected = false;
+
+    /**
      * Allowed button placements.
      */
     public const ALLOWED_BUTTON_PLACEMENTS = [ 'nav_menu', 'floating', 'manual' ];
@@ -160,12 +165,49 @@ class Storefront {
         add_filter( 'render_block_woocommerce/single-product-details', [ $this, 'inject_block_suggested_prompts' ], 10, 2 );
         add_shortcode( 'gecx_suggested_prompts', [ $this, 'render_suggested_prompts_shortcode' ] );
         add_shortcode( 'gecx_agent_button', [ $this, 'render_agent_button_shortcode' ] );
+        add_shortcode( 'gecx_ai_overview', [ $this, 'render_ai_overview_shortcode' ] );
+        add_action( 'init', [ $this, 'register_ai_overview_hooks' ] );
 
         // Keep "delay JavaScript" optimizers from holding the launcher back.
         add_filter( 'script_loader_tag', [ $this, 'exclude_script_from_optimizers' ], 10, 2 );
         add_filter( 'wp_inline_script_attributes', [ $this, 'exclude_inline_config_from_optimizers' ] );
         add_filter( 'rocket_delay_js_exclusions', [ $this, 'add_wp_rocket_delay_exclusions' ] );
         add_action( 'init', [ $this, 'register_blocks' ] );
+    }
+
+    /**
+     * Hooks the automatic AI Overview placement on search results pages.
+     *
+     * Runs on init rather than with the other storefront hooks, which are
+     * registered on plugins_loaded, so that a theme's functions.php can
+     * filter where the overview goes too.
+     */
+    public function register_ai_overview_hooks(): void {
+        /**
+         * Filters the action the AI Overview is rendered on.
+         *
+         * The default, woocommerce_before_shop_loop, is fired above the
+         * product grid by WooCommerce's product archive template, and by
+         * WooCommerce's compatibility layer in block theme templates.
+         *
+         * @param string $hook Action name.
+         */
+        $hook = (string) apply_filters( 'gecx_ai_overview_hook', 'woocommerce_before_shop_loop' );
+
+        /**
+         * Filters the priority of the AI Overview on its action.
+         *
+         * The default, 50, comes after the result count, the sorting control
+         * and the toolbars themes wrap around them on that action:
+         * Storefront's spans priorities 9 to 31 and OceanWP's 10 to 40.
+         *
+         * @param int $priority Action priority.
+         */
+        $priority = (int) apply_filters( 'gecx_ai_overview_priority', 50 );
+
+        add_action( $hook, [ $this, 'inject_ai_overview' ], $priority );
+        // Searches of other content, on classic themes.
+        add_action( 'loop_start', [ $this, 'inject_ai_overview_before_search_loop' ] );
     }
 
     /**
@@ -277,11 +319,12 @@ class Storefront {
 
     /**
      * Registers the plugin's blocks, the block editor counterparts of the
-     * [gecx_agent_button] and [gecx_suggested_prompts] shortcodes.
+     * [gecx_agent_button], [gecx_suggested_prompts] and [gecx_ai_overview]
+     * shortcodes.
      *
-     * Both are rendered on the server. In the editor they show placeholders:
-     * the launcher and prompts are custom elements defined by the
-     * Google-hosted widget bundle, which the editor does not load.
+     * All are rendered on the server. In the editor they show placeholders:
+     * the launcher, prompts and AI Overview are custom elements defined by
+     * the Google-hosted widget bundle, which the editor does not load.
      */
     public function register_blocks(): void {
         if ( ! function_exists( 'register_block_type' ) ) {
@@ -337,6 +380,21 @@ class Storefront {
                 ],
                 'uses_context'    => [ 'postId' ],
                 'render_callback' => [ $this, 'render_suggested_prompts_block' ],
+                'supports'        => [
+                    'html'     => false,
+                    'multiple' => false,
+                ],
+            ]
+        );
+        register_block_type(
+            'gecx/ai-overview',
+            [
+                'api_version'     => 2,
+                'title'           => __( 'Gemini Enterprise for CX AI Overview', 'gemini-enterprise-for-cx' ),
+                'description'     => __( 'An AI-generated overview of the search, with recommended products. Place it above the results in a search results template.', 'gemini-enterprise-for-cx' ),
+                'category'        => 'widgets',
+                'editor_script'   => 'gecx-editor-blocks',
+                'render_callback' => [ $this, 'render_ai_overview_shortcode' ],
                 'supports'        => [
                     'html'     => false,
                     'multiple' => false,
@@ -439,7 +497,13 @@ class Storefront {
             '   body.gecx-chat-open .gecx-mobile-header-button--floating, body:has(chat-messenger:not(.messenger-hidden)) .gecx-mobile-header-button--floating {' .
             '     display: none !important;' .
             '   }' .
-            ' }'
+            ' }' .
+            // The AI Overview takes no space until the widget bundle defines
+            // it, which an empty element in a grid or flex container would
+            // otherwise do. It spans the full width when a theme lays its
+            // search results out in a grid, a flex row or floated columns.
+            ' gecx-ai-overview:not(:defined) { display: none; }' .
+            ' gecx-ai-overview { clear: both; flex-basis: 100%; grid-column: 1 / -1; }'
         );
 
         $defer_until_interaction = (bool) get_option( 'gecx_defer_widget_until_interaction', false );
@@ -1281,6 +1345,158 @@ class Storefront {
         return "\n<!-- Start Gemini Enterprise for CX WooCommerce Suggested Prompts -->\n" .
                '<gecx-suggested-prompts' . $attrs_string . ">\n</gecx-suggested-prompts>\n" .
                "<!-- End Gemini Enterprise for CX WooCommerce Suggested Prompts -->\n";
+    }
+
+    /**
+     * Renders the AI Overview above product search results.
+     *
+     * Hooked to woocommerce_before_shop_loop by default. WooCommerce's product
+     * archive template fires it above the product grid, and its block
+     * template compatibility layer fires it above the Product Collection grid
+     * of block themes, into an output buffer, so echoing is safe in both.
+     */
+    public function inject_ai_overview(): void {
+        if ( is_admin() || is_feed() || ! $this->is_ai_overview_auto_inject_enabled() ) {
+            return;
+        }
+
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- claim_ai_overview_html() returns properly escaped markup.
+        echo $this->claim_ai_overview_html();
+    }
+
+    /**
+     * Renders the AI Overview where a classic theme's search template starts
+     * its main loop, for searches that WooCommerce's product archive template
+     * does not render, such as searches of all content.
+     *
+     * @param mixed $query The WP_Query whose loop is starting.
+     */
+    public function inject_ai_overview_before_search_loop( $query = null ): void {
+        if ( ! $query instanceof \WP_Query || ! $query->is_main_query() || ! $query->is_search() ) {
+            return;
+        }
+
+        // Block templates, those of block themes and any a classic theme opts
+        // into, are rendered before the page's <html> element, so anything
+        // echoed here would be output above it.
+        if ( ( function_exists( 'wp_is_block_theme' ) && wp_is_block_theme() ) || ! empty( $GLOBALS['_wp_current_template_content'] ) ) {
+            return;
+        }
+
+        // WooCommerce's product archive template fires this before its loop,
+        // which starts inside the product grid.
+        if ( did_action( 'woocommerce_before_shop_loop' ) ) {
+            return;
+        }
+
+        $this->inject_ai_overview();
+    }
+
+    /**
+     * Renders the AI Overview wherever a merchant places it with the
+     * [gecx_ai_overview] shortcode or the AI Overview block, such as a block
+     * theme's search template, a page builder template or a widget area.
+     *
+     * Works whether or not the automatic placement is on, and renders nothing
+     * off search results pages.
+     *
+     * @return string AI Overview markup, or '' when there is no search or the
+     *                widget is not active.
+     */
+    public function render_ai_overview_shortcode(): string {
+        if ( is_admin() || ! $this->is_ai_overview_configured() ) {
+            return '';
+        }
+
+        return $this->claim_ai_overview_html();
+    }
+
+    /**
+     * Helper to check if the AI Overview is configured (widget enabled and agent set).
+     */
+    protected function is_ai_overview_configured(): bool {
+        return $this->is_widget_enabled() && (bool) $this->get_active_agent_name() && ! $this->is_amp_request();
+    }
+
+    /**
+     * Helper to check if the AI Overview is placed automatically on search results pages.
+     */
+    protected function is_ai_overview_auto_inject_enabled(): bool {
+        return (bool) get_option( 'gecx_ai_overview_enabled', 1 ) && $this->is_ai_overview_configured();
+    }
+
+    /**
+     * Returns the AI Overview markup for the current search and records that
+     * it is on the page. Every overview requests a response from the agent,
+     * so a page gets at most one.
+     *
+     * @return string AI Overview markup, or '' when this is not a search
+     *                results page or the overview is already on the page.
+     */
+    protected function claim_ai_overview_html(): string {
+        if ( $this->ai_overview_injected || ! is_search() ) {
+            return '';
+        }
+
+        $query = trim( (string) get_search_query( false ) );
+        if ( '' === $query ) {
+            return '';
+        }
+
+        $this->ai_overview_injected = true;
+        return $this->build_ai_overview_html( $query );
+    }
+
+    /**
+     * Builds the AI Overview markup for a search query.
+     *
+     * The agent and the query are passed as attributes, so the overview does
+     * not have to wait for the chat widget in the footer to learn them.
+     *
+     * @param string $query Search query, unescaped.
+     * @return string HTML output.
+     */
+    protected function build_ai_overview_html( string $query ): string {
+        $attrs = [
+            'chat-widget-selector' => 'gecx-woocommerce-chat-widget',
+            'agent-name'           => $this->get_active_agent_name(),
+            'environment'          => 'prod',
+            'query'                => $query,
+        ];
+
+        $token_broker = $this->get_token_broker();
+        if ( '' !== $token_broker ) {
+            $attrs['token-broker'] = $token_broker;
+        }
+
+        if ( is_customize_preview() ) {
+            $attrs['preview'] = 'true';
+        }
+
+        /**
+         * Filters the attributes of the AI Overview element.
+         *
+         * true or '' renders an attribute without a value, and false or null
+         * leaves it out. To hide a part of the overview, pass the string
+         * 'false', for example 'show-chips' => 'false'.
+         *
+         * @param array  $attrs Attribute values keyed by attribute name.
+         * @param string $query Search query.
+         */
+        $attrs = apply_filters( 'gecx_ai_overview_attributes', $attrs, $query );
+
+        $attrs_string = '';
+        foreach ( (array) $attrs as $key => $val ) {
+            if ( true === $val || '' === $val ) {
+                $attrs_string .= ' ' . esc_attr( (string) $key );
+            } elseif ( false !== $val && null !== $val ) {
+                $attrs_string .= ' ' . esc_attr( (string) $key ) . '="' . esc_attr( (string) $val ) . '"';
+            }
+        }
+
+        return "\n<!-- Start Gemini Enterprise for CX AI Overview -->\n" .
+               '<gecx-ai-overview' . $attrs_string . "></gecx-ai-overview>\n" .
+               "<!-- End Gemini Enterprise for CX AI Overview -->\n";
     }
 
     /**

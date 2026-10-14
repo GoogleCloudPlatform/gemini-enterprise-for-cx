@@ -33,6 +33,16 @@ These filters adjust the behavior:
 * `gecx_cart_refresh_native_events`: whether to dispatch the WooCommerce Blocks events. Default true.
 * `gecx_cart_refresh_legacy_events`: whether to trigger the jQuery `added_to_cart` and `removed_from_cart` events in place of the native ones. Default false, because many themes open a side cart on them.
 
+### Placing the AI Overview
+
+On product search results pages, the plugin renders the `<gecx-ai-overview>` element on `woocommerce_before_shop_loop`, which WooCommerce fires above the product grid, in classic templates and, through its compatibility layer, in block theme templates. On classic themes, other searches get it where the main search loop starts (`loop_start`). The `[gecx_ai_overview]` shortcode and the AI Overview block place it anywhere else. A page gets at most one: the first placement to render wins.
+
+These filters adjust it, from a plugin or a theme's `functions.php`:
+
+* `gecx_ai_overview_hook`: the action the overview is rendered on. Default `woocommerce_before_shop_loop`.
+* `gecx_ai_overview_priority`: its priority on that action. Default 50, after the result count, the sorting control and the toolbars that Storefront (priorities 9 to 31) and OceanWP (10 to 40) wrap around them.
+* `gecx_ai_overview_attributes`: the element's attributes, keyed by attribute name, with the search query as a second argument. To hide part of the overview, set `show-title`, `show-summary`, `show-product-cards`, `show-chips` or `show-ask-more` to the string `'false'`. `title-text` sets its heading and `ask-more-label` the invitation in its question box.
+
 ## License
 
 This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.

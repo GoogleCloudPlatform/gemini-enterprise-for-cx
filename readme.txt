@@ -25,11 +25,13 @@ The plugin is an interface to the Gemini Enterprise for CX software as a service
 * Adds and updates items in the shopper's cart. It does not apply discount codes.
 * Answers "Where is my order?" questions.
 * Keeps context across interactions, so it remembers a shopper's earlier product views, preferences and sizing details.
+* Sums up a shopper's search in an AI Overview above the search results, with recommended products.
 
 = Where shoppers find it =
 
 * A launcher button in your header menu, a floating button, or wherever you place the `[gecx_agent_button]` shortcode or the launcher block.
 * Suggested questions on product pages, placed automatically or with the `[gecx_suggested_prompts]` shortcode or block.
+* An AI Overview on search results pages, placed automatically or with the `[gecx_ai_overview]` shortcode or block.
 
 = Merchant console =
 
@@ -63,10 +65,10 @@ This plugin connects to 3rd-party services provided by Google to function, and l
    * **Service Provider:** Google LLC
    * **External source:** `https://www.gstatic.com/gecx/chat-widget/woocommerce-chat-widget.js`
    * **This file is NOT bundled with the plugin.** It is loaded at runtime from Google's servers at the URL above, directly by the visitor's browser. It is the only externally hosted asset this plugin loads; the widget stylesheet is bundled with the plugin (`assets/css/theme.css`) and is not fetched remotely.
-   * **Purpose:** Delivers the client runtime required to render the interactive chat widget and product suggestion pills on the customer-facing storefront, and to communicate with the GECX service.
+   * **Purpose:** Delivers the client runtime required to render the interactive chat widget, product suggestion pills and AI Overview on the customer-facing storefront, and to communicate with the GECX service.
    * **When it loads:** Never by default. It is enqueued on storefront pages only after a store administrator has connected the store to Google Cloud, linked an agent, and enabled the agent in the plugin settings. If either condition is unmet, the script is not requested at all.
    * **Why it is hosted externally:** It is the official client runtime for the Gemini Enterprise for CX SaaS platform, versioned and released with that service rather than with this plugin. It speaks directly to the service's streaming, session and agent protocols, which change far more often than a WordPress plugin release cycle. A copy frozen inside the plugin would break storefronts for any merchant who did not update the plugin in step with every service change.
-   * **Data Transmitted:** Standard HTTP request headers (IP address, User-Agent) when the browser fetches the script. Customer chat messages and product browsing context are processed by GECX during live chat interactions. For a shopper who is logged in to the store, the widget also sends GECX a token signed by the store that contains the shopper's WordPress user ID and email address; guests' tokens contain neither.
+   * **Data Transmitted:** Standard HTTP request headers (IP address, User-Agent) when the browser fetches the script. Customer chat messages and product browsing context are processed by GECX during live chat interactions. On search results pages that show the AI Overview, the shopper's search terms are sent to GECX to generate it. For a shopper who is logged in to the store, the widget also sends GECX a token signed by the store that contains the shopper's WordPress user ID and email address; guests' tokens contain neither.
    * **Terms of Service:** https://cloud.google.com/terms
    * **Privacy Policy:** https://policies.google.com/privacy
 
@@ -98,7 +100,7 @@ Access is currently by invitation. You can install the plugin without it, but co
 Only the chat widget script from `www.gstatic.com`, and only on storefronts with a linked, enabled agent. The widget stylesheet ships with the plugin. See 3rd Party Services above.
 
 = What data is sent to Google? =
-The store URL and admin tokens during setup, and shoppers' chat messages and viewed products while they chat. The 3rd Party Services section above lists exactly what is sent and when.
+The store URL and admin tokens during setup, shoppers' chat messages and viewed products while they chat, and their search terms on search results pages that show the AI Overview. The 3rd Party Services section above lists exactly what is sent and when.
 
 = Where does the launcher appear, and what if my theme hides it? =
 With the Top navigation menu placement, the launcher joins your header menu and your theme's mobile menu, and moves beside the menu (hamburger) button whenever your theme shows one. If it cannot find a place on screen, it appears as a floating button instead.
@@ -106,6 +108,11 @@ With the Top navigation menu placement, the launcher joins your header menu and 
 If it lands in the wrong menu, choose one under Launcher Placement > Menu. Menus built with page builders such as Elementor appear there too. To place it yourself, choose Manual and add the `[gecx_agent_button]` shortcode or the Gemini Enterprise for CX Launcher block where you want it, for example in a header template.
 
 Themes that replace page content without a full page load can call `window.gecxInit()` afterwards. The plugin also watches for content added after the page loads.
+
+= Where does the AI Overview appear? =
+On product search results pages it appears above the products. On classic themes, searches of all your content get it before the first result too. To place it yourself, for example in a block theme's Search Results template or a page builder template, add the `[gecx_ai_overview]` shortcode or the Gemini Enterprise for CX AI Overview block, and turn off Show AI Overview on search results pages if you only want it there. A page shows at most one overview.
+
+The overview takes up no space until the service returns one for the search. If the chat widget loads only after consent or interaction, the overview appears once it has loaded. Developers can move it with the filters in the [developer notes](https://github.com/GoogleCloudPlatform/gemini-enterprise-for-cx#developer-notes).
 
 = Can the chat widget match my theme's colors? =
 The chat widget's colors, fonts and branding come from your agent's settings in the Gemini Enterprise for CX console, not from your WordPress theme. The widget applies that branding itself.

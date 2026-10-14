@@ -257,6 +257,7 @@ wp eval '
   update_option( "gecx_auth_complete", 1 );
   update_option( "gecx_agent_enabled", "yes" );
   update_option( "gecx_pdp_prompts_enabled", "yes" );
+  update_option( "gecx_ai_overview_enabled", "yes" );
   update_option( "gecx_button_placement", "floating" );
   update_option( "gecx_plugin_version", "0.0.0-test" );
   // Not an allowed console host, so uninstall.php sends no notification
@@ -284,6 +285,7 @@ wp eval '
       "gecx_auth_complete",
       "gecx_agent_enabled",
       "gecx_pdp_prompts_enabled",
+      "gecx_ai_overview_enabled",
       "gecx_button_placement",
       "gecx_plugin_version",
       "gecx_console_base_url",
