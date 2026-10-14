@@ -155,6 +155,48 @@ test('adds no fallback while the widget is briefly hiding launchers on load', as
   expect(launchers[0].container).toContain('gecx-nav-menu-item');
 });
 
+test('shows no fallback alongside a placed launcher the widget has not revealed yet', async ({ page }) => {
+  // Until the widget knows the agent is enabled, every launcher is laid out but
+  // hidden (visibility: hidden, opacity: 0) and is revealed together with the
+  // rest by gaining the `visible` class. A launcher in place but not yet
+  // revealed must not count as missing, or the fallback is revealed with it
+  // and flashes in the corner until the next placement pass hides it.
+  await openFixture(page, {
+    themeCss: `nav ul{display:flex;list-style:none;gap:8px}
+      gecx-agent-button{visibility:hidden;opacity:0}
+      gecx-agent-button.visible{visibility:visible;opacity:1}`,
+    body: `<header><nav><ul><li><a href="#">Shop</a></li>${navItem}</ul></nav></header>
+      <script>
+        setTimeout(() => document.querySelectorAll('gecx-agent-button')
+            .forEach((b) => b.classList.add('visible')), 1200);
+      </script>`,
+  });
+  await page.waitForFunction(() => document.querySelector('gecx-agent-button.visible'));
+  const launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-nav-menu-item');
+});
+
+test('still falls back when the only launcher not yet revealed is off screen', async ({ page }) => {
+  // Not being revealed yet does not make a launcher count as placed: one
+  // clipped inside a collapsed menu still needs the fallback.
+  await openFixture(page, {
+    themeCss: `.handheld ul{max-height:0;overflow:hidden;margin:0}
+      gecx-agent-button{visibility:hidden;opacity:0}
+      gecx-agent-button.visible{visibility:visible;opacity:1}`,
+    body: `<header><div class="handheld"><ul><li><a href="#">Shop</a></li>${navItem}</ul></div></header>
+      <script>
+        setTimeout(() => document.querySelectorAll('gecx-agent-button')
+            .forEach((b) => b.classList.add('visible')), 1200);
+      </script>`,
+  });
+  await page.waitForFunction(() => document.querySelector('gecx-agent-button.visible'));
+  await settle(page);
+  const launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-launcher-fallback');
+});
+
 test('does not count a launcher clipped inside a collapsed menu as visible', async ({ page }) => {
   // Storefront's handheld menu is collapsed with max-height:0 and overflow
   // hidden; a launcher inside it has a size but can't be seen.
