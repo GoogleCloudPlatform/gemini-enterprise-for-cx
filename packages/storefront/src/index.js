@@ -845,9 +845,12 @@ function isElementVisible(el) {
  * inside the viewport horizontally. The last condition rules out off-canvas
  * drawers parked beside the viewport with a transform.
  * @param {?Element} el
+ * @param {boolean=} ignoreOwnVisibility Judge visibility by the parent, so an
+ *     element that hides itself (a launcher the widget has not revealed yet)
+ *     still counts when the page around it is visible.
  * @return {boolean}
  */
-function gecxIsOnScreen(el) {
+function gecxIsOnScreen(el, ignoreOwnVisibility) {
   if (!el || typeof el.getClientRects !== 'function' ||
       typeof window.getComputedStyle !== 'function') {
     return false;
@@ -857,7 +860,12 @@ function gecxIsOnScreen(el) {
     return false;
   }
   const style = window.getComputedStyle(el);
-  if (style.display === 'none' || style.visibility === 'hidden') {
+  if (style.display === 'none') {
+    return false;
+  }
+  const visibilityStyle = ignoreOwnVisibility && el.parentElement ?
+      window.getComputedStyle(el.parentElement) : style;
+  if (visibilityStyle.visibility === 'hidden') {
     return false;
   }
   const viewportWidth = window.innerWidth ||
@@ -908,6 +916,19 @@ function gecxIsClippedAway(el) {
 function gecxIsHiddenByWidget(button) {
   return button.classList.contains('gecx-hidden') ||
       button.hasAttribute('data-gecx-mobile-hidden');
+}
+
+/**
+ * Whether the widget has not revealed this launcher yet. Until it knows the
+ * agent is enabled, every launcher is laid out but hidden (visibility: hidden,
+ * opacity: 0), and they are all revealed together by the `visible` class. The
+ * persistent entry point manages its own visibility and is never held back.
+ * @param {!Element} button
+ * @return {boolean}
+ */
+function gecxIsAwaitingReveal(button) {
+  return !button.classList.contains('visible') &&
+      button.getAttribute('entry-type') !== 'persistent';
 }
 
 /**
@@ -1210,7 +1231,10 @@ function gecxEnsureVisibleLauncher() {
     }
     if (gecxIsHiddenByWidget(button)) {
       hiddenByWidget = true;
-    } else if (!visible && gecxIsOnScreen(button)) {
+    } else if (!visible && gecxIsOnScreen(button, gecxIsAwaitingReveal(button))) {
+      // A launcher in place but not yet revealed counts: it is revealed with
+      // the fallback, which would otherwise flash beside it until the next
+      // placement pass hides the fallback again.
       visible = true;
     }
   });
