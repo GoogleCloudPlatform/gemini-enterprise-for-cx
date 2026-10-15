@@ -574,9 +574,38 @@ class WebhookLifecycleTest extends TestCase {
 
         // Numeric project number (canonical resource name format) succeeds
         $order3 = new WC_Order( 603 );
-        $order3->update_meta_data( '_gecx_session_id', 'projects/123456789012/locations/global/commerceSessions/sess-123' );
+        $order3->update_meta_data( '_gecx_session_id', 'projects/123/locations/global/commerceSessions/sess-123' );
         $order3->save();
         $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 603 ) );
+    }
+
+    /**
+     * Nothing ties a session ID to the store except the project number in it,
+     * so a session in any project other than the linked agent's is not
+     * delivered: the backend would otherwise record this store's order, line
+     * items and totals, in that other project's session.
+     */
+    public function test_delivery_suppressed_for_session_in_another_project(): void {
+        $webhook_id = $this->create_gecx_webhook();
+        $webhook    = new WC_Webhook( $webhook_id );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+
+        $foreign = new WC_Order( 604 );
+        $foreign->update_meta_data( '_gecx_session_id', 'projects/987654321/locations/global/commerceSessions/sess-123' );
+        $foreign->save();
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 604 ) );
+
+        // A project number that merely starts with the linked one is another project.
+        $prefixed = new WC_Order( 605 );
+        $prefixed->update_meta_data( '_gecx_session_id', 'projects/1234/locations/global/omnichannelSessions/sess-123' );
+        $prefixed->save();
+        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 605 ) );
+
+        $own = new WC_Order( 606 );
+        $own->update_meta_data( '_gecx_session_id', 'projects/123/locations/global/omnichannelSessions/sess-123' );
+        $own->save();
+        $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 606 ) );
     }
 
     public function test_delete_order_webhook_clears_transients_on_direct_sql(): void {

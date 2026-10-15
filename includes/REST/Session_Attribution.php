@@ -87,7 +87,7 @@ class Session_Attribution {
         register_rest_route( 'gecx/v1', '/session', [
             'methods'             => 'POST',
             'callback'            => [ $this, 'save_session_handler' ],
-            'permission_callback' => [ $this, 'check_session_permissions' ],
+            'permission_callback' => [ $this, 'check_save_session_permissions' ],
             'args'                => [
                 'session_id' => [
                     'description'       => __( 'GECX commerce session resource name or session identifier.', 'gemini-enterprise-for-cx' ),
@@ -128,6 +128,55 @@ class Session_Attribution {
     }
 
     /**
+     * Project number of the agent the storefront widget is configured with,
+     * or '' when the store is not linked or its agent name carries none.
+     *
+     * Read the way Storefront::get_active_agent_name() reads it, because the
+     * widget takes the project number for the session resource names it
+     * sends from the agent-name attribute that method fills. The filter runs
+     * here in REST and WP-Cron context rather than on a page, so a callback
+     * that picks the agent per page has to return an agent in the same
+     * project in those contexts too.
+     *
+     * @return string Numeric project number, or ''.
+     */
+    private static function get_linked_project_number(): string {
+        $agent_name = (string) get_option( 'gecx_agent_name', '' );
+        if ( function_exists( 'apply_filters' ) ) {
+            $agent_name = (string) apply_filters( 'gecx_active_agent_name', $agent_name );
+        }
+        if ( 1 !== preg_match( '#^projects/([0-9]+)/#', $agent_name, $matches ) ) {
+            return '';
+        }
+        return $matches[1];
+    }
+
+    /**
+     * Whether a session ID names a session in the Google Cloud project of the
+     * agent this store is linked to.
+     *
+     * The widget names its sessions projects/{project}/locations/.../{id},
+     * with {project} taken from the store's agent. An ID naming another
+     * project did not come from this store's widget, and attributing an order
+     * to it would send the order's line items and totals into a session that
+     * belongs to someone else. A bare ID names no project; the order webhook
+     * never delivered one, and it is refused here too.
+     *
+     * A store whose agent name carries no project number has nothing to
+     * compare against, so every ID passes there, as before.
+     *
+     * @param string $session_id Session ID, already checked by is_valid_session_id().
+     * @return bool
+     */
+    public static function is_in_linked_project( string $session_id ): bool {
+        $project_number = self::get_linked_project_number();
+        if ( '' === $project_number ) {
+            return true;
+        }
+        return 0 === strpos( $session_id, 'projects/' . $project_number . '/' );
+    }
+
+    /**
      * Handle the POST request to save the session ID in the WooCommerce customer session.
      */
     public function save_session_handler( \WP_REST_Request $request ) {
@@ -141,6 +190,9 @@ class Session_Attribution {
         }
         if ( ! self::is_valid_session_id( $session_id ) ) {
             return new \WP_Error( 'invalid_session_id', __( 'Session ID is invalid.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
+        }
+        if ( ! self::is_in_linked_project( $session_id ) ) {
+            return new \WP_Error( 'session_not_in_linked_project', __( 'Session ID does not belong to the agent this store is linked to.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 
         // Force WooCommerce to initialize the frontend session based on client cookies
@@ -307,6 +359,28 @@ class Session_Attribution {
             return new \WP_Error( 'rest_forbidden', __( 'Invalid nonce.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
         return true;
+    }
+
+    /**
+     * Permission check for POST /gecx/v1/session: a valid wp_rest nonce, on a
+     * request from one of the store's own pages.
+     *
+     * The nonce alone does not establish where the request came from. Every
+     * uncookied guest is issued the same logged-out nonce, and WordPress
+     * answers a credentialed CORS preflight from any origin. A page on a
+     * same-site sibling host could otherwise post here from a shopper's
+     * browser, set the gecx_session_id cookie there, and have that shopper's
+     * orders attributed to a session it chose.
+     *
+     * @param \WP_REST_Request $request REST request instance.
+     * @return true|\WP_Error
+     */
+    public static function check_save_session_permissions( \WP_REST_Request $request ) {
+        $nonce_check = self::check_session_permissions( $request );
+        if ( true !== $nonce_check ) {
+            return $nonce_check;
+        }
+        return Auth_Context::verify_request_origin( $request );
     }
 
     /**
