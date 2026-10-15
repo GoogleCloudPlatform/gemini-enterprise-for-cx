@@ -345,42 +345,6 @@ function gecxRefreshCartOrCheckoutSurface(hasBlockStore) {
 }
 
 /**
- * Re-binds the active GECX session ID from localStorage to the WooCommerce
- * session once a cart mutation establishes a persistent session.
- */
-function gecxRebindSessionOnCartUpdate() {
-  let sessionId = '';
-  try {
-    sessionId = (window.localStorage && window.localStorage.getItem('gecx_session_id')) || '';
-  } catch (err) {
-    return;
-  }
-  if (!sessionId) {
-    return;
-  }
-  const sessionUrl = gecxSessionRestUrl();
-
-  gecxResolveRestNonce()
-      .then(function(nonce) {
-        if (!nonce) {
-          return;
-        }
-        return fetch(sessionUrl, {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-WP-Nonce': nonce
-          },
-          body: JSON.stringify({session_id: sessionId})
-        });
-      })
-      .catch(function(err) {
-        gecxReportError('session rebind', err);
-      });
-}
-
-/**
  * Reports a failure that would otherwise be invisible.
  *
  * Every fetch below used to end in an empty catch, so a cart that failed to
@@ -575,6 +539,11 @@ function gecxClassifyCartChange(previous, current) {
  * woocommerce_cart_hash cookies after the agent changed the cart from
  * elsewhere. A 401 or 403 usually means the nonce went stale during a long
  * chat, so a fresh one is fetched and the request retried once.
+ *
+ * The server bridges a Cart-Token cart into the browser's session cookie only
+ * for a request it can tell came from the store's own pages, so the full
+ * Referer is sent whatever Referrer-Policy the page declares, as it is for the
+ * auth-context request.
  * @param {string} cartToken Cart-Token supplied by the widget, or ''.
  * @return {!Promise<!Object>}
  */
@@ -599,7 +568,8 @@ function gecxFetchCart(cartToken) {
           return fetch(gecxCartRestUrl(), {
             method: 'GET',
             headers: headers,
-            credentials: 'include'
+            credentials: 'include',
+            referrerPolicy: 'same-origin'
           });
         })
         .then(function(res) {
@@ -759,8 +729,6 @@ function handleCartUpdate(e) {
                       !isNaN(Number(detail.totalQuantity))) ?
       Number(detail.totalQuantity) :
       null;
-
-  gecxRebindSessionOnCartUpdate();
 
   const store = gecxGetCartDataStore();
   const previousCount = gecxPreviousItemsCount(store);

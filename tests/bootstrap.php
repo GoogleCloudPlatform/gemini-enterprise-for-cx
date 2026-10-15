@@ -161,7 +161,9 @@ function gecx_reset_test_globals(): void {
     $_COOKIE = [];
     // argv/argc survive: the standalone CLI runner at the foot of each test
     // file decides whether to run from argv[0]. SCRIPT_NAME defaults to the
-    // front controller, which is what a REST request reports.
+    // front controller, which is what a REST request reports. REQUEST_METHOD
+    // is reset rather than carried over, so a test that sets it cannot change
+    // what the method check in Auth_Context sees in the tests after it.
     $_SERVER = array_merge(
         [
             'REQUEST_URI'    => '/',
@@ -169,7 +171,7 @@ function gecx_reset_test_globals(): void {
             'HTTP_HOST'      => 'example.com',
             'REQUEST_METHOD' => 'GET',
         ],
-        array_intersect_key( $_SERVER, [ 'argv' => 1, 'argc' => 1, 'HTTP_HOST' => 1, 'REQUEST_METHOD' => 1 ] )
+        array_intersect_key( $_SERVER, [ 'argv' => 1, 'argc' => 1, 'HTTP_HOST' => 1 ] )
     );
 
     if ( class_exists( Auth::class ) ) {
