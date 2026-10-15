@@ -480,7 +480,12 @@ class Order_Webhook {
     /**
      * Suppresses delivery of the GECX order webhook when:
      * - the agent is unlinked or storefront chat widget is disabled, or
-     * - the order does not carry a valid _gecx_session_id meta value.
+     * - the order does not carry a valid _gecx_session_id meta value, or
+     * - that session is not in the Google Cloud project of the linked agent.
+     *
+     * The project check is here, at the one place order data leaves the store,
+     * because a session ID can reach an order by more than one path: the
+     * /gecx/v1/session route, the gecx_session_id cookie, or the session row.
      *
      * @param bool  $should_deliver Whether WooCommerce intends to deliver the webhook.
      * @param mixed $webhook        WC_Webhook instance or webhook ID.
@@ -508,7 +513,8 @@ class Order_Webhook {
         }
 
         $session_id = (string) $order->get_meta( '_gecx_session_id' );
-        return Session_Attribution::is_valid_session_id( $session_id, true );
+        return Session_Attribution::is_valid_session_id( $session_id, true )
+            && Session_Attribution::is_in_linked_project( $session_id );
     }
 
     /**

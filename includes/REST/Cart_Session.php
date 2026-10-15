@@ -532,8 +532,9 @@ class Cart_Session {
             }
 
             // Set the WooCommerce session cookie for an un-cookied guest when
-            // it reads a Cart-Token cart that holds items, bridging that cart
-            // to the browser on GET /wc/store/v1/cart.
+            // it reads a Cart-Token cart that holds items from one of the
+            // store's own pages, bridging that cart to the browser on
+            // GET /wc/store/v1/cart.
             //
             // A guest's own first cart change needs nothing from here.
             // WooCommerce sets the session cookie on that response itself, as
@@ -546,9 +547,18 @@ class Cart_Session {
             // logs out. Writing a numeric key as a session cookie for a logged-out browser makes
             // WC_Session_Handler::is_session_cookie_valid() fail, which calls destroy_session()
             // and deletes that user's row from the sessions table along with their saved cart.
+            //
+            // Bridging also requires the request to come from the store's own pages, which is
+            // where storefront.js reads the cart after an agent update. The Cart-Token is a
+            // bearer credential, and WooCommerce answers a credentialed request carrying a
+            // valid one from any origin (StoreApi\Authentication::send_cors_headers()), so
+            // presenting it proves nothing about whose browser this is. Without the check, a
+            // page on a same-site sibling host could plant a session it holds the token for in
+            // a shopper's browser, then read back the cart and checkout address the shopper
+            // goes on to enter. The cookie's SameSite default does not stop a same-site sender.
             $is_guest_session_key = ( 0 === strpos( $session_key, 't_' ) );
             $bridged_to_browser   = false;
-            if ( $is_cart_token_cart_read && ! $has_cookie && $has_cart_items && 0 === get_current_user_id() && $is_guest_session_key ) {
+            if ( $is_cart_token_cart_read && ! $has_cookie && $has_cart_items && 0 === get_current_user_id() && $is_guest_session_key && true === Auth_Context::verify_request_origin( $request ) ) {
                 self::set_guest_session_cookie( $session_key );
                 $bridged_to_browser = true;
             }
