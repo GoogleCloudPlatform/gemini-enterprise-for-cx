@@ -336,3 +336,85 @@ test('manual placement adds no launcher of its own', async ({ page }) => {
   });
   expect(await page.locator('gecx-agent-button').count()).toBe(0);
 });
+
+test.describe('cart session binding', () => {
+  const b64url = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const cartToken = (session) =>
+    `${b64url({ typ: 'JWT', alg: 'HS256' })}.${b64url({ user_id: session, exp: 9999999999, iss: 'store-api' })}.signature`;
+  const agentToken = cartToken('t_agent');
+  const boundToken = cartToken('t_agent');
+
+  /**
+   * Answers the Store API cart read the widget makes with the agent's token,
+   * and the auth-context and cart-session routes. Returns the cart-session
+   * requests made.
+   */
+  async function stubCartRoutes(page) {
+    const bindRequests = [];
+    await page.route('https://store.test/wp-json/wc/store/v1/cart', (route) => route.fulfill({
+      contentType: 'application/json',
+      headers: { 'Cart-Token': agentToken },
+      body: '{"items":[],"items_count":0}',
+    }));
+    await page.route('https://store.test/wp-json/gecx/v1/auth-context', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: '{"nonce":"nonce-before"}',
+    }));
+    await page.route('https://store.test/wp-json/gecx/v1/cart-session', (route) => {
+      bindRequests.push({ body: route.request().postDataJSON(), nonce: route.request().headers()['x-wp-nonce'] });
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ cart_token: boundToken, nonce: 'nonce-after', binding: 'agent', moved_items: 0 }),
+      });
+    });
+    await page.evaluate(() => {
+      window.__bound = [];
+      document.body.addEventListener('gecx:cart-session-bound', (e) => window.__bound.push(e.detail));
+    });
+    return bindRequests;
+  }
+
+  const readAgentCart = (page) => page.evaluate(() => fetch('https://store.test/wp-json/wc/store/v1/cart'));
+  const openChat = (page) => page.evaluate(() => document.body.classList.add('gecx-chat-open'));
+
+  test('binds the agent cart once when the chat opens and announces it', async ({ page }) => {
+    await openFixture(page, { body: `<header><nav><ul>${navItem}</ul></nav></header>` });
+    const bindRequests = await stubCartRoutes(page);
+    await readAgentCart(page);
+    await settle(page);
+    expect(bindRequests).toHaveLength(0);
+
+    await openChat(page);
+    await expect.poll(() => page.evaluate(() => window.__bound.length)).toBe(1);
+    expect(bindRequests).toEqual([{ body: { cart_token: agentToken }, nonce: 'nonce-before' }]);
+    expect(await page.evaluate(() => window.__bound[0])).toEqual({
+      cartToken: boundToken, nonce: 'nonce-after', binding: 'agent', movedItems: 0,
+    });
+
+    await page.evaluate(() => document.body.classList.remove('gecx-chat-open'));
+    await openChat(page);
+    await settle(page);
+    expect(bindRequests).toHaveLength(1);
+  });
+
+  test('waits for the agent cart token when the chat opens first', async ({ page }) => {
+    await openFixture(page, { body: `<header><nav><ul>${navItem}</ul></nav></header>` });
+    const bindRequests = await stubCartRoutes(page);
+    await openChat(page);
+    await settle(page);
+    expect(bindRequests).toHaveLength(0);
+
+    await readAgentCart(page);
+    await expect.poll(() => bindRequests.length).toBe(1);
+  });
+
+  test('skips the request when this tab already bound that cart', async ({ page }) => {
+    await openFixture(page, { body: `<header><nav><ul>${navItem}</ul></nav></header>` });
+    const bindRequests = await stubCartRoutes(page);
+    await page.evaluate(() => window.sessionStorage.setItem('gecx_bound_cart_session', 't_agent'));
+    await readAgentCart(page);
+    await openChat(page);
+    await settle(page);
+    expect(bindRequests).toHaveLength(0);
+  });
+});

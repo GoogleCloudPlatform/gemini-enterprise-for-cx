@@ -124,6 +124,18 @@ function gecxSessionRestUrl() {
 }
 
 /**
+ * The GECX cart session REST endpoint for this store.
+ * @return {string}
+ */
+function gecxCartSessionRestUrl() {
+  const config = gecxGetStorefrontConfig();
+  if (config && config.cartSessionUrl) {
+    return config.cartSessionUrl;
+  }
+  return gecxSessionRestUrl().replace(/\/session(\b|\/|$)/, '/cart-session$1');
+}
+
+/**
  * Checks whether a URL resolves to the current window's origin.
  * @param {string} candidateUrl
  * @return {boolean}
@@ -254,6 +266,7 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
               '';
           if (gecxIsValidCartTokenFormat(token)) {
             gecxLatestCartToken = token;
+            gecxOnCartTokenObserved();
           }
         }
       } catch (err) {
@@ -378,6 +391,158 @@ function gecxRebindSessionOnCartUpdate() {
       .catch(function(err) {
         gecxReportError('session rebind', err);
       });
+}
+
+/** @const {string} sessionStorage key of the cart session last bound in this tab. */
+const GECX_BOUND_CART_SESSION_KEY = 'gecx_bound_cart_session';
+
+/** @type {boolean} Whether this page view has bound, or is binding, the cart. */
+let gecxCartSessionBindStarted = false;
+
+/** @type {boolean} Whether a bind is waiting for the agent's cart token. */
+let gecxCartSessionBindPending = false;
+
+/**
+ * Returns the WooCommerce session a cart token names (its user_id claim), or
+ * '' when the token cannot be decoded. Not verified: only used to skip a
+ * request the server would answer with no change.
+ * @param {string} token
+ * @return {string}
+ */
+function gecxCartTokenSession(token) {
+  try {
+    const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const claims = JSON.parse(atob(payload + '==='.slice((payload.length + 3) % 4)));
+    return (claims && claims.user_id !== undefined) ? String(claims.user_id) : '';
+  } catch (err) {
+    return '';
+  }
+}
+
+/**
+ * Whether the chat panel is open.
+ * @return {boolean}
+ */
+function gecxIsChatOpen() {
+  return !!document.body && (document.body.classList.contains('gecx-chat-open') ||
+      !!document.querySelector('chat-messenger:not(.messenger-hidden)'));
+}
+
+/**
+ * Puts the browser and the agent on one cart when the chat opens.
+ *
+ * A guest who has not added anything to their cart has no WooCommerce session
+ * cookie, so the agent starts on a cart the browser is not bound to. The
+ * /cart-session route binds the browser to the agent's cart, or moves what
+ * the agent's cart holds into the shopper's own cart when they already have
+ * one. Done when the chat opens, not on page load: once a session cookie is
+ * set, full-page caches stop serving that visitor cached pages.
+ *
+ * Waits for the agent's cart token, which the widget's own cart read reveals,
+ * and skips the request when this tab already bound the session that token
+ * names. Announces the result with a gecx:cart-session-bound event on
+ * document.body, so the chat widget can switch the agent to the returned
+ * cart.
+ */
+function gecxBindCartSession() {
+  if (gecxCartSessionBindStarted) {
+    return;
+  }
+  const agentToken = gecxLatestCartToken;
+  if (!agentToken) {
+    gecxCartSessionBindPending = true;
+    return;
+  }
+  gecxCartSessionBindPending = false;
+  const agentSession = gecxCartTokenSession(agentToken);
+  try {
+    if (agentSession && window.sessionStorage &&
+        window.sessionStorage.getItem(GECX_BOUND_CART_SESSION_KEY) === agentSession) {
+      return;
+    }
+  } catch (err) {
+    // sessionStorage can be unavailable; bind anyway.
+  }
+  gecxCartSessionBindStarted = true;
+
+  gecxResolveRestNonce()
+      .then(function(nonce) {
+        if (!nonce) {
+          throw new Error('no REST nonce');
+        }
+        return fetch(gecxCartSessionRestUrl(), {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-WP-Nonce': nonce
+          },
+          body: JSON.stringify({cart_token: agentToken})
+        });
+      })
+      .then(function(res) {
+        if (!res.ok) {
+          throw new Error('cart-session responded ' + res.status);
+        }
+        return res.json();
+      })
+      .then(function(data) {
+        data = data || {};
+        // Binding a guest to a session changes the nonces WordPress issues
+        // them, so the nonce fetched before it no longer verifies.
+        if (data.nonce) {
+          gecxRestNoncePromise = Promise.resolve(data.nonce);
+          if (window.wp && window.wp.apiFetch && window.wp.apiFetch.nonceMiddleware) {
+            window.wp.apiFetch.nonceMiddleware.nonce = data.nonce;
+          }
+        }
+        const cartToken = gecxIsValidCartTokenFormat(data.cart_token) ? data.cart_token : '';
+        if (cartToken) {
+          gecxLatestCartToken = cartToken;
+          try {
+            window.sessionStorage.setItem(
+                GECX_BOUND_CART_SESSION_KEY, gecxCartTokenSession(cartToken));
+          } catch (err) {
+            // Only costs a repeated request on the next page view.
+          }
+        }
+        gecxRebindSessionOnCartUpdate();
+        const movedItems = Number(data.moved_items) || 0;
+        if (movedItems > 0) {
+          // The shopper's cart changed on the server; refresh what shows it.
+          if (window.jQuery && window.jQuery(document.body).trigger) {
+            window.jQuery(document.body).trigger('wc_fragment_refresh');
+          }
+          gecxAnnounceCartChange('added', false, null, null, null);
+        }
+        gecxDispatchBodyEvent('gecx:cart-session-bound', {
+          cartToken: cartToken,
+          nonce: data.nonce || '',
+          binding: data.binding || '',
+          movedItems: movedItems
+        });
+      })
+      .catch(function(err) {
+        // Allow a retry on the next chat open.
+        gecxCartSessionBindStarted = false;
+        gecxReportError('cart session binding', err);
+      });
+}
+
+/** Runs a bind that was waiting for the agent's cart token. */
+function gecxOnCartTokenObserved() {
+  if (gecxCartSessionBindPending && gecxIsChatOpen()) {
+    gecxBindCartSession();
+  }
+}
+
+/** Binds the cart when the chat opens. */
+function gecxHandleChatVisibilityForCart() {
+  if (gecxIsChatOpen()) {
+    gecxBindCartSession();
+  } else {
+    gecxCartSessionBindPending = false;
+  }
 }
 
 /**
@@ -753,6 +918,7 @@ function handleCartUpdate(e) {
   const cartId = gecxIsValidCartTokenFormat(rawCartId) ? rawCartId : '';
   if (cartId) {
     gecxLatestCartToken = cartId;
+    gecxOnCartTokenObserved();
   }
   const directCart = (detail.cart && typeof detail.cart === 'object') ? detail.cart : null;
   const eventCount = (detail.totalQuantity !== undefined && detail.totalQuantity !== null &&
@@ -1702,12 +1868,15 @@ document.addEventListener('chat-messenger-update-cart', handleCartUpdate);
 
 window.addEventListener('chat-messenger-visibility-changed', updateFloatingWidgetCentering);
 document.addEventListener('chat-messenger-visibility-changed', updateFloatingWidgetCentering);
+window.addEventListener('chat-messenger-visibility-changed', gecxHandleChatVisibilityForCart);
+document.addEventListener('chat-messenger-visibility-changed', gecxHandleChatVisibilityForCart);
 
 if (typeof MutationObserver !== 'undefined' && document.body) {
   const chatObserver = new MutationObserver(function(mutations) {
     for (let i = 0; i < mutations.length; i++) {
       if (mutations[i].attributeName === 'class') {
         updateFloatingWidgetCentering();
+        gecxHandleChatVisibilityForCart();
         break;
       }
     }
