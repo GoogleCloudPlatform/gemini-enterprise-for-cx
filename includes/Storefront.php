@@ -960,6 +960,22 @@ class Storefront {
      * Helper to get active agent name (handling filters).
      */
     protected function get_active_agent_name(): string {
+        return self::resolve_active_agent_name();
+    }
+
+    /**
+     * The agent the storefront widget is configured with: the gecx_agent_name
+     * option, passed through the gecx_active_agent_name filter.
+     *
+     * The widget names its chat sessions in this agent's project, and
+     * Session_Attribution::is_in_linked_project() checks session IDs against
+     * the same value, so both must read it here. That check also runs in REST
+     * and WP-Cron context, without a page, so a filter callback that picks
+     * the agent per page has to return an agent in the same project there.
+     *
+     * @return string Agent resource name, or '' when the store is not linked.
+     */
+    public static function resolve_active_agent_name(): string {
         $agent_name = (string) get_option( 'gecx_agent_name', '' );
         if ( function_exists( 'apply_filters' ) ) {
             return (string) apply_filters( 'gecx_active_agent_name', $agent_name );
