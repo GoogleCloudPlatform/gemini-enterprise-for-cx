@@ -349,20 +349,22 @@ test.describe('cart session binding', () => {
    * and the auth-context and cart-session routes. Returns the cart-session
    * requests made.
    */
-  async function stubCartRoutes(page, { binding = 'agent', cartReadToken = agentToken } = {}) {
+  async function stubCartRoutes(page, { binding = 'agent', cartReadToken = agentToken, status = 200 } = {}) {
     const bindRequests = [];
+    bindRequests.nonceLookups = 0;
     await page.route('https://store.test/wp-json/wc/store/v1/cart', (route) => route.fulfill({
       contentType: 'application/json',
       headers: { 'Cart-Token': cartReadToken },
       body: '{"items":[],"items_count":0}',
     }));
-    await page.route('https://store.test/wp-json/gecx/v1/auth-context', (route) => route.fulfill({
-      contentType: 'application/json',
-      body: '{"nonce":"rest-nonce"}',
-    }));
+    await page.route('https://store.test/wp-json/gecx/v1/auth-context', (route) => {
+      bindRequests.nonceLookups++;
+      return route.fulfill({ contentType: 'application/json', body: '{"nonce":"rest-nonce"}' });
+    });
     await page.route('https://store.test/wp-json/gecx/v1/cart-session', (route) => {
       bindRequests.push({ body: route.request().postDataJSON(), nonce: route.request().headers()['x-wp-nonce'] });
       return route.fulfill({
+        status,
         contentType: 'application/json',
         body: JSON.stringify({ binding, cart_token: binding === 'agent' ? boundToken : '' }),
       });
@@ -388,7 +390,7 @@ test.describe('cart session binding', () => {
 
     await openChat(page);
     await expect.poll(() => page.evaluate(() => window.__bound.length)).toBe(1);
-    expect(bindRequests).toEqual([{ body: { cart_token: agentToken }, nonce: 'rest-nonce' }]);
+    expect([...bindRequests]).toEqual([{ body: { cart_token: agentToken }, nonce: 'rest-nonce' }]);
     expect(await page.evaluate(() => window.__bound[0])).toEqual({ cartToken: boundToken, binding: 'agent' });
 
     await closeChat(page);
@@ -464,4 +466,23 @@ test.describe('cart session binding', () => {
     await openChat(page);
     await expect.poll(() => bindRequests.length).toBe(2);
   });
+
+  for (const [label, options] of [['a deferred binding', { binding: 'deferred' }], ['a refused request', { status: 403 }]]) {
+    test(`does not retry ${label} while the chat stays open`, async ({ page }) => {
+      await openFixture(page, fixture);
+      const bindRequests = await stubCartRoutes(page, options);
+      await readCart(page);
+      await openChat(page);
+      await expect.poll(() => bindRequests.length).toBe(1);
+      const nonceLookups = bindRequests.nonceLookups;
+
+      // Themes and the widget toggle body classes while the chat is open.
+      for (let i = 0; i < 5; i++) {
+        await page.evaluate((n) => document.body.classList.toggle(`scrolled-${n}`), i);
+      }
+      await settle(page);
+      expect(bindRequests).toHaveLength(1);
+      expect(bindRequests.nonceLookups).toBe(nonceLookups);
+    });
+  }
 });

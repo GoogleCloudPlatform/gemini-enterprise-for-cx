@@ -136,12 +136,14 @@ class Cart_Binding {
         }
 
         $browser_key = self::get_browser_guest_key( $session );
-        if ( '' !== $browser_key && ( $browser_key === $agent_key || self::guest_cart_has_items( $browser_key ) ) ) {
+        if ( '' !== $browser_key && ( $browser_key === $agent_key || self::browser_cart_has_items( $session ) ) ) {
             return self::respond( 'existing' );
         }
 
+        // Neither cart holds anything yet. Asked again on the next chat open,
+        // by which time the agent may have filled its cart.
         if ( '' === $agent_key || ! self::guest_cart_has_items( $agent_key ) ) {
-            return self::respond( '' !== $browser_key ? 'existing' : 'deferred' );
+            return self::respond( 'deferred' );
         }
 
         if ( ! self::bind_browser_to_session( $session, $agent_key ) ) {
@@ -260,7 +262,9 @@ class Cart_Binding {
     }
 
     /**
-     * Whether a guest session's cart holds any lines.
+     * Whether a guest session's cart holds any lines, read from the database
+     * table, where the Store API keeps the sessions it opens for a Cart-Token
+     * whatever handler the store configured for browsers.
      *
      * @param string $session_key Guest session key.
      * @return bool
@@ -271,6 +275,23 @@ class Cart_Binding {
             return false;
         }
         $lines = maybe_unserialize( $data['cart'] );
+        return is_array( $lines ) && ! empty( $lines );
+    }
+
+    /**
+     * Whether the browser's own cart holds any lines.
+     *
+     * Read through the store's session handler, which may keep sessions
+     * outside the database (Redis, Memcached), rather than from the table.
+     *
+     * @param object $session WC()->session, for the browser's session.
+     * @return bool
+     */
+    private static function browser_cart_has_items( $session ): bool {
+        $lines = method_exists( $session, 'get' ) ? $session->get( 'cart' ) : null;
+        if ( is_string( $lines ) ) {
+            $lines = maybe_unserialize( $lines );
+        }
         return is_array( $lines ) && ! empty( $lines );
     }
 

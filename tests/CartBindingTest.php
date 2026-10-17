@@ -40,9 +40,14 @@ class CartBindingTest extends GECX_TestCase {
      *
      * @param string $session_key Guest session key.
      */
-    private function given_browser_session( string $session_key ): void {
+    private function given_browser_session( string $session_key, array $cart_lines = [] ): void {
         $_COOKIE['wp_woocommerce_session_test'] = $session_key . '||12345||12345||hash';
         WC()->session->set_customer_id( $session_key );
+        if ( $cart_lines ) {
+            // Held by the store's session handler, which need not be the
+            // database table.
+            WC()->session->set( 'cart', $cart_lines );
+        }
     }
 
     private function bind( ?string $cart_token ): array {
@@ -110,8 +115,7 @@ class CartBindingTest extends GECX_TestCase {
     }
 
     public function test_keeps_the_cart_of_a_cookied_guest_and_returns_no_token_for_it(): void {
-        $this->given_browser_session( 't_browser_cart' );
-        $this->given_session_with_cart( 't_browser_cart', [ 'b' => [ 'product_id' => 9, 'quantity' => 1 ] ] );
+        $this->given_browser_session( 't_browser_cart', [ 'b' => [ 'product_id' => 9, 'quantity' => 1 ] ] );
         $this->given_session_with_cart( 't_agent_cart', self::AGENT_CART_LINES );
 
         $this->assertSame( self::EXISTING, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
@@ -124,8 +128,7 @@ class CartBindingTest extends GECX_TestCase {
      * the route into a way to read the browser's cart token.
      */
     public function test_returns_no_token_for_the_browser_session_whatever_token_is_sent(): void {
-        $this->given_browser_session( 't_victim' );
-        $this->given_session_with_cart( 't_victim', self::AGENT_CART_LINES );
+        $this->given_browser_session( 't_victim', self::AGENT_CART_LINES );
 
         $this->assertSame( self::EXISTING, $this->bind( $this->generate_jwt( 't_attacker_empty' ) ) );
         $this->assertSame( self::EXISTING, $this->bind( null ) );
@@ -140,6 +143,23 @@ class CartBindingTest extends GECX_TestCase {
         $this->assertSame( 'agent', $data['binding'] );
         $this->assertSame( 't_agent_cart', WC()->session->get_customer_id() );
         $this->assertSame( 1, WC()->session->cookie_set_calls );
+    }
+
+    public function test_reads_the_browser_cart_through_the_store_session_handler(): void {
+        // A Redis or Memcached session handler: the browser's cart is not in
+        // the database table, but it is not empty.
+        $this->given_browser_session( 't_cached_browser_cart', [ 'b' => [ 'product_id' => 9, 'quantity' => 1 ] ] );
+        $this->given_session_with_cart( 't_agent_cart', self::AGENT_CART_LINES );
+
+        $this->assertSame( self::EXISTING, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
+        $this->assertSame( 't_cached_browser_cart', WC()->session->get_customer_id() );
+    }
+
+    public function test_defers_for_a_cookied_guest_while_both_carts_are_empty(): void {
+        $this->given_browser_session( 't_browser_empty' );
+
+        $this->assertSame( self::DEFERRED, $this->bind( $this->generate_jwt( 't_empty_agent_cart' ) ) );
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
     }
 
     public function test_leaves_a_browser_already_on_the_agent_cart_alone(): void {

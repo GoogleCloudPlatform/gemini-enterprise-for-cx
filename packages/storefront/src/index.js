@@ -399,6 +399,9 @@ let gecxCartSessionBindStarted = false;
 /** @type {boolean} Whether a bind is waiting for the agent's cart token. */
 let gecxCartSessionBindPending = false;
 
+/** @type {boolean} Whether the chat was open at the last visibility check. */
+let gecxChatWasOpen = false;
+
 /**
  * The cart token the chat widget resumed for the current chat session, from
  * localStorage, or ''.
@@ -523,16 +526,23 @@ function gecxOnCartTokenObserved() {
 }
 
 /**
- * Binds the cart when the chat opens.
+ * Binds the cart when the chat goes from closed to open.
+ *
+ * Only on that change: the body class mutations that also call this fire for
+ * every class a theme or the widget toggles while the chat stays open, and a
+ * bind that answered 'deferred' or failed is meant to be retried on the next
+ * open, not on each of them.
  * @param {?Event=} e chat-messenger-visibility-changed, whose detail.hidden
  *     is the widget's own visibility state, or nothing for a body class change.
  */
 function gecxHandleChatVisibilityForCart(e) {
   const detail = e && e.detail;
   const isOpen = (detail && typeof detail.hidden === 'boolean') ? !detail.hidden : gecxIsChatOpen();
-  if (isOpen) {
+  const opened = isOpen && !gecxChatWasOpen;
+  gecxChatWasOpen = isOpen;
+  if (opened) {
     gecxBindCartSession();
-  } else {
+  } else if (!isOpen) {
     gecxCartSessionBindPending = false;
   }
 }
