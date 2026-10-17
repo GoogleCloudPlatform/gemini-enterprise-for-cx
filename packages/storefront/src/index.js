@@ -155,6 +155,16 @@ function gecxCartSessionRestUrl() {
 }
 
 /**
+ * The GECX auth-context REST endpoint for this store, or '' when the page
+ * config names none.
+ * @return {string}
+ */
+function gecxAuthContextRestUrl() {
+  const config = gecxGetStorefrontConfig();
+  return (config && config.authContextUrl) ? config.authContextUrl : '';
+}
+
+/**
  * Checks whether a URL resolves to the current window's origin.
  * @param {string} candidateUrl
  * @return {boolean}
@@ -248,18 +258,29 @@ function gecxIsTargetEndpoint(candidateUrl, configuredUrl, fallbackPathRegex) {
 if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
   const originalFetch = window.fetch;
   window.fetch = function(input, init) {
-    const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
-    // Fast path: avoid URL parsing on requests that cannot be the session endpoint.
-    const isSessionRequest = url !== '' &&
-        (url.indexOf('session') !== -1 || url.indexOf('gecx') !== -1) &&
+    let url = '';
+    if (typeof input === 'string') {
+      url = input;
+    } else if (typeof URL !== 'undefined' && input instanceof URL) {
+      url = input.href;
+    } else if (input && input.url) {
+      url = input.url;
+    }
+    // Fast path: avoid URL parsing on requests that cannot be a GECX endpoint.
+    const mayBeGecxRequest = url !== '' &&
+        (url.indexOf('session') !== -1 || url.indexOf('gecx') !== -1);
+    const isSessionRequest = mayBeGecxRequest &&
         gecxIsTargetEndpoint(url, gecxSessionRestUrl(), /\/gecx\/v1\/session(\b|$)/);
-    // The server accepts the widget's session annotation only from the store's
-    // own pages, and on a subdirectory multisite it tells this site's pages
-    // from a sibling's by the Referer path. The widget sets no referrer policy,
-    // so a site-wide Referrer-Policy such as no-referrer would strip that path.
-    // Send it as the cart and auth-context requests are sent, unless the
-    // caller chose a policy itself.
-    if (isSessionRequest &&
+    const isAuthContextRequest = mayBeGecxRequest && !isSessionRequest &&
+        gecxIsTargetEndpoint(url, gecxAuthContextRestUrl(), /\/gecx\/v1\/auth-context(\b|$)/);
+    // The server accepts the widget's session annotation and auth-context
+    // requests only from the store's own pages, and on a subdirectory
+    // multisite it tells this site's pages from a sibling's by the Referer
+    // path. The widget sets no referrer policy, so a site-wide Referrer-Policy
+    // such as no-referrer would strip that path. Send them as storefront.js
+    // sends its own cart and auth-context requests, unless the caller chose a
+    // policy itself.
+    if ((isSessionRequest || isAuthContextRequest) &&
         !(init && init.referrerPolicy) &&
         !(input && typeof input === 'object' && input.referrerPolicy)) {
       init = Object.assign({}, init, {referrerPolicy: 'same-origin'});
@@ -713,8 +734,7 @@ function gecxResolveRestNonce() {
     return gecxRestNoncePromise;
   }
 
-  const config = gecxGetStorefrontConfig();
-  const url = (config && config.authContextUrl) ? config.authContextUrl : '';
+  const url = gecxAuthContextRestUrl();
   if (!url) {
     gecxRestNoncePromise = Promise.resolve('');
     return gecxRestNoncePromise;
