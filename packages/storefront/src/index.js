@@ -429,14 +429,14 @@ function gecxIsChatOpen() {
 }
 
 /**
- * Puts the browser and the agent on one cart when the chat opens.
+ * Puts the browser on the agent's cart when the chat opens.
  *
  * A guest who has not added anything to their cart has no WooCommerce session
  * cookie, so the agent starts on a cart the browser is not bound to. The
- * /cart-session route binds the browser to the agent's cart, or moves what
- * the agent's cart holds into the shopper's own cart when they already have
- * one. Done when the chat opens, not on page load: once a session cookie is
- * set, full-page caches stop serving that visitor cached pages.
+ * /cart-session route binds the browser to the agent's cart once that cart
+ * holds something, and otherwise returns the token of the cart the browser
+ * already has. Done when the chat opens, not on page load: once a session
+ * cookie is set, full-page caches stop serving that visitor cached pages.
  *
  * Waits for the agent's cart token, which the widget's own cart read reveals,
  * and skips the request when this tab already bound the session that token
@@ -488,16 +488,9 @@ function gecxBindCartSession() {
       })
       .then(function(data) {
         data = data || {};
-        // Binding a guest to a session changes the nonces WordPress issues
-        // them, so the nonce fetched before it no longer verifies.
-        if (data.nonce) {
-          gecxRestNoncePromise = Promise.resolve(data.nonce);
-          if (window.wp && window.wp.apiFetch && window.wp.apiFetch.nonceMiddleware) {
-            window.wp.apiFetch.nonceMiddleware.nonce = data.nonce;
-          }
-        }
+        const binding = data.binding || '';
         const cartToken = gecxIsValidCartTokenFormat(data.cart_token) ? data.cart_token : '';
-        if (cartToken) {
+        if (cartToken && binding !== 'deferred') {
           gecxLatestCartToken = cartToken;
           try {
             window.sessionStorage.setItem(
@@ -505,21 +498,11 @@ function gecxBindCartSession() {
           } catch (err) {
             // Only costs a repeated request on the next page view.
           }
-        }
-        gecxRebindSessionOnCartUpdate();
-        const movedItems = Number(data.moved_items) || 0;
-        if (movedItems > 0) {
-          // The shopper's cart changed on the server; refresh what shows it.
-          if (window.jQuery && window.jQuery(document.body).trigger) {
-            window.jQuery(document.body).trigger('wc_fragment_refresh');
-          }
-          gecxAnnounceCartChange('added', false, null, null, null);
+          gecxRebindSessionOnCartUpdate();
         }
         gecxDispatchBodyEvent('gecx:cart-session-bound', {
           cartToken: cartToken,
-          nonce: data.nonce || '',
-          binding: data.binding || '',
-          movedItems: movedItems
+          binding: binding
         });
       })
       .catch(function(err) {

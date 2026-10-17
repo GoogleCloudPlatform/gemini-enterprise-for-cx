@@ -349,7 +349,7 @@ test.describe('cart session binding', () => {
    * and the auth-context and cart-session routes. Returns the cart-session
    * requests made.
    */
-  async function stubCartRoutes(page) {
+  async function stubCartRoutes(page, binding = 'agent') {
     const bindRequests = [];
     await page.route('https://store.test/wp-json/wc/store/v1/cart', (route) => route.fulfill({
       contentType: 'application/json',
@@ -364,7 +364,7 @@ test.describe('cart session binding', () => {
       bindRequests.push({ body: route.request().postDataJSON(), nonce: route.request().headers()['x-wp-nonce'] });
       return route.fulfill({
         contentType: 'application/json',
-        body: JSON.stringify({ cart_token: boundToken, nonce: 'nonce-after', binding: 'agent', moved_items: 0 }),
+        body: JSON.stringify({ cart_token: boundToken, binding }),
       });
     });
     await page.evaluate(() => {
@@ -387,9 +387,8 @@ test.describe('cart session binding', () => {
     await openChat(page);
     await expect.poll(() => page.evaluate(() => window.__bound.length)).toBe(1);
     expect(bindRequests).toEqual([{ body: { cart_token: agentToken }, nonce: 'nonce-before' }]);
-    expect(await page.evaluate(() => window.__bound[0])).toEqual({
-      cartToken: boundToken, nonce: 'nonce-after', binding: 'agent', movedItems: 0,
-    });
+    expect(await page.evaluate(() => window.__bound[0])).toEqual({ cartToken: boundToken, binding: 'agent' });
+    expect(await page.evaluate(() => window.sessionStorage.getItem('gecx_bound_cart_session'))).toBe('t_agent');
 
     await page.evaluate(() => document.body.classList.remove('gecx-chat-open'));
     await openChat(page);
@@ -406,6 +405,16 @@ test.describe('cart session binding', () => {
 
     await readAgentCart(page);
     await expect.poll(() => bindRequests.length).toBe(1);
+  });
+
+  test('does not remember a deferred binding', async ({ page }) => {
+    await openFixture(page, { body: `<header><nav><ul>${navItem}</ul></nav></header>` });
+    await stubCartRoutes(page, 'deferred');
+    await readAgentCart(page);
+    await openChat(page);
+    await expect.poll(() => page.evaluate(() => window.__bound.length)).toBe(1);
+    expect(await page.evaluate(() => window.__bound[0].binding)).toBe('deferred');
+    expect(await page.evaluate(() => window.sessionStorage.getItem('gecx_bound_cart_session'))).toBeNull();
   });
 
   test('skips the request when this tab already bound that cart', async ({ page }) => {

@@ -418,26 +418,6 @@ if ( ! class_exists( 'WC_Cart_Mock' ) ) {
             $cart = $this->get_cart_for_session();
             return $cart ? md5( (string) wp_json_encode( $cart ) ) : '';
         }
-        /** @var array<int, array> Lines passed to add_to_cart(), in order. */
-        public array $added = [];
-        /** @var int[] Product IDs add_to_cart() refuses, as for an out-of-stock product. */
-        public array $refused_product_ids = [];
-        public int $calculate_totals_calls = 0;
-        /**
-         * Mirrors WC_Cart::add_to_cart(): returns a cart item key, or false.
-         *
-         * @return string|false
-         */
-        public function add_to_cart( $product_id = 0, $quantity = 1, $variation_id = 0, $variation = [], $cart_item_data = [] ) {
-            if ( in_array( (int) $product_id, $this->refused_product_ids, true ) ) {
-                return false;
-            }
-            $this->added[] = [ (int) $product_id, (int) $quantity, (int) $variation_id, (array) $variation ];
-            return 'key_' . count( $this->added );
-        }
-        public function calculate_totals(): void {
-            $this->calculate_totals_calls++;
-        }
     }
 }
 

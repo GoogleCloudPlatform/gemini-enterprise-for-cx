@@ -23,19 +23,23 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Puts the shopper's browser and the agent on one WooCommerce cart when the
- * chat starts (the /cart-session route).
+ * Puts the shopper's browser on the agent's WooCommerce cart when the chat
+ * starts (the /cart-session route).
  *
  * A guest who has not added anything to their cart has no WooCommerce session
  * cookie, so the chat widget starts the agent on a cart the browser is not
- * bound to. Without this route the two only meet after the agent changes the
- * cart, and a cart the shopper fills first never reaches the agent.
+ * bound to. The plugin already binds the browser once the agent changes the
+ * cart, but a page view that ends before then leaves the agent's cart behind.
  *
- * Called when the chat opens, not on page load. Full-page caches stop serving
- * cached pages to a visitor once a WooCommerce session cookie is set, so
- * setting one for every visitor would turn caching off for the whole store.
- * Shoppers who open the chat are few, and WooCommerce sets the same cookie
- * for anyone who adds to their cart.
+ * Called when the chat opens, not on page load, and only binds a guest whose
+ * agent cart already holds something. Setting a WooCommerce session cookie
+ * stops full-page caches from serving that visitor cached pages, and it
+ * changes the woocommerce-* nonces (login, registration, order tracking)
+ * already rendered on the page, so it is not done for a cart that holds
+ * nothing to lose. When neither side has items yet, the existing paths join
+ * the carts: the plugin binds the browser after the agent's first change, and
+ * WooCommerce sets its own cookie when the shopper adds first, which the chat
+ * widget then adopts.
  */
 class Cart_Binding {
 
@@ -68,29 +72,28 @@ class Cart_Binding {
     }
 
     /**
-     * Binds the browser and the agent to one cart and returns that cart's
-     * token, with a REST nonce for the session the browser now has.
+     * Binds the browser to the agent's cart when that is safe and useful, and
+     * returns the token of the cart the browser holds.
      *
      * - A logged-in shopper, or a guest whose browser already has a
-     *   WooCommerce session, keeps their cart. Anything the agent's guest cart
-     *   holds is moved into it.
-     * - A guest without a session is bound to the agent's cart, so nothing
-     *   the agent added is stranded.
-     * - A guest without a session or an agent cart gets a new session.
+     *   WooCommerce session, keeps their cart. Its token is returned so the
+     *   chat widget can switch the agent to it; the widget copies the agent's
+     *   lines across first.
+     * - A guest without a session whose agent cart holds items is bound to
+     *   that cart, so nothing the agent added is stranded.
+     * - Otherwise nothing is bound.
      *
      * The agent's cart token is a bearer credential for that cart: whoever
-     * holds it can already read and change the cart through the Store API.
-     * Binding a browser to it, or moving its lines out, grants nothing more.
-     * Only guest tokens are accepted, so no browser is ever bound to a
-     * registered user's session.
+     * holds it can already read and change the cart through the Store API, so
+     * binding a browser to it grants nothing more. Only guest tokens are
+     * accepted, so no browser is ever bound to a registered user's session.
      *
      * Response fields:
-     * - cart_token: Store API Cart-Token for the browser's cart, or '' when
+     * - cart_token: Store API Cart-Token of the browser's cart, or of the
+     *   agent's cart when nothing was bound. '' when there is neither, or when
      *   WooCommerce is too old to mint one.
-     * - nonce: wp_rest nonce for the session the browser now has. Binding a
-     *   guest to a session changes the nonces WordPress issues them.
-     * - binding: 'existing', 'agent', or 'new'.
-     * - moved_items: number of cart lines moved from the agent's cart.
+     * - binding: 'existing' (the browser keeps its own cart), 'agent' (bound
+     *   to the agent's cart), or 'deferred' (nothing bound yet).
      *
      * @param \WP_REST_Request $request Request.
      * @return \WP_REST_Response|\WP_Error
@@ -101,10 +104,10 @@ class Cart_Binding {
             return new \WP_Error( 'session_not_initialized', __( 'WooCommerce session not active.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
         }
 
-        $agent_key = self::get_guest_cart_key( (string) $request->get_param( 'cart_token' ) );
-        $user_id   = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
-
-        $cookie_key = $user_id > 0 ? '' : Cart_Session::get_verified_session_cookie_customer_id();
+        $raw_agent_token = trim( (string) $request->get_param( 'cart_token' ) );
+        $agent_key       = self::get_guest_cart_key( $raw_agent_token );
+        $user_id         = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+        $cookie_key      = $user_id > 0 ? '' : self::get_browser_guest_key( $session );
 
         if ( $user_id > 0 ) {
             $browser_key = (string) $user_id;
@@ -112,34 +115,31 @@ class Cart_Binding {
         } elseif ( '' !== $cookie_key ) {
             $browser_key = $cookie_key;
             $binding     = 'existing';
-        } elseif ( '' !== $agent_key ) {
+        } elseif ( '' !== $agent_key && self::guest_cart_has_items( $session, $agent_key ) ) {
             if ( ! self::bind_browser_to_session( $session, $agent_key ) ) {
                 return new \WP_Error( 'cart_binding_unsupported', __( 'The WooCommerce session handler does not support binding.', 'gemini-enterprise-for-cx' ), [ 'status' => 501 ] );
             }
             $browser_key = $agent_key;
             $binding     = 'agent';
         } else {
-            $session->set_customer_session_cookie( true );
-            $browser_key = (string) $session->get_customer_id();
-            $binding     = 'new';
-        }
-
-        $moved_items = 0;
-        if ( '' !== $agent_key && $agent_key !== $browser_key ) {
-            $moved_items = self::move_cart_lines( $session, $agent_key );
+            return new \WP_REST_Response(
+                [
+                    'cart_token' => '' !== $agent_key ? $raw_agent_token : '',
+                    'binding'    => 'deferred',
+                ],
+                200
+            );
         }
 
         $cart_token = self::mint_cart_token( $browser_key );
         if ( '' === $cart_token && 'agent' === $binding ) {
-            $cart_token = (string) $request->get_param( 'cart_token' );
+            $cart_token = $raw_agent_token;
         }
 
         return new \WP_REST_Response(
             [
-                'cart_token'  => $cart_token,
-                'nonce'       => wp_create_nonce( 'wp_rest' ),
-                'binding'     => $binding,
-                'moved_items' => $moved_items,
+                'cart_token' => $cart_token,
+                'binding'    => $binding,
             ],
             200
         );
@@ -222,101 +222,44 @@ class Cart_Binding {
     }
 
     /**
-     * Moves every line of a guest session's cart into the browser's cart and
-     * empties that session's cart.
+     * Returns the guest session key the browser's WooCommerce session cookie
+     * names, or '' when there is none WooCommerce accepted.
      *
-     * Moved rather than copied, so that a chat widget that predates this
-     * route, which copies the agent's cart into the shopper's when it finds
-     * them different, finds nothing left to copy.
+     * The cookie's signature is not enough. On a logged-out request,
+     * WooCommerce rejects a cookie naming a registered user's session (a
+     * shared device after the user logged out) and switches the request to a
+     * new guest session, but leaves the rejected value in $_COOKIE, where it
+     * still verifies. Only a guest key that is the session WooCommerce kept is
+     * the browser's.
      *
-     * @param object $session  WC()->session, bound to the browser's session.
-     * @param string $guest_key Guest session key of the agent's cart.
-     * @return int Number of lines moved.
+     * @param object $session WC()->session.
+     * @return string
      */
-    private static function move_cart_lines( $session, string $guest_key ): int {
-        if ( ! method_exists( $session, 'get_session' ) ) {
-            return 0;
+    private static function get_browser_guest_key( $session ): string {
+        $cookie_key = Cart_Session::get_verified_session_cookie_customer_id();
+        if ( 0 !== strpos( $cookie_key, 't_' ) || (string) $session->get_customer_id() !== $cookie_key ) {
+            return '';
         }
-        $guest_session = $session->get_session( $guest_key, [] );
-        if ( ! is_array( $guest_session ) || empty( $guest_session['cart'] ) ) {
-            return 0;
-        }
-        $lines = maybe_unserialize( $guest_session['cart'] );
-        if ( ! is_array( $lines ) || empty( $lines ) ) {
-            return 0;
-        }
-
-        if ( is_null( WC()->cart ) && function_exists( 'wc_load_cart' ) ) {
-            wc_load_cart();
-        }
-        $cart = WC()->cart;
-        if ( ! is_object( $cart ) || ! method_exists( $cart, 'add_to_cart' ) ) {
-            return 0;
-        }
-
-        $moved = 0;
-        foreach ( $lines as $line ) {
-            if ( ! is_array( $line ) || empty( $line['product_id'] ) ) {
-                continue;
-            }
-            $added = $cart->add_to_cart(
-                (int) $line['product_id'],
-                max( 1, (int) ( $line['quantity'] ?? 1 ) ),
-                (int) ( $line['variation_id'] ?? 0 ),
-                isset( $line['variation'] ) && is_array( $line['variation'] ) ? $line['variation'] : []
-            );
-            if ( $added ) {
-                ++$moved;
-            }
-        }
-        if ( 0 === $moved ) {
-            return 0;
-        }
-
-        if ( method_exists( $cart, 'calculate_totals' ) ) {
-            $cart->calculate_totals();
-        }
-        if ( method_exists( $cart, 'persistent_cart_update' ) && function_exists( 'get_current_user_id' ) && get_current_user_id() > 0 ) {
-            $cart->persistent_cart_update();
-        }
-        if ( method_exists( $session, 'save_data' ) ) {
-            $session->save_data();
-        }
-
-        $guest_session['cart'] = maybe_serialize( [] );
-        self::write_session_row( $guest_key, $guest_session );
-        return $moved;
+        return $cookie_key;
     }
 
     /**
-     * Overwrites a WooCommerce session row and evicts its cached copy.
+     * Whether a guest session's cart holds any lines.
      *
-     * @param string $session_key Session key.
-     * @param array  $data        Session data.
+     * @param object $session  WC()->session.
+     * @param string $guest_key Guest session key.
+     * @return bool
      */
-    private static function write_session_row( string $session_key, array $data ): void {
-        global $wpdb;
-        if ( ! isset( $wpdb ) ) {
-            return;
+    private static function guest_cart_has_items( $session, string $guest_key ): bool {
+        if ( ! method_exists( $session, 'get_session' ) ) {
+            return false;
         }
-        // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
-        $expiry     = time() + (int) apply_filters( 'wc_session_expiration', 2 * DAY_IN_SECONDS );
-        $serialized = maybe_serialize( $data );
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Direct query required to update another WooCommerce session.
-        $wpdb->query( $wpdb->prepare(
-            "INSERT INTO {$wpdb->prefix}woocommerce_sessions (session_key, session_value, session_expiry)
-             VALUES (%s, %s, %d)
-             ON DUPLICATE KEY UPDATE session_value = %s, session_expiry = %d",
-            $session_key, $serialized, $expiry, $serialized, $expiry
-        ) );
-
-        $cache_group  = defined( 'WC_SESSION_CACHE_GROUP' )
-            ? WC_SESSION_CACHE_GROUP
-            : ( defined( 'WC_Cache_Helper::WC_SESSION_CACHE_GROUP' ) ? \WC_Cache_Helper::WC_SESSION_CACHE_GROUP : 'wc_sessions' );
-        $cache_prefix = ( class_exists( 'WC_Cache_Helper' ) && method_exists( 'WC_Cache_Helper', 'get_cache_prefix' ) )
-            ? \WC_Cache_Helper::get_cache_prefix( $cache_group )
-            : 'wc_session_';
-        wp_cache_delete( $cache_prefix . $session_key, $cache_group );
+        $data = $session->get_session( $guest_key, [] );
+        if ( ! is_array( $data ) || empty( $data['cart'] ) ) {
+            return false;
+        }
+        $lines = maybe_unserialize( $data['cart'] );
+        return is_array( $lines ) && ! empty( $lines );
     }
 
     /**
