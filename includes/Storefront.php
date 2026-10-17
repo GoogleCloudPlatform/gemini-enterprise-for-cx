@@ -512,6 +512,7 @@ class Storefront {
             // takes.
             'authContextUrl'   => esc_url_raw( rest_url( 'gecx/v1/auth-context' ) ),
             'sessionUrl'       => esc_url_raw( rest_url( 'gecx/v1/session' ) ),
+            'cartSessionUrl'   => esc_url_raw( rest_url( 'gecx/v1/cart-session' ) ),
             // WooCommerce resolves these from the store's configured page IDs,
             // so a store using localized slugs such as /panier still answers
             // correctly, and a product whose slug merely starts with "cart"

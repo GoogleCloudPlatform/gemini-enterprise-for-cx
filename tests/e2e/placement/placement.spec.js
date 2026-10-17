@@ -378,3 +378,153 @@ test('manual placement adds no launcher of its own', async ({ page }) => {
   });
   expect(await page.locator('gecx-agent-button').count()).toBe(0);
 });
+
+test.describe('cart session binding', () => {
+  const b64url = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const cartToken = (session, n = 1) =>
+    `${b64url({ typ: 'JWT', alg: 'HS256' })}.${b64url({ user_id: session, exp: 9999999999, iss: 'store-api', n })}.signature`;
+  const agentToken = cartToken('t_agent');
+  const boundToken = cartToken('t_agent', 2);
+
+  /**
+   * Answers the Store API cart read the widget makes with the given token,
+   * and the auth-context and cart-session routes. Returns the cart-session
+   * requests made.
+   */
+  async function stubCartRoutes(page, { binding = 'agent', cartReadToken = agentToken, status = 200 } = {}) {
+    const bindRequests = [];
+    bindRequests.nonceLookups = 0;
+    await page.route('https://store.test/wp-json/wc/store/v1/cart', (route) => route.fulfill({
+      contentType: 'application/json',
+      headers: { 'Cart-Token': cartReadToken },
+      body: '{"items":[],"items_count":0}',
+    }));
+    await page.route('https://store.test/wp-json/gecx/v1/auth-context', (route) => {
+      bindRequests.nonceLookups++;
+      return route.fulfill({ contentType: 'application/json', body: '{"nonce":"rest-nonce"}' });
+    });
+    await page.route('https://store.test/wp-json/gecx/v1/cart-session', (route) => {
+      bindRequests.push({ body: route.request().postDataJSON(), nonce: route.request().headers()['x-wp-nonce'] });
+      return route.fulfill({
+        status,
+        contentType: 'application/json',
+        body: JSON.stringify({ binding, cart_token: binding === 'agent' ? boundToken : '' }),
+      });
+    });
+    await page.evaluate(() => {
+      window.__bound = [];
+      document.body.addEventListener('gecx:cart-session-bound', (e) => window.__bound.push(e.detail));
+    });
+    return bindRequests;
+  }
+
+  const readCart = (page) => page.evaluate(() => fetch('https://store.test/wp-json/wc/store/v1/cart'));
+  const openChat = (page) => page.evaluate(() => document.body.classList.add('gecx-chat-open'));
+  const closeChat = (page) => page.evaluate(() => document.body.classList.remove('gecx-chat-open'));
+  const fixture = { body: `<header><nav><ul>${navItem}</ul></nav></header>` };
+
+  test('binds the agent cart once when the chat opens and announces it', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page);
+    await readCart(page);
+    await settle(page);
+    expect(bindRequests).toHaveLength(0);
+
+    await openChat(page);
+    await expect.poll(() => page.evaluate(() => window.__bound.length)).toBe(1);
+    expect([...bindRequests]).toEqual([{ body: { cart_token: agentToken }, nonce: 'rest-nonce' }]);
+    expect(await page.evaluate(() => window.__bound[0])).toEqual({ cartToken: boundToken, binding: 'agent' });
+
+    await closeChat(page);
+    await openChat(page);
+    await settle(page);
+    expect(bindRequests).toHaveLength(1);
+  });
+
+  test('waits for the agent cart token when the chat opens first', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page);
+    await openChat(page);
+    await settle(page);
+    expect(bindRequests).toHaveLength(0);
+
+    await readCart(page);
+    await expect.poll(() => bindRequests.length).toBe(1);
+  });
+
+  test('binds the cart the widget resumed, not the one its cart read minted', async ({ page }) => {
+    const resumedToken = cartToken('t_resumed_agent_cart');
+    await page.addInitScript((token) => {
+      window.localStorage.setItem('gecx_session_id', 'chat-session-1');
+      window.localStorage.setItem('gecx_session_cart', JSON.stringify({ sessionId: 'chat-session-1', cartId: token }));
+    }, resumedToken);
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page, { cartReadToken: cartToken('t_fresh_empty_cart') });
+    await readCart(page);
+
+    await openChat(page);
+    await expect.poll(() => bindRequests.length).toBe(1);
+    expect(bindRequests[0].body).toEqual({ cart_token: resumedToken });
+  });
+
+  test('ignores a resumed cart remembered for another chat session', async ({ page }) => {
+    await page.addInitScript((token) => {
+      window.localStorage.setItem('gecx_session_id', 'chat-session-2');
+      window.localStorage.setItem('gecx_session_cart', JSON.stringify({ sessionId: 'chat-session-1', cartId: token }));
+    }, cartToken('t_old_agent_cart'));
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page);
+    await readCart(page);
+
+    await openChat(page);
+    await expect.poll(() => bindRequests.length).toBe(1);
+    expect(bindRequests[0].body).toEqual({ cart_token: agentToken });
+  });
+
+  test('binds on the widget saying the chat opened, not on a messenger element appearing', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page);
+    await readCart(page);
+    // A starting widget can have its messenger in the page, not yet hidden.
+    await page.evaluate(() => document.body.appendChild(document.createElement('chat-messenger')));
+    await page.evaluate(() => document.body.classList.add('some-theme-class'));
+    await settle(page);
+    expect(bindRequests).toHaveLength(0);
+
+    await page.evaluate(() => window.dispatchEvent(
+        new CustomEvent('chat-messenger-visibility-changed', { detail: { hidden: false } })));
+    await expect.poll(() => bindRequests.length).toBe(1);
+  });
+
+  test('tries again on the next chat open after a deferred binding', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page, { binding: 'deferred' });
+    await readCart(page);
+    await openChat(page);
+    await expect.poll(() => page.evaluate(() => window.__bound.length)).toBe(1);
+    expect(await page.evaluate(() => window.__bound[0])).toEqual({ cartToken: '', binding: 'deferred' });
+
+    await closeChat(page);
+    await openChat(page);
+    await expect.poll(() => bindRequests.length).toBe(2);
+  });
+
+  for (const [label, options] of [['a deferred binding', { binding: 'deferred' }], ['a refused request', { status: 403 }]]) {
+    test(`does not retry ${label} while the chat stays open`, async ({ page }) => {
+      await openFixture(page, fixture);
+      const bindRequests = await stubCartRoutes(page, options);
+      await readCart(page);
+      await openChat(page);
+      await expect.poll(() => bindRequests.length).toBe(1);
+      const nonceLookups = bindRequests.nonceLookups;
+
+      // Themes and the widget toggle body classes while the chat is open.
+      for (let i = 0; i < 5; i++) {
+        await page.evaluate((n) => document.body.classList.toggle(`scrolled-${n}`), i);
+      }
+      await settle(page);
+      expect(bindRequests).toHaveLength(1);
+      expect(bindRequests.nonceLookups).toBe(nonceLookups);
+    });
+  }
+});

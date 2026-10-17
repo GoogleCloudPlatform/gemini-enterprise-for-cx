@@ -32,6 +32,9 @@ class REST_API {
     /** Cart session sync for carts the agent changes. */
     public Cart_Session $cart_session;
 
+    /** Binding the browser and the agent to one cart when the chat starts. */
+    public Cart_Binding $cart_binding;
+
     /** Chat session to order attribution. */
     public Session_Attribution $session_attribution;
 
@@ -49,6 +52,7 @@ class REST_API {
         $this->cart_session        = new Cart_Session();
         $this->session_attribution = new Session_Attribution();
         $this->auth_context        = new Auth_Context();
+        $this->cart_binding        = new Cart_Binding( $this->auth_context );
         $this->order_webhook       = new Order_Webhook();
     }
 }
