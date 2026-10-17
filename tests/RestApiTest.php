@@ -12,6 +12,7 @@
 require_once __DIR__ . '/bootstrap.php';
 
 use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\REST\Auth_Context;
 use Google\Gemini_Enterprise_For_CX\REST\Order_Webhook;
 use Google\Gemini_Enterprise_For_CX\REST\REST_API;
 use Google\Gemini_Enterprise_For_CX\REST\Session_Attribution;
@@ -1681,6 +1682,25 @@ class RestApiTest extends GECX_TestCase {
         $request->set_header( 'Origin', 'https://example.com' );
 
         $this->assertTrue( true === ( new REST_API() )->auth_context->check_auth_context_permissions( $request ) );
+    }
+
+    /**
+     * The headers of a batch sub-request are fields of the batch body, chosen
+     * by whoever sent it. The headers of the HTTP request the browser made,
+     * in $_SERVER, are the ones that decide.
+     */
+    public function test_verify_request_origin_reads_provenance_headers_from_the_wire_first(): void {
+        $_SERVER['HTTP_SEC_FETCH_SITE'] = 'same-site';
+        $_SERVER['HTTP_ORIGIN']         = 'https://evil.example.com';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $request->set_header( 'Origin', 'https://example.com' );
+
+        $perm = Auth_Context::verify_request_origin( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
     }
 
     public function test_auth_context_handler_returns_guest_jwt_for_unauthenticated_user(): void {
