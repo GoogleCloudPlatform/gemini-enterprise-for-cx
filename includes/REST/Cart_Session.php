@@ -501,8 +501,19 @@ class Cart_Session {
                 WC()->cart->persistent_cart_update();
             }
 
+            // A Cart-Token selects the session of whoever holds it, and WooCommerce
+            // accepts one from any origin, so that session need not be this
+            // browser's. The browser's gecx_session_id cookie is carried into a
+            // Cart-Token session only on a request from the store's own pages.
+            // From a page on a same-site sibling host it would hand a shopper's
+            // chat session to a cart that page holds the token for, and the
+            // orders placed from that cart would be delivered into the shopper's
+            // session. Store API checkout applies the same rule; see
+            // Session_Attribution::attach_session_to_order_metadata_store_api().
+            $has_verified_origin = ! $has_cart_token || true === Auth_Context::verify_request_origin( $request );
+
             // Persist through WC()->session API so custom session handlers (Redis/Memcached) stay in sync.
-            $bound_session_id = Session_Attribution::get_gecx_session_id_safely();
+            $bound_session_id = Session_Attribution::get_gecx_session_id_safely( $has_verified_origin );
             if ( isset( WC()->session ) ) {
                 if ( method_exists( WC()->session, 'set' ) ) {
                     WC()->session->set( 'cart', $cart_for_session );
@@ -564,7 +575,7 @@ class Cart_Session {
             $is_guest_session_key = ( 0 === strpos( $session_key, 't_' ) );
             $bridged_to_browser   = false;
             if ( ! $has_cookie && $has_cart_items && 0 === get_current_user_id() && $is_guest_session_key ) {
-                $bridges_cart_token = $is_cart_token_cart_read && true === Auth_Context::verify_request_origin( $request );
+                $bridges_cart_token = $is_cart_token_cart_read && $has_verified_origin;
                 if ( $bridges_cart_token || ( $is_mutation && ! $has_cart_token ) ) {
                     self::set_guest_session_cookie( $session_key );
                     $bridged_to_browser = true;

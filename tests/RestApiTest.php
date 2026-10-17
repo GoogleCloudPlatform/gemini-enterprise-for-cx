@@ -2052,6 +2052,66 @@ class RestApiTest extends GECX_TestCase {
         ];
     }
 
+    /**
+     * Refusing the bridge is not enough on its own. The sync also carries the
+     * browser's gecx_session_id cookie into whichever session the Cart-Token
+     * selects, so from a sibling host it would hand a shopper's chat session
+     * to a cart that page holds the token for, and the orders placed from that
+     * cart would be delivered into the shopper's session.
+     *
+     * @dataProvider cart_token_requests_from_a_sibling_host_cases
+     *
+     * @param string $method HTTP method.
+     * @param string $route  Store API route.
+     */
+    public function test_sync_cart_session_does_not_carry_the_browser_session_id_into_a_cart_token_session_from_outside_the_store( string $method, string $route ): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 1 ] ];
+        $_COOKIE['gecx_session_id']  = 'projects/123/locations/global/commerceSessions/shopper-sess';
+
+        $request = new WP_REST_Request( $method, $route );
+        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_sibling_cart_777' ) );
+        $request->set_header( 'Sec-Fetch-Site', 'same-site' );
+        $request->set_header( 'Origin', 'https://evil.example.com' );
+
+        ( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+        $row = maybe_unserialize( $wpdb->wc_sessions['t_sibling_cart_777'] ?? '' );
+        $this->assertIsArray( $row );
+        $this->assertArrayNotHasKey( 'gecx_session_id', $row );
+        $this->assertNotSame( 'projects/123/locations/global/commerceSessions/shopper-sess', WC()->session->get( 'gecx_session_id' ) );
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public function cart_token_requests_from_a_sibling_host_cases(): array {
+        return [
+            'cart read'     => [ 'GET', '/wc/store/v1/cart' ],
+            'cart mutation' => [ 'POST', '/wc/store/v1/cart/add-item' ],
+        ];
+    }
+
+    public function test_sync_cart_session_carries_the_browser_session_id_into_a_cart_token_session_read_from_the_store(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 1 ] ];
+        $_COOKIE['gecx_session_id']  = 'projects/123/locations/global/commerceSessions/shopper-sess';
+
+        // storefront.js reading the agent's cart from one of the store's own pages.
+        $request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_agent_cart_555' ) );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $request->set_header( 'Referer', 'https://example.com/product/hoodie/' );
+
+        ( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+        $row = maybe_unserialize( $wpdb->wc_sessions['t_agent_cart_555'] ?? '' );
+        $this->assertIsArray( $row );
+        $this->assertSame( 'projects/123/locations/global/commerceSessions/shopper-sess', $row['gecx_session_id'] ?? null );
+    }
+
     public function test_sync_cart_session_does_not_set_cookie_on_empty_cart_read(): void {
         global $wpdb;
         WC()->cart                   = new WC_Cart_Mock();
@@ -2177,6 +2237,46 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( '', (string) $junk_order->get_meta( '_gecx_session_id' ) );
 
         unset( $_SERVER['HTTP_CART_TOKEN'] );
+    }
+
+    /**
+     * A checkout carrying a Cart-Token places the order from the session of
+     * whoever holds the token. From a sibling host, the browser's
+     * gecx_session_id cookie would attribute that order to the shopper's chat
+     * session, and it would be delivered there.
+     */
+    public function test_attach_session_to_order_metadata_store_api_ignores_the_browser_session_cookie_on_a_cart_token_checkout_from_outside_the_store(): void {
+        $order = new WC_Order();
+
+        WC()->session               = new WC_Session_Handler();
+        WC()->session->customer_id  = 't_sibling_cart_777';
+        $_COOKIE['gecx_session_id'] = 'projects/123/locations/global/commerceSessions/shopper-sess';
+
+        $request = new WP_REST_Request( 'POST', '/wc/store/v1/checkout' );
+        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_sibling_cart_777' ) );
+        $request->set_header( 'Sec-Fetch-Site', 'same-site' );
+        $request->set_header( 'Origin', 'https://evil.example.com' );
+
+        ( new REST_API() )->session_attribution->attach_session_to_order_metadata_store_api( $order, $request );
+
+        $this->assertSame( '', (string) $order->get_meta( '_gecx_session_id' ) );
+    }
+
+    public function test_attach_session_to_order_metadata_store_api_uses_the_browser_session_cookie_on_a_cart_token_checkout_from_the_store(): void {
+        $order = new WC_Order();
+
+        WC()->session               = new WC_Session_Handler();
+        WC()->session->customer_id  = 't_agent_cart_555';
+        $_COOKIE['gecx_session_id'] = 'projects/123/locations/global/commerceSessions/shopper-sess';
+
+        $request = new WP_REST_Request( 'POST', '/wc/store/v1/checkout' );
+        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_agent_cart_555' ) );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $request->set_header( 'Origin', 'https://example.com' );
+
+        ( new REST_API() )->session_attribution->attach_session_to_order_metadata_store_api( $order, $request );
+
+        $this->assertSame( 'projects/123/locations/global/commerceSessions/shopper-sess', $order->get_meta( '_gecx_session_id' ) );
     }
 
     public function test_sync_cart_session_persists_to_wc_sessions_table_and_wc_session_handler(): void {
