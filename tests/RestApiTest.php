@@ -1252,7 +1252,7 @@ class RestApiTest extends GECX_TestCase {
         $rest_api = new REST_API();
         $request  = new WP_REST_Request();
         $request->set_route( '/wc/store/v1/cart' );
-        $request->set_header( 'Cart-Token', 'a.cart.token' );
+        $this->send_cart_token( $request, 'a.cart.token' );
         $response = new WP_REST_Response( [ 'items_count' => 0 ] );
 
         $result = $rest_api->cart_session->sync_cart_session_after_dispatch( $response, null, $request );
@@ -1846,7 +1846,7 @@ class RestApiTest extends GECX_TestCase {
 
         $rest_api = new REST_API();
         $request  = new WP_REST_Request( 'POST', '/wc/store/v1/batch' );
-        $request->set_header( 'Cart-Token', 'agent.cart.token' );
+        $this->send_cart_token( $request, 'agent.cart.token' );
         $request->set_param(
             'requests',
             [
@@ -2030,7 +2030,7 @@ class RestApiTest extends GECX_TestCase {
         // storefront.js reading the cart from one of the store's own pages.
         $rest_api = new REST_API();
         $request  = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
-        $request->set_header( 'Cart-Token', $token );
+        $this->send_cart_token( $request, $token );
         $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
         $request->set_header( 'Referer', 'https://example.com/product/hoodie/' );
 
@@ -2055,7 +2055,7 @@ class RestApiTest extends GECX_TestCase {
         WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 2 ] ];
 
         $request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
-        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_guest_shopper_999' ) );
+        $this->send_cart_token( $request, $this->generate_jwt( 't_guest_shopper_999' ) );
         $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
         $request->set_header( 'Referer', 'https://example.com/product/hoodie/' );
         ( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
@@ -2081,7 +2081,7 @@ class RestApiTest extends GECX_TestCase {
         WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 2 ] ];
 
         $request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
-        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_planted_session_777' ) );
+        $this->send_cart_token( $request, $this->generate_jwt( 't_planted_session_777' ) );
         foreach ( $headers as $name => $value ) {
             $request->set_header( $name, $value );
         }
@@ -2126,7 +2126,7 @@ class RestApiTest extends GECX_TestCase {
         $_COOKIE['gecx_session_id']  = 'projects/123/locations/global/commerceSessions/shopper-sess';
 
         $request = new WP_REST_Request( $method, $route );
-        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_sibling_cart_777' ) );
+        $this->send_cart_token( $request, $this->generate_jwt( 't_sibling_cart_777' ) );
         $request->set_header( 'Sec-Fetch-Site', 'same-site' );
         $request->set_header( 'Origin', 'https://evil.example.com' );
 
@@ -2179,6 +2179,31 @@ class RestApiTest extends GECX_TestCase {
         $this->assertArrayNotHasKey( 'gecx_session_id', $row );
     }
 
+    /**
+     * WooCommerce chooses a request's session by the Cart-Token on the HTTP
+     * request and ignores one a batch sub-request names in its own headers.
+     * The sync has to ignore it too. Otherwise it writes the cart and chat
+     * session of the session actually loaded, here the shopper's, into the
+     * row the sub-request names, where the sibling host that sent it can read
+     * the cart back and have its orders delivered into the shopper's session.
+     */
+    public function test_sync_cart_session_ignores_a_cart_token_named_only_by_a_batch_sub_request(): void {
+        global $wpdb;
+        // Loaded from the shopper's cookie: the outer batch request carries no Cart-Token.
+        $_COOKIE['wp_woocommerce_session_testcookiehash'] = 't_shopper_cookie_111||9999999999||9999999999||hash';
+        WC()->session->customer_id                        = 't_shopper_cookie_111';
+        WC()->session->set( 'gecx_session_id', 'projects/123/locations/global/commerceSessions/shopper-sess' );
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'shopper_item' => [ 'product_id' => 77, 'quantity' => 3 ] ];
+
+        $request = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
+        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_sibling_cart_888' ) );
+
+        ( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+        $this->assertArrayNotHasKey( 't_sibling_cart_888', $wpdb->wc_sessions );
+    }
+
     public function test_sync_cart_session_carries_the_browser_session_id_into_a_cart_token_session_read_from_the_store(): void {
         global $wpdb;
         WC()->cart                   = new WC_Cart_Mock();
@@ -2187,7 +2212,7 @@ class RestApiTest extends GECX_TestCase {
 
         // storefront.js reading the agent's cart from one of the store's own pages.
         $request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
-        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_agent_cart_555' ) );
+        $this->send_cart_token( $request, $this->generate_jwt( 't_agent_cart_555' ) );
         $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
         $request->set_header( 'Referer', 'https://example.com/product/hoodie/' );
 
@@ -2207,7 +2232,7 @@ class RestApiTest extends GECX_TestCase {
 
         $rest_api = new REST_API();
         $request  = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
-        $request->set_header( 'Cart-Token', $token );
+        $this->send_cart_token( $request, $token );
 
         unset( $_COOKIE['wp_woocommerce_session_testcookiehash'] );
         $GLOBALS['gecx_test_cookies'] = [];
@@ -2229,7 +2254,7 @@ class RestApiTest extends GECX_TestCase {
 
         $rest_api = new REST_API();
         $request  = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
-        $request->set_header( 'Cart-Token', $token );
+        $this->send_cart_token( $request, $token );
 
         unset( $_COOKIE['wp_woocommerce_session_testcookiehash'] );
         $GLOBALS['gecx_test_cookies'] = [];
@@ -2288,7 +2313,7 @@ class RestApiTest extends GECX_TestCase {
         ] );
 
         $request = new WP_REST_Request( 'POST', '/wc/store/v1/checkout' );
-        $request->set_header( 'Cart-Token', $token );
+        $this->send_cart_token( $request, $token );
 
         $rest_api = new REST_API();
         $rest_api->session_attribution->attach_session_to_order_metadata_store_api( $order, $request );
@@ -2339,9 +2364,34 @@ class RestApiTest extends GECX_TestCase {
         $_COOKIE['gecx_session_id'] = 'projects/123/locations/global/commerceSessions/shopper-sess';
 
         $request = new WP_REST_Request( 'POST', '/wc/store/v1/checkout' );
-        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_sibling_cart_777' ) );
+        $this->send_cart_token( $request, $this->generate_jwt( 't_sibling_cart_777' ) );
         $request->set_header( 'Sec-Fetch-Site', 'same-site' );
         $request->set_header( 'Origin', 'https://evil.example.com' );
+
+        ( new REST_API() )->session_attribution->attach_session_to_order_metadata_store_api( $order, $request );
+
+        $this->assertSame( '', (string) $order->get_meta( '_gecx_session_id' ) );
+    }
+
+    /**
+     * Checkout can be batched. A Cart-Token named only in a sub-request's own
+     * headers did not choose the session the order is placed from, so the
+     * gecx_session_id stored against it must not be attributed to the order.
+     */
+    public function test_attach_session_to_order_metadata_store_api_ignores_a_cart_token_named_only_by_a_batch_sub_request(): void {
+        global $wpdb;
+        $order = new WC_Order();
+
+        // Loaded from the shopper's cookie; the shopper has not chatted.
+        WC()->session              = new WC_Session_Handler();
+        WC()->session->customer_id = 't_shopper_cookie_111';
+
+        $wpdb->wc_sessions['t_sibling_cart_888'] = serialize( [
+            'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sibling-sess',
+        ] );
+
+        $request = new WP_REST_Request( 'POST', '/wc/store/v1/checkout' );
+        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_sibling_cart_888' ) );
 
         ( new REST_API() )->session_attribution->attach_session_to_order_metadata_store_api( $order, $request );
 
@@ -2356,7 +2406,7 @@ class RestApiTest extends GECX_TestCase {
         $_COOKIE['gecx_session_id'] = 'projects/123/locations/global/commerceSessions/shopper-sess';
 
         $request = new WP_REST_Request( 'POST', '/wc/store/v1/checkout' );
-        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_agent_cart_555' ) );
+        $this->send_cart_token( $request, $this->generate_jwt( 't_agent_cart_555' ) );
         $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
         $request->set_header( 'Origin', 'https://example.com' );
 
@@ -2369,7 +2419,7 @@ class RestApiTest extends GECX_TestCase {
         $token    = $this->generate_jwt( 't_guest_session_abc' );
         $rest_api = new REST_API();
         $request  = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
-        $request->set_header( 'Cart-Token', $token );
+        $this->send_cart_token( $request, $token );
 
         WC()->session->set_customer_id( 't_guest_session_abc' );
         WC()->cart->session_cart = [
@@ -2412,7 +2462,7 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 0, WC()->session->save_data_calls );
 
         $post_request = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
-        $post_request->set_header( 'Cart-Token', $token );
+        $this->send_cart_token( $post_request, $token );
         $err_response = new WP_REST_Response( [ 'code' => 'invalid_stock' ], 400 );
 
         $rest_api->cart_session->sync_cart_session_after_dispatch( $err_response, null, $post_request );
@@ -2678,6 +2728,19 @@ class RestApiTest extends GECX_TestCase {
     }
 
     /**
+     * Sends a Cart-Token the way the browser and the agent do: as a header of
+     * the HTTP request, which is where WooCommerce reads it to choose the
+     * session, and so also in the WP_REST_Request copy WordPress builds.
+     *
+     * @param WP_REST_Request $request Request to send it with.
+     * @param string          $token   Cart-Token.
+     */
+    private function send_cart_token( WP_REST_Request $request, string $token ): void {
+        $request->set_header( 'Cart-Token', $token );
+        $_SERVER['HTTP_CART_TOKEN'] = $token;
+    }
+
+    /**
      * Runs the post-dispatch sync for a Store API cart request and returns
      * the woocommerce_items_in_cart and woocommerce_cart_hash cookies it set.
      *
@@ -2687,7 +2750,7 @@ class RestApiTest extends GECX_TestCase {
     private function cart_cookies_set_by( string $method, string $route, string $cart_token = '', array $headers = [] ): array {
         $request = new WP_REST_Request( $method, $route );
         if ( '' !== $cart_token ) {
-            $request->set_header( 'Cart-Token', $cart_token );
+            $this->send_cart_token( $request, $cart_token );
         }
         foreach ( $headers as $name => $value ) {
             $request->set_header( $name, $value );

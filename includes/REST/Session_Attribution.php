@@ -477,13 +477,10 @@ class Session_Attribution {
      */
     // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- WooCommerce Store API action callback signature.
     public function attach_session_to_order_metadata_store_api( \WC_Order $order, \WP_REST_Request $request ): void {
-        $cart_token = (string) $request->get_header( 'Cart-Token' );
-        if ( '' === $cart_token && method_exists( $request, 'get_headers' ) ) {
-            $cart_token = Cart_Session::find_cart_token( $request->get_headers() );
-        }
-        if ( '' === $cart_token ) {
-            $cart_token = Cart_Session::read_cart_token_from_server();
-        }
+        // The Cart-Token WooCommerce chose this checkout's session by. Checkout
+        // can be batched, and a sub-request's own headers do not count; see
+        // Cart_Session::read_cart_token_from_server().
+        $cart_token = Cart_Session::read_cart_token_from_server();
 
         $session_id = self::get_gecx_session_id_safely( '' === $cart_token || true === Auth_Context::verify_request_origin( $request ) );
         if ( empty( $session_id ) ) {
