@@ -17,6 +17,7 @@ declare(strict_types=1);
 namespace Google\Gemini_Enterprise_For_CX\REST;
 
 use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\Storefront;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
@@ -131,20 +132,14 @@ class Session_Attribution {
      * Project number of the agent the storefront widget is configured with,
      * or '' when the store is not linked or its agent name carries none.
      *
-     * Read the way Storefront::get_active_agent_name() reads it, because the
-     * widget takes the project number for the session resource names it
-     * sends from the agent-name attribute that method fills. The filter runs
-     * here in REST and WP-Cron context rather than on a page, so a callback
-     * that picks the agent per page has to return an agent in the same
-     * project in those contexts too.
+     * The widget takes the project number for the session resource names it
+     * sends from its agent-name attribute, so this reads the agent the same
+     * way, through Storefront::resolve_active_agent_name().
      *
      * @return string Numeric project number, or ''.
      */
     private static function get_linked_project_number(): string {
-        $agent_name = (string) get_option( 'gecx_agent_name', '' );
-        if ( function_exists( 'apply_filters' ) ) {
-            $agent_name = (string) apply_filters( 'gecx_active_agent_name', $agent_name );
-        }
+        $agent_name = Storefront::resolve_active_agent_name();
         if ( 1 !== preg_match( '#^projects/([0-9]+)/#', $agent_name, $matches ) ) {
             return '';
         }
