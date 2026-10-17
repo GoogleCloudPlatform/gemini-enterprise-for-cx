@@ -188,9 +188,14 @@ class Cart_Session {
     /**
      * Reads the raw `Cart-Token` request header from `$_SERVER`.
      *
-     * WP_REST_Request only carries the headers WordPress parsed for the route
-     * it dispatched, so the Store API checkout hooks and the post-dispatch cart
-     * sync still have to fall back to `$_SERVER`. The value is a compact JWS:
+     * This is the token WooCommerce chooses the request's session by
+     * (CartTokenUtils::get_request_cart_token() reads the same header), so it
+     * is the one the post-dispatch cart sync and the Store API checkout hook
+     * act on. The WP_REST_Request copy is not used: for a batch sub-request
+     * its headers are fields of the batch body, and a Cart-Token there would
+     * name a session other than the one whose cart the request loaded. It may
+     * also be missing, since WP_REST_Request only carries the headers
+     * WordPress parsed for the route it dispatched. The value is a compact JWS:
      * three base64url segments separated by dots. `sanitize_text_field()` is
      * lossless over that alphabet, and the charset filter drops anything a JWT
      * cannot contain, so a malformed header can never reach
@@ -448,9 +453,12 @@ class Cart_Session {
             ? strtoupper( (string) $request->get_method() )
             : ( isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ) : 'GET' );
 
-        $has_cart_token = ( Auth::is_cart_token_request() )
-            || ! empty( $_SERVER['HTTP_CART_TOKEN'] )
-            || '' !== (string) $request->get_header( 'Cart-Token' );
+        // Only a Cart-Token on the HTTP request itself counts. That is the one
+        // WooCommerce chose the loaded session by (CartTokenUtils reads
+        // $_SERVER), while a batch sub-request's headers are fields of the batch
+        // body: a token there names a session other than the one whose cart and
+        // data this request loaded.
+        $has_cart_token = Auth::is_cart_token_request() || ! empty( $_SERVER['HTTP_CART_TOKEN'] );
 
         $is_cart_read            = ( 'GET' === $method && 1 === preg_match( '#^/wc/store/v\d+/cart(/.*)?$#', $route ) );
         $is_cart_token_cart_read = ( $is_cart_read && $has_cart_token );
@@ -519,13 +527,7 @@ class Cart_Session {
             global $wpdb;
             $session_key = '';
             if ( $has_cart_token ) {
-                $raw_cart_token = (string) $request->get_header( 'Cart-Token' );
-                if ( '' === $raw_cart_token && method_exists( $request, 'get_headers' ) ) {
-                    $raw_cart_token = self::find_cart_token( $request->get_headers() );
-                }
-                if ( '' === $raw_cart_token ) {
-                    $raw_cart_token = self::read_cart_token_from_server();
-                }
+                $raw_cart_token = self::read_cart_token_from_server();
                 if ( '' !== $raw_cart_token ) {
                     $session_key = Auth::get_cart_token_customer_id( $raw_cart_token );
                 }
