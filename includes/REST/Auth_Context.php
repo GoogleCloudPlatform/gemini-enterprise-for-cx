@@ -263,10 +263,13 @@ class Auth_Context {
      *
      * $_SERVER comes first because the headers of a batch sub-request are
      * fields of the batch body, chosen by whoever sent it, while $_SERVER
-     * holds the headers of the HTTP request the browser actually made. No
-     * route that reaches this allows batching today; reading the wire first
-     * keeps a future one from being spoofed. For an ordinary request the two
-     * are the same.
+     * holds the headers of the HTTP request the browser actually made.
+     * Cart_Session::sync_cart_session_after_dispatch() and the Store API
+     * checkout hook reach this for cart mutations and checkout, both of which
+     * /wc/store/v1/batch accepts, and WordPress runs rest_post_dispatch once
+     * per sub-request, so reading the request copy first would let a sibling
+     * host claim same-origin there. For an ordinary request the two are the
+     * same.
      *
      * @param \WP_REST_Request $request     REST request instance.
      * @param string           $header_name Header name as sent on the wire.
