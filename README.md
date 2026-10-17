@@ -33,6 +33,16 @@ These filters adjust the behavior:
 * `gecx_cart_refresh_native_events`: whether to dispatch the WooCommerce Blocks events. Default true.
 * `gecx_cart_refresh_legacy_events`: whether to trigger the jQuery `added_to_cart` and `removed_from_cart` events in place of the native ones. Default false, because many themes open a side cart on them.
 
+### Putting the browser on the agent's cart when the chat opens
+
+A guest who has not added anything to their cart has no WooCommerce session cookie, so the agent can hold a cart the browser is not bound to, for example one the chat widget resumed from an earlier page view. When the chat opens, the storefront script calls `POST /wp-json/gecx/v1/cart-session` with the agent's cart token (`cart_token`). The route needs the `wp_rest` nonce and a same-origin request. It binds the browser to the agent's cart only when that cart holds items and the browser's own cart is empty, since setting a session cookie turns off full-page caching for the visitor and changes the `woocommerce-*` nonces already on the page. It answers `binding`:
+
+* `agent`: the browser now uses the agent's cart; `cart_token` is a token for it.
+* `existing`: the browser keeps its own cart (a logged-in shopper, or a guest whose cart holds items); the chat widget adopts it by itself. No token is returned.
+* `deferred`: nothing to bind yet; the script tries again the next time the chat opens.
+
+The script then dispatches `gecx:cart-session-bound` on `document.body`, with `binding` and `cartToken` in its `detail`.
+
 ## License
 
 This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.

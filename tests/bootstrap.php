@@ -331,28 +331,52 @@ if ( ! class_exists( 'WC_Cache_Helper' ) ) {
     }
 }
 
+// Mirrors WooCommerce's abstract WC_Session: the customer ID and data are
+// protected, and no WooCommerce version has a public setter for the ID.
+if ( ! class_exists( 'WC_Session' ) ) {
+    abstract class WC_Session {
+        protected $_customer_id; // phpcs:ignore PSR2.Classes.PropertyDeclaration.Underscore
+        protected $_data = []; // phpcs:ignore PSR2.Classes.PropertyDeclaration.Underscore
+        public function get_customer_id() {
+            return $this->_customer_id;
+        }
+    }
+}
+
 if ( ! class_exists( 'WC_Session_Handler' ) ) {
-    class WC_Session_Handler {
-        private array $data = [];
+    class WC_Session_Handler extends WC_Session {
         public bool $cookie_set = false;
         public int $cookie_set_calls = 0;
         public int $save_data_calls = 0;
-        // WooCommerce generates guest customer IDs with a t_ prefix. See
-        // WC_Session_Handler::generate_customer_id() and is_customer_guest().
-        public string $customer_id = 't_guest_session_123';
         public bool $has_active_session = false;
+        public int $session_expiration_calls = 0;
+        public function __construct() {
+            // WooCommerce generates guest customer IDs with a t_ prefix. See
+            // WC_Session_Handler::generate_customer_id() and is_customer_guest().
+            $this->_customer_id = 't_guest_session_123';
+        }
+        /** Lets tests read and set the customer ID as $session->customer_id. */
+        public function __get( $key ) {
+            return 'customer_id' === $key ? $this->_customer_id : null;
+        }
+        public function __set( $key, $value ) {
+            if ( 'customer_id' === $key ) {
+                $this->_customer_id = $value;
+            }
+        }
         public function init(): void {}
         public function get( string $key, $default = null ) {
-            return $this->data[ $key ] ?? $default;
+            return $this->_data[ $key ] ?? $default;
         }
         public function set( string $key, $value ): void {
-            $this->data[ $key ] = $value;
+            $this->_data[ $key ] = $value;
         }
+        /** Test helper; WooCommerce has no such method. */
         public function set_customer_id( string $id ): void {
-            $this->customer_id = $id;
+            $this->_customer_id = $id;
         }
         public function get_customer_id(): string {
-            return $this->customer_id;
+            return (string) $this->_customer_id;
         }
         public function save_data(): void {
             $this->save_data_calls++;
@@ -364,18 +388,12 @@ if ( ! class_exists( 'WC_Session_Handler' ) ) {
         public function has_session(): bool {
             return $this->has_active_session;
         }
-        public int $session_expiration_calls = 0;
         public function set_session_expiration(): void {
             $this->session_expiration_calls++;
         }
-        /**
-         * Mirrors WC_Session_Handler::get_session(): reads a session row.
-         *
-         * @return mixed
-         */
-        public function get_session( $customer_id, $default_value = false ) {
-            $raw = $GLOBALS['wpdb']->wc_sessions[ $customer_id ] ?? null;
-            return null === $raw ? $default_value : maybe_unserialize( $raw );
+        /** Session data, for asserting what binding loaded. */
+        public function get_session_data_for_test(): array {
+            return $this->_data;
         }
         /**
          * Mirrors WC_Session_Handler::get_session_cookie(): parses the

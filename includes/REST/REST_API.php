@@ -50,9 +50,9 @@ class REST_API {
     public function __construct() {
         $this->console             = new Console_API();
         $this->cart_session        = new Cart_Session();
-        $this->cart_binding        = new Cart_Binding();
         $this->session_attribution = new Session_Attribution();
         $this->auth_context        = new Auth_Context();
+        $this->cart_binding        = new Cart_Binding( $this->auth_context );
         $this->order_webhook       = new Order_Webhook();
     }
 }
