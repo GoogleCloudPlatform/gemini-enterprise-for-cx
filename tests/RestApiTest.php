@@ -2148,6 +2148,37 @@ class RestApiTest extends GECX_TestCase {
         ];
     }
 
+    /**
+     * A batch sub-request's headers are fields of the batch body, so a sibling
+     * host can claim same-origin in them. WordPress runs rest_post_dispatch
+     * once per sub-request, and only the provenance of the HTTP request itself
+     * may decide whether the browser's gecx_session_id is carried into the
+     * session the Cart-Token selects; see Auth_Context::read_request_header().
+     */
+    public function test_sync_cart_session_ignores_provenance_claimed_by_a_batch_sub_request(): void {
+        global $wpdb;
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 1 ] ];
+        $_COOKIE['gecx_session_id']  = 'projects/123/locations/global/commerceSessions/shopper-sess';
+
+        // The outer POST /wc/store/v1/batch, as the browser sent it from a
+        // sibling host, carrying the sibling's Cart-Token.
+        $_SERVER['HTTP_CART_TOKEN']     = $this->generate_jwt( 't_sibling_cart_888' );
+        $_SERVER['HTTP_SEC_FETCH_SITE'] = 'same-site';
+        $_SERVER['HTTP_ORIGIN']         = 'https://evil.example.com';
+
+        // One of its sub-requests, claiming to come from the store.
+        $request = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $request->set_header( 'Origin', 'https://example.com' );
+
+        ( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+        $row = maybe_unserialize( $wpdb->wc_sessions['t_sibling_cart_888'] ?? '' );
+        $this->assertIsArray( $row );
+        $this->assertArrayNotHasKey( 'gecx_session_id', $row );
+    }
+
     public function test_sync_cart_session_carries_the_browser_session_id_into_a_cart_token_session_read_from_the_store(): void {
         global $wpdb;
         WC()->cart                   = new WC_Cart_Mock();
