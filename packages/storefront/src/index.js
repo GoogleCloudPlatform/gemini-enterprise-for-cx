@@ -219,10 +219,21 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
   window.fetch = function(input, init) {
     const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
     // Fast path: avoid URL parsing on requests that cannot be the session endpoint.
-    if (gecxLatestCartToken &&
-        url &&
+    const isSessionRequest = url !== '' &&
         (url.indexOf('session') !== -1 || url.indexOf('gecx') !== -1) &&
-        gecxIsTargetEndpoint(url, gecxSessionRestUrl(), /\/gecx\/v1\/session(\b|$)/)) {
+        gecxIsTargetEndpoint(url, gecxSessionRestUrl(), /\/gecx\/v1\/session(\b|$)/);
+    // The server accepts the widget's session annotation only from the store's
+    // own pages, and on a subdirectory multisite it tells this site's pages
+    // from a sibling's by the Referer path. The widget sets no referrer policy,
+    // so a site-wide Referrer-Policy such as no-referrer would strip that path.
+    // Send it as the cart and auth-context requests are sent, unless the
+    // caller chose a policy itself.
+    if (isSessionRequest &&
+        !(init && init.referrerPolicy) &&
+        !(input && typeof input === 'object' && input.referrerPolicy)) {
+      init = Object.assign({}, init, {referrerPolicy: 'same-origin'});
+    }
+    if (gecxLatestCartToken && isSessionRequest) {
       init = Object.assign({}, init);
       if (typeof Headers !== 'undefined') {
         const headers = new Headers(init.headers || {});
