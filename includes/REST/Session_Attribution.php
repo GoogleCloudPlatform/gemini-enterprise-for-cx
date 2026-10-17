@@ -387,8 +387,15 @@ class Session_Attribution {
      * Helper to safely retrieve session ID from WooCommerce, falling back to
      * the first-party `gecx_session_id` cookie set when an uncookied guest
      * started a chat before adding items to the cart.
+     *
+     * @param bool $include_cookie Whether the browser's cookie may be used. The
+     *                             callers acting on a Cart-Token session pass
+     *                             false unless the request came from one of
+     *                             the store's own pages, because that session
+     *                             need not be this browser's.
+     * @return string Session ID, or '' when none is bound.
      */
-    public static function get_gecx_session_id_safely() {
+    public static function get_gecx_session_id_safely( bool $include_cookie = true ) {
         $session_id = '';
         if ( function_exists( 'WC' ) ) {
             if ( is_null( WC()->session ) ) {
@@ -432,7 +439,7 @@ class Session_Attribution {
             }
         }
 
-        if ( empty( $session_id ) && isset( $_COOKIE[ self::SESSION_COOKIE_NAME ] ) ) {
+        if ( $include_cookie && empty( $session_id ) && isset( $_COOKIE[ self::SESSION_COOKIE_NAME ] ) ) {
             $cookie_session_id = sanitize_text_field( wp_unslash( $_COOKIE[ self::SESSION_COOKIE_NAME ] ) );
             if ( self::is_valid_session_id( $cookie_session_id ) ) {
                 $session_id = $cookie_session_id;
@@ -458,18 +465,28 @@ class Session_Attribution {
 
     /**
      * Bind Session ID to Created Order (WooCommerce Blocks Checkout)
+     *
+     * A checkout carrying a Cart-Token places the order from the session of
+     * whoever holds that token, so the browser's gecx_session_id cookie is
+     * attributed to it only on a request from one of the store's own pages,
+     * as in Cart_Session::sync_cart_session_after_dispatch(). Otherwise a page
+     * on a same-site sibling host could check out a cart it holds the token
+     * for from a shopper's browser and have that order delivered into the
+     * shopper's chat session. The session's own gecx_session_id, and the one
+     * stored against the token, are used either way.
      */
     // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- WooCommerce Store API action callback signature.
     public function attach_session_to_order_metadata_store_api( \WC_Order $order, \WP_REST_Request $request ): void {
-        $session_id = self::get_gecx_session_id_safely();
+        $cart_token = (string) $request->get_header( 'Cart-Token' );
+        if ( '' === $cart_token && method_exists( $request, 'get_headers' ) ) {
+            $cart_token = Cart_Session::find_cart_token( $request->get_headers() );
+        }
+        if ( '' === $cart_token ) {
+            $cart_token = Cart_Session::read_cart_token_from_server();
+        }
+
+        $session_id = self::get_gecx_session_id_safely( '' === $cart_token || true === Auth_Context::verify_request_origin( $request ) );
         if ( empty( $session_id ) ) {
-            $cart_token = (string) $request->get_header( 'Cart-Token' );
-            if ( '' === $cart_token && method_exists( $request, 'get_headers' ) ) {
-                $cart_token = Cart_Session::find_cart_token( $request->get_headers() );
-            }
-            if ( '' === $cart_token ) {
-                $cart_token = Cart_Session::read_cart_token_from_server();
-            }
             if ( '' !== $cart_token ) {
                 $customer_id = Auth::get_cart_token_customer_id( $cart_token );
                 if ( '' !== $customer_id ) {
