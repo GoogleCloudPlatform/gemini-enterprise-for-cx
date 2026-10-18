@@ -23,23 +23,27 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Puts the shopper's browser on the agent's WooCommerce cart when the chat
- * starts (the /cart-session route).
+ * Puts the shopper's browser on the agent's WooCommerce cart (the
+ * /cart-session route), when the chat opens and after each agent cart change.
  *
  * A guest who has not added anything to their cart has no WooCommerce session
  * cookie, so the chat widget starts the agent on a cart the browser is not
- * bound to. The plugin binds the browser once the agent changes the cart, but
- * a page view that ends before then leaves the agent's cart behind, and the
- * chat widget resumes it on the next page view.
+ * bound to. The plugin binds such a browser once the agent changes the cart,
+ * but a page view that ends before then leaves the agent's cart behind, and
+ * the chat widget resumes it on the next page view. A guest whose browser
+ * already has a session with an empty cart, which WooCommerce starts when the
+ * cart or checkout page is opened or prefetched, is never bound by that path,
+ * so the agent's changes would not reach that browser at all.
  *
- * Called when the chat opens, not on page load, and only binds a browser to an
- * agent cart that holds something. Setting a WooCommerce session cookie stops
- * full-page caches from serving that visitor cached pages, and it changes the
- * woocommerce-* nonces (login, registration, order tracking) already rendered
- * on the page, so it is not done for a cart that holds nothing to lose. When
- * neither side has items yet, the existing paths join the carts: the plugin
- * binds the browser after the agent's first change, and WooCommerce sets its
- * own cookie when the shopper adds first, which the chat widget then adopts.
+ * Called when the chat opens and after agent cart changes, never on page load,
+ * and only binds a browser to an agent cart that holds something. Setting a
+ * WooCommerce session cookie stops full-page caches from serving that visitor
+ * cached pages, and it changes the woocommerce-* nonces (login, registration,
+ * order tracking) already rendered on the page, so it is not done for a cart
+ * that holds nothing to lose. When neither side has items yet, the existing
+ * paths join the carts: the plugin binds the browser after the agent's first
+ * change, and WooCommerce sets its own cookie when the shopper adds first,
+ * which the chat widget then adopts.
  */
 class Cart_Binding {
 

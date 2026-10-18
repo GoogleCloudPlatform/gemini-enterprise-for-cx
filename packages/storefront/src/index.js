@@ -469,7 +469,62 @@ function gecxBindCartSession() {
   gecxCartSessionBindPending = false;
   gecxCartSessionBindStarted = true;
 
-  gecxResolveRestNonce()
+  gecxRequestCartSessionBinding(agentToken)
+      .then(function(binding) {
+        if (binding === 'deferred') {
+          gecxCartSessionBindStarted = false;
+        }
+      })
+      .catch(function(err) {
+        // Allow a retry on the next chat open.
+        gecxCartSessionBindStarted = false;
+        gecxReportError('cart session binding', err);
+      });
+}
+
+/**
+ * Puts the browser on the agent's cart after the agent changed it.
+ *
+ * The cart read that follows an agent change binds a browser without a
+ * WooCommerce session cookie, but not one that has a session of its own,
+ * however empty: WooCommerce starts one for a visitor who opens the cart or
+ * checkout page, and for one whose browser merely prefetches it. Whatever the
+ * agent added then stays in a cart the shopper never sees. The /cart-session
+ * route binds a browser whose own cart is empty, cookie or not, and leaves one
+ * whose cart holds items to the chat widget, which adopts it after copying the
+ * agent's lines into it.
+ *
+ * Takes over a chat-open bind that is waiting for the agent's cart token, and
+ * stands in for the next one unless the route answers 'deferred' or fails.
+ * Never rejects, so the cart is read whatever happens here.
+ * @param {string} agentToken Cart-Token of the cart the agent changed, or ''.
+ * @return {!Promise<void>}
+ */
+function gecxBindCartSessionAfterAgentChange(agentToken) {
+  if (!agentToken) {
+    return Promise.resolve();
+  }
+  gecxCartSessionBindPending = false;
+  return gecxRequestCartSessionBinding(agentToken)
+      .then(function(binding) {
+        if (binding === 'agent' || binding === 'existing') {
+          gecxCartSessionBindStarted = true;
+        }
+      })
+      .catch(function(err) {
+        gecxReportError('cart session binding', err);
+      });
+}
+
+/**
+ * Asks the /cart-session route to put the browser on the agent's cart, and
+ * announces its answer with a gecx:cart-session-bound event on document.body.
+ * @param {string} agentToken Cart-Token of the agent's cart.
+ * @return {!Promise<string>} The route's answer: 'agent', 'existing' or
+ *     'deferred'.
+ */
+function gecxRequestCartSessionBinding(agentToken) {
+  return gecxResolveRestNonce()
       .then(function(nonce) {
         if (!nonce) {
           throw new Error('no REST nonce');
@@ -503,18 +558,12 @@ function gecxBindCartSession() {
             gecxLatestCartToken = cartToken;
           }
           gecxRebindSessionOnCartUpdate();
-        } else if (binding === 'deferred') {
-          gecxCartSessionBindStarted = false;
         }
         gecxDispatchBodyEvent('gecx:cart-session-bound', {
           cartToken: cartToken,
           binding: binding
         });
-      })
-      .catch(function(err) {
-        // Allow a retry on the next chat open.
-        gecxCartSessionBindStarted = false;
-        gecxReportError('cart session binding', err);
+        return binding;
       });
 }
 
@@ -920,7 +969,6 @@ function handleCartUpdate(e) {
   const cartId = gecxIsValidCartTokenFormat(rawCartId) ? rawCartId : '';
   if (cartId) {
     gecxLatestCartToken = cartId;
-    gecxOnCartTokenObserved();
   }
   const directCart = (detail.cart && typeof detail.cart === 'object') ? detail.cart : null;
   const eventCount = (detail.totalQuantity !== undefined && detail.totalQuantity !== null &&
@@ -977,10 +1025,10 @@ function handleCartUpdate(e) {
       gecxUpdateCartBadges(count);
     }
     // Classic headers and mini-carts render from cart fragments. Refreshed
-    // only now, after the cart read: for a shopper who had no WooCommerce
-    // session cookie, that read is what hands the agent's cart session to
-    // the browser, and fragments requested before it describe an empty
-    // cart. A no-op on pages without wc-cart-fragments.
+    // only now, after the binding and the cart read: for a shopper whose
+    // browser was not on the agent's cart, those are what hand the agent's
+    // cart session to the browser, and fragments requested before them
+    // describe an empty cart. A no-op on pages without wc-cart-fragments.
     if (window.jQuery && window.jQuery(document.body).trigger) {
       window.jQuery(document.body).trigger('wc_fragment_refresh');
     }
@@ -990,10 +1038,17 @@ function handleCartUpdate(e) {
         count, previousCount);
   };
 
-  gecxFetchCart(cartId).then(finish, function(err) {
-    gecxReportError('cart refresh', err);
-    finish(null);
-  });
+  // Read once the binding has settled, so that the cart read, the surfaces
+  // refreshed from it and the gecx:cart-updated event all describe the cart
+  // the browser ends up on.
+  gecxBindCartSessionAfterAgentChange(cartId)
+      .then(function() {
+        return gecxFetchCart(cartId);
+      })
+      .then(finish, function(err) {
+        gecxReportError('cart refresh', err);
+        finish(null);
+      });
 }
 
 // Helper to check if an element is visible in the viewport layout.

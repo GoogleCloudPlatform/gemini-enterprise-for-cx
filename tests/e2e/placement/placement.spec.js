@@ -347,21 +347,27 @@ test.describe('cart session binding', () => {
   /**
    * Answers the Store API cart read the widget makes with the given token,
    * and the auth-context and cart-session routes. Returns the cart-session
-   * requests made.
+   * requests made, with the order of cart reads and cart-session requests in
+   * `order`.
    */
   async function stubCartRoutes(page, { binding = 'agent', cartReadToken = agentToken, status = 200 } = {}) {
     const bindRequests = [];
     bindRequests.nonceLookups = 0;
-    await page.route('https://store.test/wp-json/wc/store/v1/cart', (route) => route.fulfill({
-      contentType: 'application/json',
-      headers: { 'Cart-Token': cartReadToken },
-      body: '{"items":[],"items_count":0}',
-    }));
+    bindRequests.order = [];
+    await page.route('https://store.test/wp-json/wc/store/v1/cart', (route) => {
+      bindRequests.order.push('cart');
+      return route.fulfill({
+        contentType: 'application/json',
+        headers: { 'Cart-Token': cartReadToken },
+        body: '{"items":[],"items_count":0}',
+      });
+    });
     await page.route('https://store.test/wp-json/gecx/v1/auth-context', (route) => {
       bindRequests.nonceLookups++;
       return route.fulfill({ contentType: 'application/json', body: '{"nonce":"rest-nonce"}' });
     });
     await page.route('https://store.test/wp-json/gecx/v1/cart-session', (route) => {
+      bindRequests.order.push('cart-session');
       bindRequests.push({ body: route.request().postDataJSON(), nonce: route.request().headers()['x-wp-nonce'] });
       return route.fulfill({
         status,
@@ -371,7 +377,12 @@ test.describe('cart session binding', () => {
     });
     await page.evaluate(() => {
       window.__bound = [];
-      document.body.addEventListener('gecx:cart-session-bound', (e) => window.__bound.push(e.detail));
+      window.__events = [];
+      document.body.addEventListener('gecx:cart-session-bound', (e) => {
+        window.__bound.push(e.detail);
+        window.__events.push(e.type);
+      });
+      document.body.addEventListener('gecx:cart-updated', (e) => window.__events.push(e.type));
     });
     return bindRequests;
   }
@@ -379,6 +390,9 @@ test.describe('cart session binding', () => {
   const readCart = (page) => page.evaluate(() => fetch('https://store.test/wp-json/wc/store/v1/cart'));
   const openChat = (page) => page.evaluate(() => document.body.classList.add('gecx-chat-open'));
   const closeChat = (page) => page.evaluate(() => document.body.classList.remove('gecx-chat-open'));
+  const agentChangesCart = (page, detail) => page.evaluate((d) => document.dispatchEvent(
+      new CustomEvent('chat-messenger-update-cart', { detail: d })), detail);
+  const bodyEvents = (page) => page.evaluate(() => window.__events);
   const fixture = { body: `<header><nav><ul>${navItem}</ul></nav></header>` };
 
   test('binds the agent cart once when the chat opens and announces it', async ({ page }) => {
@@ -485,4 +499,66 @@ test.describe('cart session binding', () => {
       expect(bindRequests.nonceLookups).toBe(nonceLookups);
     });
   }
+
+  test('binds the browser after each agent cart change, before reading the cart', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page);
+
+    await agentChangesCart(page, { cartId: agentToken, totalQuantity: 1 });
+    await expect.poll(() => bodyEvents(page)).toEqual(['gecx:cart-session-bound', 'gecx:cart-updated']);
+    await agentChangesCart(page, { cartId: boundToken, totalQuantity: 2 });
+    await expect.poll(() => bodyEvents(page)).toHaveLength(4);
+
+    expect(bindRequests.map((request) => request.body)).toEqual([{ cart_token: agentToken }, { cart_token: boundToken }]);
+    expect(bindRequests.order).toEqual(['cart-session', 'cart', 'cart-session', 'cart']);
+    expect(await bodyEvents(page)).toEqual([
+      'gecx:cart-session-bound', 'gecx:cart-updated', 'gecx:cart-session-bound', 'gecx:cart-updated',
+    ]);
+  });
+
+  test('still reads the cart when binding after an agent change fails', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page, { status: 403 });
+
+    await agentChangesCart(page, { cartId: agentToken, totalQuantity: 1 });
+
+    await expect.poll(() => bodyEvents(page)).toEqual(['gecx:cart-updated']);
+    expect(bindRequests.order).toEqual(['cart-session', 'cart']);
+  });
+
+  test('reads the cart without binding when an agent change names no cart', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page);
+
+    await agentChangesCart(page, { totalQuantity: 1 });
+
+    await expect.poll(() => bodyEvents(page)).toEqual(['gecx:cart-updated']);
+    expect(bindRequests.order).toEqual(['cart']);
+  });
+
+  test('does not bind again when the chat opens after an agent change bound the cart', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page);
+    await agentChangesCart(page, { cartId: agentToken, totalQuantity: 1 });
+    await expect.poll(() => bodyEvents(page)).toHaveLength(2);
+
+    await openChat(page);
+    await settle(page);
+
+    expect(bindRequests).toHaveLength(1);
+  });
+
+  test('takes over a chat-open bind that is waiting for the agent cart token', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page);
+    await openChat(page);
+    await settle(page);
+    expect(bindRequests).toHaveLength(0);
+
+    await agentChangesCart(page, { cartId: agentToken, totalQuantity: 1 });
+    await expect.poll(() => bodyEvents(page)).toHaveLength(2);
+    await settle(page);
+
+    expect(bindRequests).toHaveLength(1);
+  });
 });
