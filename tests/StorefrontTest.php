@@ -1079,6 +1079,21 @@ function fakeFetch(url, init) {
     const nonce = 'nonce-' + log.fetches.filter(f => f.url.indexOf('auth-context') !== -1).length;
     return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve({ nonce: nonce }) });
   }
+  if (url.indexOf('/gecx/v1/cart-session') !== -1) {
+    log.sequence.push('cart-session');
+    const binding = scenario.binding || 'existing';
+    const token = binding === 'agent' ? (scenario.boundToken || null) : null;
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => String(name).toLowerCase() === 'cart-token' ? token : null },
+      json: () => Promise.resolve({ binding: binding })
+    });
+  }
+  if (url.indexOf('/gecx/v1/session') !== -1) {
+    log.sequence.push('session');
+    return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve({}) });
+  }
   log.sequence.push('cart read');
   const next = cartResponses.shift() || { status: 200, body: {} };
   return Promise.resolve({
@@ -1298,7 +1313,16 @@ JS;
             ]
         );
 
-        $this->assertSame( $token, $log['fetches'][1]['headers']['Cart-Token'] );
+        $cart_reads = array_values(
+            array_filter(
+                $log['fetches'],
+                static function ( array $fetch ): bool {
+                    return false !== strpos( $fetch['url'], 'wc/store/v1/cart' );
+                }
+            )
+        );
+        $this->assertCount( 1, $cart_reads );
+        $this->assertSame( $token, $cart_reads[0]['headers']['Cart-Token'] );
     }
 
     public function test_cart_update_never_reloads_checkout(): void {
