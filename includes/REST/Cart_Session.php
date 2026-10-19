@@ -222,29 +222,79 @@ class Cart_Session {
     }
 
     /**
-     * Customer ID named by the request's WooCommerce session cookie, once
-     * WooCommerce has verified the cookie's HMAC.
+     * Customer ID named by the request's WooCommerce session cookie, once the
+     * cookie's HMAC has been verified.
      *
      * has_woocommerce_session_cookie() only checks that a cookie is present,
      * which any client can fake. WC_Session_Handler::get_session_cookie()
      * checks the hash WooCommerce signed the cookie with and returns false for
      * anything else.
      *
+     * A Store API request that carries a valid Cart-Token runs on
+     * StoreApi\SessionHandler instead, which has no get_session_cookie(). The
+     * cookie is then checked by verify_session_cookie(), the same way.
+     * Otherwise a Cart-Token cart read by the browser that owns the session
+     * could never be matched to that browser's cookie.
+     *
      * @return string Customer ID, or '' when there is no valid session cookie.
      */
     public static function get_verified_session_cookie_customer_id(): string {
-        if ( ! self::has_woocommerce_session_cookie() || ! function_exists( 'WC' ) ) {
+        if ( ! self::has_woocommerce_session_cookie() ) {
             return '';
         }
-        $session = WC()->session;
+        $session = function_exists( 'WC' ) ? WC()->session : null;
         if ( ! is_object( $session ) || ! method_exists( $session, 'get_session_cookie' ) ) {
-            return '';
+            return self::verify_session_cookie();
         }
         $cookie = $session->get_session_cookie();
         if ( ! is_array( $cookie ) || empty( $cookie[0] ) ) {
             return '';
         }
         return (string) $cookie[0];
+    }
+
+    /**
+     * Verifies the WooCommerce session cookie the way
+     * WC_Session_Handler::get_session_cookie() does in WooCommerce 9.9 to
+     * 11.2, and also rejects an expired one, as WooCommerce does once it
+     * loads the session.
+     *
+     * The cookie holds the customer ID, expiration, expiring time and hash,
+     * separated by '|' (WooCommerce 10.0 and later) or '||' (earlier, and
+     * still accepted). The hash is an HMAC of "customer_id|expiration" keyed
+     * with wp_hash() of the same string, so nothing verifies without
+     * wp_hash(). sanitize_text_field() is what wc_clean() does to a string.
+     *
+     * @return string Customer ID, or '' when the cookie is missing, malformed,
+     *                forged, or expired.
+     */
+    private static function verify_session_cookie(): string {
+        $cookie_name = self::get_session_cookie_name();
+        if ( ! isset( $_COOKIE[ $cookie_name ] ) || ! is_string( $_COOKIE[ $cookie_name ] ) || ! function_exists( 'wp_hash' ) ) {
+            return '';
+        }
+        $cookie_value = sanitize_text_field( wp_unslash( $_COOKIE[ $cookie_name ] ) );
+        $parts        = explode( false !== strpos( $cookie_value, '||' ) ? '||' : '|', $cookie_value );
+        if ( 4 !== count( $parts ) ) {
+            return '';
+        }
+        list( $customer_id, $expiration, , $cookie_hash ) = $parts;
+        if ( empty( $customer_id ) || (int) $expiration <= time() ) {
+            return '';
+        }
+        $to_hash = $customer_id . '|' . $expiration;
+        return hash_equals( hash_hmac( 'md5', $to_hash, wp_hash( $to_hash ) ), $cookie_hash ) ? $customer_id : '';
+    }
+
+    /**
+     * Name of the WooCommerce session cookie, as WC_Session_Handler names it.
+     *
+     * @return string
+     */
+    private static function get_session_cookie_name(): string {
+        $cookie_hash_val = defined( 'COOKIEHASH' ) ? COOKIEHASH : md5( (string) get_site_option( 'siteurl' ) );
+        // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
+        return (string) apply_filters( 'woocommerce_cookie', 'wp_woocommerce_session_' . $cookie_hash_val );
     }
 
     /**
@@ -272,9 +322,7 @@ class Cart_Session {
             WC()->session->set_customer_session_cookie( true );
         }
 
-        $cookie_hash_val = defined( 'COOKIEHASH' ) ? COOKIEHASH : md5( (string) get_site_option( 'siteurl' ) );
-        // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
-        $cookie_name = (string) apply_filters( 'woocommerce_cookie', 'wp_woocommerce_session_' . $cookie_hash_val );
+        $cookie_name = self::get_session_cookie_name();
 
         $default_expiring_seconds   = DAY_IN_SECONDS;
         $default_expiration_seconds = 2 * DAY_IN_SECONDS;
