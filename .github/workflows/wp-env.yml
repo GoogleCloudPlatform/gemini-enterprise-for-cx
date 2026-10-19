@@ -34,6 +34,12 @@ jobs:
             wc-version: '7.1.0'
           - wp-version: '7.1'
             wc-version: '9.9.0'
+          # WooCommerce 10.0 to 11.0 sign the session cookie with
+          # wp_fast_hash() wherever WordPress 6.8+ provides it, and reject
+          # any other signature, so a cookie only they can verify is tested
+          # here as well.
+          - wp-version: '7.1'
+            wc-version: '11.0.0'
           - wp-version: '7.1'
             wc-version: '11.2.0'
 

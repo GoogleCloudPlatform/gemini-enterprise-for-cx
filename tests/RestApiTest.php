@@ -1641,17 +1641,24 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( [], $wpdb->wc_sessions );
     }
 
-    public function test_sync_cart_session_sets_cookie_and_persists_session_when_browser_adds_item_to_cart(): void {
+    /**
+     * WooCommerce sets the session cookie on a guest's own first cart change
+     * itself, from woocommerce_add_to_cart. A second one set here would be
+     * the one the browser keeps.
+     */
+    public function test_sync_cart_session_leaves_the_session_cookie_to_woocommerce_when_browser_adds_item_to_cart(): void {
         global $wpdb;
         WC()->cart                   = new WC_Cart_Mock();
         WC()->cart->cart_for_session = [ 'abc123' => [ 'product_id' => 42, 'quantity' => 2 ] ];
+        $GLOBALS['gecx_test_cookies'] = [];
 
         $rest_api = new REST_API();
         $request  = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
         $rest_api->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items_count' => 2 ], 200 ), null, $request );
 
-        $this->assertSame( 1, WC()->session->cookie_set_calls );
-        $this->assertTrue( WC()->session->cookie_set );
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( [], $GLOBALS['gecx_test_session_cookies_set'] );
+        $this->assertSame( [], $GLOBALS['gecx_test_cookies'] );
         $this->assertSame( 1, WC()->cart->persistent_cart_updates );
         $this->assertArrayHasKey( 't_guest_session_123', $wpdb->wc_sessions );
 
@@ -1835,6 +1842,12 @@ class RestApiTest extends GECX_TestCase {
         $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-expired', $stored['gecx_session_id'] );
     }
 
+    /**
+     * The bridged cookie is WooCommerce's own: a WC_Session_Handler pointed
+     * at the Cart-Token's session signs and sets it, as only WooCommerce
+     * knows the signature the installed version accepts. Nothing is built by
+     * hand.
+     */
     public function test_sync_cart_session_bridges_cart_token_to_cookie_on_get_cart_with_items(): void {
         global $wpdb;
         WC()->cart                   = new WC_Cart_Mock();
@@ -1851,10 +1864,28 @@ class RestApiTest extends GECX_TestCase {
 
         $rest_api->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
 
-        $this->assertArrayHasKey( 'wp_woocommerce_session_testcookiehash', $_COOKIE );
-        $cookie_val = $_COOKIE['wp_woocommerce_session_testcookiehash'];
-        $this->assertStringStartsWith( 't_guest_shopper_999||', $cookie_val );
+        // Not the request's own session handler, which names another session.
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertCount( 1, $GLOBALS['gecx_test_session_cookies_set'] );
+        list( $customer_id, $expiration ) = $GLOBALS['gecx_test_session_cookies_set'][0];
+        $this->assertSame( 't_guest_shopper_999', $customer_id );
+        $this->assertLessThan( $expiration, time() );
+        $this->assertArrayNotHasKey( 'wp_woocommerce_session_testcookiehash', $GLOBALS['gecx_test_cookies'] );
         $this->assertArrayHasKey( 't_guest_shopper_999', $wpdb->wc_sessions );
+    }
+
+    public function test_sync_cart_session_bridges_through_the_browser_session_handler_when_it_already_names_the_session(): void {
+        WC()->session->set_customer_id( 't_guest_shopper_999' );
+        WC()->cart                   = new WC_Cart_Mock();
+        WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 2 ] ];
+
+        $request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+        $request->set_header( 'Cart-Token', $this->generate_jwt( 't_guest_shopper_999' ) );
+        ( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+        $this->assertSame( 1, WC()->session->cookie_set_calls );
+        $this->assertSame( 1, WC()->session->session_expiration_calls );
+        $this->assertSame( [ [ 't_guest_shopper_999', WC()->session->get_session_expiration_for_test() ] ], $GLOBALS['gecx_test_session_cookies_set'] );
     }
 
     public function test_sync_cart_session_does_not_set_cookie_on_empty_cart_read(): void {
@@ -2362,16 +2393,6 @@ class RestApiTest extends GECX_TestCase {
     }
 
     /**
-     * Signs a WooCommerce session cookie value the way WC_Session_Handler does.
-     *
-     * @param string $separator '|' (WooCommerce 10.0+) or '||' (earlier).
-     */
-    private function signed_session_cookie( string $customer_id, int $expiration, string $separator = '|' ): string {
-        $to_hash = $customer_id . '|' . $expiration;
-        return implode( $separator, [ $customer_id, $expiration, $expiration - HOUR_IN_SECONDS, hash_hmac( 'md5', $to_hash, wp_hash( $to_hash ) ) ] );
-    }
-
-    /**
      * WooCommerce runs a Store API request carrying a valid Cart-Token on
      * StoreApi\SessionHandler, which cannot verify the browser's cookie. A
      * browser bound to the agent's session reads its cart with both, and
@@ -2381,7 +2402,7 @@ class RestApiTest extends GECX_TestCase {
         WC()->session                = new GECX_Store_API_Session_Mock( 't_bound_guest' );
         WC()->cart                   = new WC_Cart_Mock();
         WC()->cart->cart_for_session = [ 'item' => [ 'quantity' => 1 ] ];
-        $_COOKIE['wp_woocommerce_session_testcookiehash'] = $this->signed_session_cookie( 't_bound_guest', time() + DAY_IN_SECONDS );
+        $_COOKIE['wp_woocommerce_session_testcookiehash'] = 't_bound_guest||12345||12345||hash';
 
         $cookies = $this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart', $this->generate_jwt( 't_bound_guest' ) );
 
@@ -2393,7 +2414,7 @@ class RestApiTest extends GECX_TestCase {
         WC()->session                = new GECX_Store_API_Session_Mock( 't_bound_guest' );
         WC()->cart                   = new WC_Cart_Mock();
         WC()->cart->cart_for_session = [ 'item' => [ 'quantity' => 1 ] ];
-        $_COOKIE['wp_woocommerce_session_testcookiehash'] = $this->signed_session_cookie( 't_someone_else', time() + DAY_IN_SECONDS );
+        $_COOKIE['wp_woocommerce_session_testcookiehash'] = 't_someone_else||12345||12345||hash';
 
         $this->assertSame(
             [],
@@ -2401,26 +2422,22 @@ class RestApiTest extends GECX_TestCase {
         );
     }
 
-    public function test_verifies_the_session_cookie_itself_when_the_session_handler_cannot(): void {
+    /**
+     * The plugin never checks a session cookie's signature itself. Without
+     * get_session_cookie() on WC()->session, it asks a WC_Session_Handler,
+     * and takes whatever WooCommerce accepts or rejects.
+     */
+    public function test_verifies_the_session_cookie_through_woocommerce_when_the_session_handler_cannot(): void {
         WC()->session = new GECX_Store_API_Session_Mock( 't_bound_guest' );
         $cookie_name  = 'wp_woocommerce_session_testcookiehash';
-        $expiration   = time() + DAY_IN_SECONDS;
 
-        foreach ( [ '|', '||' ] as $separator ) {
-            $_COOKIE[ $cookie_name ] = $this->signed_session_cookie( 't_bound_guest', $expiration, $separator );
-            $this->assertSame( 't_bound_guest', Cart_Session::get_verified_session_cookie_customer_id(), $separator );
-        }
+        $_COOKIE[ $cookie_name ] = 't_bound_guest||12345||12345||hash';
+        $this->assertSame( 't_bound_guest', Cart_Session::get_verified_session_cookie_customer_id() );
 
-        // Signed for one guest, presented for another.
-        $_COOKIE[ $cookie_name ] = str_replace( 't_bound_guest|', 't_someone_else|', $this->signed_session_cookie( 't_bound_guest', $expiration ) );
+        $_COOKIE[ $cookie_name ] = 't_bound_guest||12345||12345||forged';
         $this->assertSame( '', Cart_Session::get_verified_session_cookie_customer_id() );
 
-        // Signed, but expired.
-        $_COOKIE[ $cookie_name ] = $this->signed_session_cookie( 't_bound_guest', time() - 1 );
-        $this->assertSame( '', Cart_Session::get_verified_session_cookie_customer_id() );
-
-        // Not four fields.
-        $_COOKIE[ $cookie_name ] = 't_bound_guest|' . $expiration;
+        unset( $_COOKIE[ $cookie_name ] );
         $this->assertSame( '', Cart_Session::get_verified_session_cookie_customer_id() );
     }
 

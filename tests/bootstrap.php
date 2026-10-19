@@ -101,6 +101,9 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_inline_styles']        = [];
     $GLOBALS['gecx_test_localized_scripts']    = [];
     $GLOBALS['gecx_test_wc_session']           = null;
+    // Each WooCommerce session cookie a WC_Session_Handler set, as
+    // [ customer ID, expiration ].
+    $GLOBALS['gecx_test_session_cookies_set']  = [];
     $GLOBALS['gecx_test_deleted_cache_keys']   = [];
     $GLOBALS['gecx_test_wc_sessions_table']    = [];
     // Rows of {prefix}woocommerce_api_keys, keyed by key_id.
@@ -387,9 +390,17 @@ if ( ! class_exists( 'WC_Session_Handler' ) ) {
         public function save_data(): void {
             $this->save_data_calls++;
         }
+        /**
+         * Stands in for WC_Session_Handler::set_customer_session_cookie(),
+         * which signs and sets the cookie for the session's customer ID.
+         * Records what it would sign, wherever the handler came from.
+         */
         public function set_customer_session_cookie( bool $val ): void {
             $this->cookie_set = $val;
             $this->cookie_set_calls++;
+            if ( $val ) {
+                $GLOBALS['gecx_test_session_cookies_set'][] = [ (string) $this->_customer_id, $this->_session_expiration ];
+            }
         }
         public function has_session(): bool {
             return $this->has_active_session;
@@ -410,9 +421,10 @@ if ( ! class_exists( 'WC_Session_Handler' ) ) {
             return $this->_session_expiration;
         }
         /**
-         * Mirrors WC_Session_Handler::get_session_cookie(): parses the
-         * wp_woocommerce_session_* cookie and returns false unless its hash
-         * verifies. Here a hash of 'forged' stands in for a failed HMAC check.
+         * Stands in for WC_Session_Handler::get_session_cookie(): parses the
+         * wp_woocommerce_session_* cookie and returns false unless WooCommerce
+         * accepts its signature. Here a hash of 'forged' stands in for one it
+         * rejects; the real check differs between WooCommerce versions.
          *
          * @return array|false
          */
@@ -1370,13 +1382,6 @@ if ( ! function_exists( 'wp_verify_nonce' ) ) {
 if ( ! function_exists( 'wp_salt' ) ) {
     function wp_salt( string $scheme = 'auth' ): string {
         return (string) ( $GLOBALS['gecx_test_wp_salt'] ?? 'secret_salt' );
-    }
-}
-
-// Mirrors WordPress: what WooCommerce keys its session cookie HMAC with.
-if ( ! function_exists( 'wp_hash' ) ) {
-    function wp_hash( $data, string $scheme = 'auth', string $algo = 'md5' ): string {
-        return hash_hmac( $algo, (string) $data, wp_salt( $scheme ) );
     }
 }
 
