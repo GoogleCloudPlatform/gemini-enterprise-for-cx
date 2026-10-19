@@ -354,8 +354,11 @@ test.describe('cart session binding', () => {
     const bindRequests = [];
     bindRequests.nonceLookups = 0;
     bindRequests.order = [];
-    await page.route('https://store.test/wp-json/wc/store/v1/cart', (route) => {
+    bindRequests.cartReadUrls = [];
+    // With or without a query string: the script adds a cache-buster.
+    await page.route(/^https:\/\/store\.test\/wp-json\/wc\/store\/v1\/cart(\?.*)?$/, (route) => {
       bindRequests.order.push('cart');
+      bindRequests.cartReadUrls.push(route.request().url());
       return route.fulfill({
         contentType: 'application/json',
         headers: { 'Cart-Token': cartReadToken },
@@ -514,6 +517,20 @@ test.describe('cart session binding', () => {
     expect(await bodyEvents(page)).toEqual([
       'gecx:cart-session-bound', 'gecx:cart-updated', 'gecx:cart-session-bound', 'gecx:cart-updated',
     ]);
+  });
+
+  test('reads the cart past page caches after an agent cart change', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page);
+
+    await agentChangesCart(page, { cartId: agentToken, totalQuantity: 1 });
+    await agentChangesCart(page, { cartId: boundToken, totalQuantity: 2 });
+
+    await expect.poll(() => bindRequests.cartReadUrls.length).toBe(2);
+    const [firstUrl, secondUrl] = bindRequests.cartReadUrls;
+    expect(firstUrl).toMatch(/\/wp-json\/wc\/store\/v1\/cart\?_nocache=[0-9a-z]+$/);
+    expect(secondUrl).toMatch(/\/wp-json\/wc\/store\/v1\/cart\?_nocache=[0-9a-z]+$/);
+    expect(secondUrl).not.toBe(firstUrl);
   });
 
   test('still reads the cart when binding after an agent change fails', async ({ page }) => {

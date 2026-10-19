@@ -109,6 +109,25 @@ function gecxCartRestUrl() {
 }
 
 /**
+ * The Store API cart endpoint under a URL no other request uses.
+ *
+ * A page cache such as Batcache can answer a GET that carries no cookies from
+ * a copy it cached by URL, whatever Cart-Token the request sends. The cart
+ * read after an agent cart change would then not bind a browser without a
+ * WooCommerce session to the agent's cart, and the cart it loads into the
+ * page could be another shopper's. The Store API ignores the extra query
+ * parameter, as it does the one the agent adds to its own cart reads.
+ * @return {string}
+ */
+function gecxUncachedCartRestUrl() {
+  const url = gecxCartRestUrl();
+  // Plain permalinks put the route in the query: ?rest_route=/wc/store/...
+  const separator = url.indexOf('?') === -1 ? '?' : '&';
+  return url + separator + '_nocache=' + Date.now().toString(36) +
+      Math.random().toString(36).slice(2, 8);
+}
+
+/**
  * The GECX session REST endpoint for this store.
  * @return {string}
  */
@@ -812,7 +831,7 @@ function gecxFetchCart(cartToken) {
           if (nonce) {
             headers['X-WP-Nonce'] = nonce;
           }
-          return fetch(gecxCartRestUrl(), {
+          return fetch(gecxUncachedCartRestUrl(), {
             method: 'GET',
             headers: headers,
             credentials: 'include'
