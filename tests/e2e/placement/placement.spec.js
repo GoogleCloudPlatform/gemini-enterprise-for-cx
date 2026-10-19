@@ -339,30 +339,33 @@ test('manual placement adds no launcher of its own', async ({ page }) => {
 
 test.describe('cart session binding', () => {
   const b64url = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const cartToken = (session, n = 1) =>
-    `${b64url({ typ: 'JWT', alg: 'HS256' })}.${b64url({ user_id: session, exp: 9999999999, iss: 'store-api', n })}.signature`;
+  const cartToken = (session, n = 1, exp = 9999999999) =>
+    `${b64url({ typ: 'JWT', alg: 'HS256' })}.${b64url({ user_id: session, exp, iss: 'store-api', n })}.signature`;
   const agentToken = cartToken('t_agent');
   const boundToken = cartToken('t_agent', 2);
 
   /**
    * Answers the Store API cart read the widget makes with the given token,
-   * and the auth-context and cart-session routes. Returns the cart-session
-   * requests made, with the order of cart reads and cart-session requests in
-   * `order`.
+   * and the auth-context, cart-session and session routes. Returns the
+   * cart-session requests made, with the order of cart reads, cart-session
+   * and session requests in `order`.
    */
-  async function stubCartRoutes(page, { binding = 'agent', cartReadToken = agentToken, status = 200 } = {}) {
+  async function stubCartRoutes(page, { binding = 'agent', cartReadToken = agentToken, status = 200, itemsCount = 0 } = {}) {
     const bindRequests = [];
     bindRequests.nonceLookups = 0;
     bindRequests.order = [];
     bindRequests.cartReadUrls = [];
+    bindRequests.cartReadTokens = [];
+    bindRequests.sessionRebinds = [];
     // With or without a query string: the script adds a cache-buster.
     await page.route(/^https:\/\/store\.test\/wp-json\/wc\/store\/v1\/cart(\?.*)?$/, (route) => {
       bindRequests.order.push('cart');
       bindRequests.cartReadUrls.push(route.request().url());
+      bindRequests.cartReadTokens.push(route.request().headers()['cart-token'] || '');
       return route.fulfill({
         contentType: 'application/json',
         headers: { 'Cart-Token': cartReadToken },
-        body: '{"items":[],"items_count":0}',
+        body: JSON.stringify({ items: [], items_count: itemsCount }),
       });
     });
     await page.route('https://store.test/wp-json/gecx/v1/auth-context', (route) => {
@@ -375,17 +378,30 @@ test.describe('cart session binding', () => {
       return route.fulfill({
         status,
         contentType: 'application/json',
-        body: JSON.stringify({ binding, cart_token: binding === 'agent' ? boundToken : '' }),
+        headers: binding === 'agent' ? { 'Cart-Token': boundToken } : {},
+        body: JSON.stringify({ binding }),
       });
+    });
+    await page.route('https://store.test/wp-json/gecx/v1/session', (route) => {
+      bindRequests.order.push('session');
+      bindRequests.sessionRebinds.push({
+        body: route.request().postDataJSON(),
+        cartToken: route.request().headers()['cart-token'] || '',
+      });
+      return route.fulfill({ contentType: 'application/json', body: '{}' });
     });
     await page.evaluate(() => {
       window.__bound = [];
       window.__events = [];
+      window.__cartEvents = [];
       document.body.addEventListener('gecx:cart-session-bound', (e) => {
         window.__bound.push(e.detail);
         window.__events.push(e.type);
       });
       document.body.addEventListener('gecx:cart-updated', (e) => window.__events.push(e.type));
+      for (const name of ['wc-blocks_added_to_cart', 'wc-blocks_removed_from_cart']) {
+        document.body.addEventListener(name, (e) => window.__cartEvents.push(e.type));
+      }
     });
     return bindRequests;
   }
@@ -408,7 +424,8 @@ test.describe('cart session binding', () => {
     await openChat(page);
     await expect.poll(() => page.evaluate(() => window.__bound.length)).toBe(1);
     expect([...bindRequests]).toEqual([{ body: { cart_token: agentToken }, nonce: 'rest-nonce' }]);
-    expect(await page.evaluate(() => window.__bound[0])).toEqual({ cartToken: boundToken, binding: 'agent' });
+    // The token the route sent for the agent's cart stays out of the DOM.
+    expect(await page.evaluate(() => window.__bound[0])).toEqual({ binding: 'agent' });
 
     await closeChat(page);
     await openChat(page);
@@ -416,10 +433,35 @@ test.describe('cart session binding', () => {
     expect(bindRequests).toHaveLength(1);
   });
 
+  test('brings the page\'s cart up to date after binding on chat open, without opening a drawer', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page, { itemsCount: 1 });
+    await readCart(page);
+    await openChat(page);
+
+    await expect.poll(() => bodyEvents(page)).toEqual(['gecx:cart-session-bound', 'gecx:cart-updated']);
+    expect(bindRequests.order).toEqual(['cart', 'cart-session', 'cart']);
+    expect(bindRequests.cartReadTokens).toEqual(['', agentToken]);
+    // Refreshes the block mini-cart without the event that opens its drawer.
+    expect(await page.evaluate(() => window.__cartEvents)).toEqual(['wc-blocks_removed_from_cart']);
+  });
+
   test('waits for the agent cart token when the chat opens first', async ({ page }) => {
     await openFixture(page, fixture);
     const bindRequests = await stubCartRoutes(page);
     await openChat(page);
+    await settle(page);
+    expect(bindRequests).toHaveLength(0);
+
+    await readCart(page);
+    await expect.poll(() => bindRequests.length).toBe(1);
+  });
+
+  test('runs a waiting bind when the widget said the chat opened before the body class changed', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page);
+    await page.evaluate(() => window.dispatchEvent(
+        new CustomEvent('chat-messenger-visibility-changed', { detail: { hidden: false } })));
     await settle(page);
     expect(bindRequests).toHaveLength(0);
 
@@ -440,6 +482,20 @@ test.describe('cart session binding', () => {
     await openChat(page);
     await expect.poll(() => bindRequests.length).toBe(1);
     expect(bindRequests[0].body).toEqual({ cart_token: resumedToken });
+  });
+
+  test('skips a resumed cart whose token has expired', async ({ page }) => {
+    await page.addInitScript((token) => {
+      window.localStorage.setItem('gecx_session_id', 'chat-session-1');
+      window.localStorage.setItem('gecx_session_cart', JSON.stringify({ sessionId: 'chat-session-1', cartId: token }));
+    }, cartToken('t_expired_agent_cart', 1, 1000));
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page);
+    await readCart(page);
+
+    await openChat(page);
+    await expect.poll(() => bindRequests.length).toBe(1);
+    expect(bindRequests[0].body).toEqual({ cart_token: agentToken });
   });
 
   test('ignores a resumed cart remembered for another chat session', async ({ page }) => {
@@ -477,7 +533,7 @@ test.describe('cart session binding', () => {
     await readCart(page);
     await openChat(page);
     await expect.poll(() => page.evaluate(() => window.__bound.length)).toBe(1);
-    expect(await page.evaluate(() => window.__bound[0])).toEqual({ cartToken: '', binding: 'deferred' });
+    expect(await page.evaluate(() => window.__bound[0])).toEqual({ binding: 'deferred' });
 
     await closeChat(page);
     await openChat(page);
@@ -503,20 +559,54 @@ test.describe('cart session binding', () => {
     });
   }
 
-  test('binds the browser after each agent cart change, before reading the cart', async ({ page }) => {
+  test('binds the browser after an agent cart change, before reading the cart, once per cart session', async ({ page }) => {
     await openFixture(page, fixture);
     const bindRequests = await stubCartRoutes(page);
 
     await agentChangesCart(page, { cartId: agentToken, totalQuantity: 1 });
     await expect.poll(() => bodyEvents(page)).toEqual(['gecx:cart-session-bound', 'gecx:cart-updated']);
+    // The same cart session, under the token the route sent for it.
     await agentChangesCart(page, { cartId: boundToken, totalQuantity: 2 });
-    await expect.poll(() => bodyEvents(page)).toHaveLength(4);
+    await expect.poll(() => bodyEvents(page)).toHaveLength(3);
+    // Another cart session, such as the shopper's own cart once the widget adopted it.
+    const shopperToken = cartToken('t_shopper');
+    await agentChangesCart(page, { cartId: shopperToken, totalQuantity: 3 });
+    await expect.poll(() => bodyEvents(page)).toHaveLength(5);
 
-    expect(bindRequests.map((request) => request.body)).toEqual([{ cart_token: agentToken }, { cart_token: boundToken }]);
-    expect(bindRequests.order).toEqual(['cart-session', 'cart', 'cart-session', 'cart']);
+    expect(bindRequests.map((request) => request.body)).toEqual([{ cart_token: agentToken }, { cart_token: shopperToken }]);
+    expect(bindRequests.order).toEqual(['cart-session', 'cart', 'cart', 'cart-session', 'cart']);
     expect(await bodyEvents(page)).toEqual([
-      'gecx:cart-session-bound', 'gecx:cart-updated', 'gecx:cart-session-bound', 'gecx:cart-updated',
+      'gecx:cart-session-bound', 'gecx:cart-updated', 'gecx:cart-updated', 'gecx:cart-session-bound', 'gecx:cart-updated',
     ]);
+  });
+
+  test('re-binds the chat session once, after the cart binding answered', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page);
+    await page.evaluate(() => window.localStorage.setItem('gecx_session_id', 'chat-session-1'));
+
+    await agentChangesCart(page, { cartId: agentToken, totalQuantity: 1 });
+    await expect.poll(() => bodyEvents(page)).toHaveLength(2);
+    await settle(page);
+
+    // Sent with the token the route returned in its Cart-Token header.
+    expect(bindRequests.sessionRebinds).toEqual([{ body: { session_id: 'chat-session-1' }, cartToken: boundToken }]);
+    expect(bindRequests.order.indexOf('session')).toBeGreaterThan(bindRequests.order.indexOf('cart-session'));
+  });
+
+  test('stops binding for the page view once the route answers unsupported', async ({ page }) => {
+    await openFixture(page, fixture);
+    const bindRequests = await stubCartRoutes(page, { binding: 'unsupported' });
+
+    await agentChangesCart(page, { cartId: agentToken, totalQuantity: 1 });
+    await expect.poll(() => bodyEvents(page)).toEqual(['gecx:cart-session-bound', 'gecx:cart-updated']);
+    await agentChangesCart(page, { cartId: cartToken('t_shopper'), totalQuantity: 2 });
+    await expect.poll(() => bodyEvents(page)).toHaveLength(3);
+    await openChat(page);
+    await settle(page);
+
+    expect(bindRequests).toHaveLength(1);
+    expect(bindRequests.order).toEqual(['cart-session', 'cart', 'cart']);
   });
 
   test('reads the cart past page caches after an agent cart change', async ({ page }) => {

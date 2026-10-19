@@ -1111,10 +1111,12 @@ const badgeEls = {};
 
 class FakeCustomEvent { constructor(type, init) { this.type = type; this.detail = init && init.detail; } }
 
+const storage = scenario.localStorage || null;
 const window = {
   location: { origin: 'https://example.com', pathname: scenario.pathname || '/', reload: () => { log.reloads++; } },
   innerWidth: 1024,
   addEventListener: on('window'),
+  localStorage: storage ? { getItem: (key) => Object.prototype.hasOwnProperty.call(storage, key) ? storage[key] : null } : undefined,
   gecxStorefrontConfig: Object.assign({
     isWidgetEnabled: true,
     placement: 'floating',
@@ -1323,6 +1325,29 @@ JS;
         );
         $this->assertCount( 1, $cart_reads );
         $this->assertSame( $token, $cart_reads[0]['headers']['Cart-Token'] );
+    }
+
+    public function test_cart_update_rebinds_the_chat_session_once_the_cart_binding_has_answered(): void {
+        $log = $this->run_cart_update_scenario(
+            [
+                'detail'        => [ 'cartId' => 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidF8xIn0.sig' ],
+                'binding'       => 'agent',
+                'boundToken'    => 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidF8xIiwibiI6Mn0.sig',
+                'localStorage'  => [ 'gecx_session_id' => 'chat-session-1' ],
+                'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ] ],
+            ]
+        );
+
+        // Once, and not alongside the binding: a response that refreshes the
+        // browser's old session cookie would undo the binding if it landed
+        // after it.
+        $this->assertSame( [ 'cart-session', 'session', 'cart read' ], $log['sequence'] );
+        $this->assertSame(
+            [ 'gecx:cart-session-bound', 'wc-blocks_added_to_cart', 'gecx:cart-updated' ],
+            self::event_types( $log )
+        );
+        // The token the route sent stays out of the DOM.
+        $this->assertSame( [ 'binding' => 'agent' ], $log['events'][0]['detail'] );
     }
 
     public function test_cart_update_never_reloads_checkout(): void {
