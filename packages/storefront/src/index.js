@@ -109,6 +109,25 @@ function gecxCartRestUrl() {
 }
 
 /**
+ * The Store API cart endpoint under a URL no other request uses.
+ *
+ * A page cache such as Batcache can answer a GET that carries no cookies from
+ * a copy it cached by URL, whatever Cart-Token the request sends. The cart
+ * read after an agent cart change would then not bind a browser without a
+ * WooCommerce session to the agent's cart, and the cart it loads into the
+ * page could be another shopper's. The Store API ignores the extra query
+ * parameter, as it does the one the agent adds to its own cart reads.
+ * @return {string}
+ */
+function gecxUncachedCartRestUrl() {
+  const url = gecxCartRestUrl();
+  // Plain permalinks put the route in the query: ?rest_route=/wc/store/...
+  const separator = url.indexOf('?') === -1 ? '?' : '&';
+  return url + separator + '_nocache=' + Date.now().toString(36) +
+      Math.random().toString(36).slice(2, 8);
+}
+
+/**
  * The GECX session REST endpoint for this store.
  * @return {string}
  */
@@ -121,6 +140,18 @@ function gecxSessionRestUrl() {
     return config.authContextUrl.replace(/\/auth-context(\b|\/|$)/, '/session$1');
   }
   return '/wp-json/gecx/v1/session';
+}
+
+/**
+ * The GECX cart session REST endpoint for this store.
+ * @return {string}
+ */
+function gecxCartSessionRestUrl() {
+  const config = gecxGetStorefrontConfig();
+  if (config && config.cartSessionUrl) {
+    return config.cartSessionUrl;
+  }
+  return gecxSessionRestUrl().replace(/\/session(\b|\/|$)/, '/cart-session$1');
 }
 
 /**
@@ -254,6 +285,7 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
               '';
           if (gecxIsValidCartTokenFormat(token)) {
             gecxLatestCartToken = token;
+            gecxOnCartTokenObserved();
           }
         }
       } catch (err) {
@@ -378,6 +410,295 @@ function gecxRebindSessionOnCartUpdate() {
       .catch(function(err) {
         gecxReportError('session rebind', err);
       });
+}
+
+/**
+ * The /cart-session route's answer for each cart session asked about on this
+ * page view, keyed by gecxCartTokenSession(): in flight, or settled with
+ * 'agent' or 'existing', which hold for the rest of the page view. Any other
+ * answer, and a failure, is dropped so that the next chat open or agent
+ * change asks again.
+ * @type {!Object<string, !Promise<string>>}
+ */
+const gecxCartSessionBindings = Object.create(null);
+
+/** @type {boolean} Whether the route said this store's sessions cannot be bound. */
+let gecxCartSessionBindingUnsupported = false;
+
+/** @type {boolean} Whether a chat-open bind is waiting for the agent's cart token. */
+let gecxCartSessionBindPending = false;
+
+/** @type {boolean} Whether the chat was open at the last visibility check. */
+let gecxChatWasOpen = false;
+
+/**
+ * The claims in a Cart-Token's payload, or null when they cannot be read.
+ *
+ * Not verified, which only the server can do. They are only used to skip a
+ * remembered token that has expired and to tell which cart session a token
+ * is for.
+ * @param {string} token
+ * @return {?Object}
+ */
+function gecxCartTokenClaims(token) {
+  if (!gecxIsValidCartTokenFormat(token) || typeof atob !== 'function') {
+    return null;
+  }
+  try {
+    const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const claims = JSON.parse(atob(payload + '==='.slice((payload.length + 3) % 4)));
+    return (claims && typeof claims === 'object') ? claims : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * The cart session a Cart-Token is for: its user_id claim, or the token
+ * itself when that cannot be read.
+ *
+ * The route mints a new token for the agent's cart when it binds the browser
+ * to it, so two tokens can be for the same cart session.
+ * @param {string} token
+ * @return {string}
+ */
+function gecxCartTokenSession(token) {
+  const claims = gecxCartTokenClaims(token);
+  const session = claims ? claims.user_id : null;
+  if ((typeof session === 'string' || typeof session === 'number') && session !== '') {
+    return 'session:' + session;
+  }
+  return 'token:' + token;
+}
+
+/**
+ * Whether a Cart-Token's exp claim has passed.
+ * @param {string} token
+ * @return {boolean}
+ */
+function gecxIsExpiredCartToken(token) {
+  const claims = gecxCartTokenClaims(token);
+  return !!claims && typeof claims.exp === 'number' && claims.exp * 1000 <= Date.now();
+}
+
+/**
+ * The cart token the chat widget resumed for the current chat session, from
+ * localStorage, or ''.
+ *
+ * On a later page view the widget puts the agent back on the cart it last
+ * synced for the chat session (gecx_session_cart) without reading it from the
+ * Store API, so that token never passes through this script's fetch
+ * interceptor. The cart the widget does read on such a page view is a new,
+ * empty one for a browser without a WooCommerce session.
+ *
+ * A token whose exp has passed is skipped: the route cannot bind it, and it
+ * would otherwise take the place of a fresh one for the whole page view.
+ * @return {string}
+ */
+function gecxResumedAgentCartToken() {
+  try {
+    const sessionId = window.localStorage.getItem('gecx_session_id');
+    const remembered = JSON.parse(window.localStorage.getItem('gecx_session_cart') || 'null');
+    if (sessionId && remembered && remembered.sessionId === sessionId &&
+        gecxIsValidCartTokenFormat(remembered.cartId) &&
+        !gecxIsExpiredCartToken(remembered.cartId)) {
+      return remembered.cartId;
+    }
+  } catch (err) {
+    // Unavailable or malformed storage: fall back to the observed token.
+  }
+  return '';
+}
+
+/**
+ * Whether the chat panel is open, by the gecx-chat-open class the widget puts
+ * on document.body from its own visibility state.
+ *
+ * The chat-messenger element is not a reliable signal here: it can be in the
+ * page without its messenger-hidden class while the widget is still starting,
+ * and binding then would set a session cookie for a visitor who never opened
+ * the chat.
+ * @return {boolean}
+ */
+function gecxIsChatOpen() {
+  return !!document.body && document.body.classList.contains('gecx-chat-open');
+}
+
+/**
+ * Puts the browser on the agent's cart when the chat opens.
+ *
+ * A guest who has not added anything to their cart has no WooCommerce session
+ * cookie, so the agent can hold a cart the browser is not bound to, most often
+ * one the widget resumed from an earlier page view. The /cart-session route
+ * binds the browser to that cart once it holds something and the browser's
+ * own cart is empty. Done when the chat opens, not on page load: once a
+ * session cookie is set, full-page caches stop serving that visitor cached
+ * pages.
+ *
+ * Uses the cart token the widget resumed, or else the one its cart read
+ * revealed, waiting for that read if needed. When the browser is put on the
+ * agent's cart, reads that cart and brings the page's cart surfaces up to
+ * date, as after an agent change. When there is nothing to bind yet, the next
+ * chat open tries again.
+ */
+function gecxBindCartSession() {
+  if (gecxCartSessionBindingUnsupported) {
+    return;
+  }
+  const agentToken = gecxResumedAgentCartToken() || gecxLatestCartToken;
+  if (!agentToken) {
+    gecxCartSessionBindPending = true;
+    return;
+  }
+  gecxCartSessionBindPending = false;
+  if (gecxCartSessionBindings[gecxCartTokenSession(agentToken)]) {
+    // Already asked, or being asked, about this cart session.
+    return;
+  }
+
+  gecxRequestCartSessionBinding(agentToken)
+      .then(function(binding) {
+        if (binding === 'agent') {
+          gecxRebindSessionOnCartUpdate();
+          // The shopper only opened the chat, so nothing may open a drawer
+          // over it.
+          gecxRefreshCartSurfaces(agentToken, null, null, Promise.resolve(), false);
+        }
+      }, function(err) {
+        gecxReportError('cart session binding', err);
+      });
+}
+
+/**
+ * Puts the browser on the agent's cart after the agent changed it.
+ *
+ * The cart read that follows an agent change binds a browser without a
+ * WooCommerce session cookie, but not one that has a session of its own,
+ * however empty: WooCommerce starts one for a visitor who opens the cart or
+ * checkout page, and for one whose browser merely prefetches it. Whatever the
+ * agent added then stays in a cart the shopper never sees. The /cart-session
+ * route binds a browser whose own cart is empty, cookie or not, and leaves one
+ * whose cart holds items to the chat widget, which adopts it after copying the
+ * agent's lines into it.
+ *
+ * Asks once per cart session: an 'agent' or 'existing' answer holds for the
+ * rest of the page view, so later changes to the same cart are read without
+ * waiting for the route. Takes over a chat-open bind that is waiting for the
+ * agent's cart token. Never rejects, so the cart is read whatever happens
+ * here.
+ * @param {string} agentToken Cart-Token of the cart the agent changed, or ''.
+ * @return {!Promise<void>}
+ */
+function gecxBindCartSessionAfterAgentChange(agentToken) {
+  if (!agentToken || gecxCartSessionBindingUnsupported) {
+    return Promise.resolve();
+  }
+  gecxCartSessionBindPending = false;
+  return gecxRequestCartSessionBinding(agentToken)
+      .then(function() {}, function(err) {
+        gecxReportError('cart session binding', err);
+      });
+}
+
+/**
+ * Asks the /cart-session route to put the browser on the agent's cart, and
+ * announces each answer with a gecx:cart-session-bound event on
+ * document.body.
+ *
+ * Returns the request already made for the same cart session while it is in
+ * flight or once it answered 'agent' or 'existing'. With 'agent' the route
+ * sends a token for the agent's cart in a Cart-Token response header, never
+ * in the body: tools that record response bodies, such as session replay,
+ * would keep a copy. 'unsupported' stops all binding for the page view.
+ * @param {string} agentToken Cart-Token of the agent's cart.
+ * @return {!Promise<string>} The route's answer: 'agent', 'existing',
+ *     'deferred' or 'unsupported'.
+ */
+function gecxRequestCartSessionBinding(agentToken) {
+  const session = gecxCartTokenSession(agentToken);
+  if (gecxCartSessionBindings[session]) {
+    return gecxCartSessionBindings[session];
+  }
+  const request = gecxResolveRestNonce()
+      .then(function(nonce) {
+        if (!nonce) {
+          throw new Error('no REST nonce');
+        }
+        return fetch(gecxCartSessionRestUrl(), {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-WP-Nonce': nonce
+          },
+          body: JSON.stringify({cart_token: agentToken})
+        });
+      })
+      .then(function(res) {
+        if (res.status === 401 || res.status === 403) {
+          // Most likely a stale nonce; fetch a fresh one next time.
+          gecxRestNoncePromise = null;
+        }
+        if (!res.ok) {
+          throw new Error('cart-session responded ' + res.status);
+        }
+        const cartToken = (res.headers && typeof res.headers.get === 'function') ?
+            (res.headers.get('Cart-Token') || '') :
+            '';
+        return res.json().then(function(data) {
+          const binding = (data && typeof data.binding === 'string') ? data.binding : '';
+          if (binding === 'agent' && gecxIsValidCartTokenFormat(cartToken)) {
+            gecxLatestCartToken = cartToken;
+          }
+          if (binding === 'unsupported') {
+            gecxCartSessionBindingUnsupported = true;
+          }
+          gecxDispatchBodyEvent('gecx:cart-session-bound', {binding: binding});
+          return binding;
+        });
+      });
+
+  const forget = function() {
+    if (gecxCartSessionBindings[session] === request) {
+      delete gecxCartSessionBindings[session];
+    }
+  };
+  gecxCartSessionBindings[session] = request;
+  request.then(function(binding) {
+    if (binding !== 'agent' && binding !== 'existing') {
+      forget();
+    }
+  }, forget);
+  return request;
+}
+
+/** Runs a chat-open bind that was waiting for the agent's cart token. */
+function gecxOnCartTokenObserved() {
+  if (gecxCartSessionBindPending && gecxChatWasOpen) {
+    gecxBindCartSession();
+  }
+}
+
+/**
+ * Binds the cart when the chat goes from closed to open.
+ *
+ * Only on that change: the body class mutations that also call this fire for
+ * every class a theme or the widget toggles while the chat stays open, and a
+ * bind that answered 'deferred' or failed is meant to be retried on the next
+ * open, not on each of them.
+ * @param {?Event=} e chat-messenger-visibility-changed, whose detail.hidden
+ *     is the widget's own visibility state, or nothing for a body class change.
+ */
+function gecxHandleChatVisibilityForCart(e) {
+  const detail = e && e.detail;
+  const isOpen = (detail && typeof detail.hidden === 'boolean') ? !detail.hidden : gecxIsChatOpen();
+  const opened = isOpen && !gecxChatWasOpen;
+  gecxChatWasOpen = isOpen;
+  if (opened) {
+    gecxBindCartSession();
+  } else if (!isOpen) {
+    gecxCartSessionBindPending = false;
+  }
 }
 
 /**
@@ -596,7 +917,7 @@ function gecxFetchCart(cartToken) {
           if (nonce) {
             headers['X-WP-Nonce'] = nonce;
           }
-          return fetch(gecxCartRestUrl(), {
+          return fetch(gecxUncachedCartRestUrl(), {
             method: 'GET',
             headers: headers,
             credentials: 'include'
@@ -701,22 +1022,27 @@ function gecxDispatchBodyEvent(name, detail) {
  * real add-to-cart click passes, none of which exist here. When they are
  * sent, the native events are not: the block mini-cart translates the jQuery
  * events into the native ones itself, and sending both would refresh twice.
+ *
+ * Added items are announced as a removal too when they may not open a drawer
+ * or side cart.
  * @param {string} change 'added', 'removed' or 'updated'.
  * @param {boolean} preserveCartData Whether the data store already holds the new cart.
  * @param {?Object} cart
  * @param {?number} itemsCount
  * @param {?number} previousItemsCount
+ * @param {boolean} allowOpen Whether added items may open a drawer or side cart.
  */
-function gecxAnnounceCartChange(change, preserveCartData, cart, itemsCount, previousItemsCount) {
+function gecxAnnounceCartChange(change, preserveCartData, cart, itemsCount, previousItemsCount, allowOpen) {
   const settings = gecxCartRefreshConfig();
   const sendLegacy = settings.legacyEvents && window.jQuery &&
       window.jQuery(document.body).trigger;
+  const announceAdded = allowOpen && change === 'added';
 
   if (sendLegacy) {
-    window.jQuery(document.body).trigger(change === 'added' ? 'added_to_cart' : 'removed_from_cart');
+    window.jQuery(document.body).trigger(announceAdded ? 'added_to_cart' : 'removed_from_cart');
   } else if (settings.nativeEvents) {
     gecxDispatchBodyEvent(
-        change === 'added' ? 'wc-blocks_added_to_cart' : 'wc-blocks_removed_from_cart',
+        announceAdded ? 'wc-blocks_added_to_cart' : 'wc-blocks_removed_from_cart',
         {preserveCartData: preserveCartData});
   }
 
@@ -760,8 +1086,32 @@ function handleCartUpdate(e) {
       Number(detail.totalQuantity) :
       null;
 
-  gecxRebindSessionOnCartUpdate();
+  // Read once the binding has settled, so that the cart read, the surfaces
+  // refreshed from it and the gecx:cart-updated event all describe the cart
+  // the browser ends up on. The GECX session is re-bound only then too: a
+  // response that refreshes the browser's old WooCommerce session cookie
+  // would undo the binding if it arrived after it.
+  const bound = gecxBindCartSessionAfterAgentChange(cartId).then(function() {
+    gecxRebindSessionOnCartUpdate();
+  });
+  gecxRefreshCartSurfaces(cartId, directCart, eventCount, bound, true);
+}
 
+/**
+ * Reads the cart the browser is on, brings every cart surface on the page up
+ * to date with it, and announces the change.
+ *
+ * The Blocks cart data store is marked stale at once, and given the cart the
+ * widget sent, if any. The cart is read once `ready` settles.
+ * @param {string} cartToken Cart-Token to read the cart with, or ''.
+ * @param {?Object} directCart Cart the chat widget sent, or null.
+ * @param {?number} eventCount Items count the chat widget sent, or null.
+ * @param {!Promise<void>} ready Settles, never rejecting, when the cart can
+ *     be read.
+ * @param {boolean} allowOpen Whether added items may open a drawer or side
+ *     cart.
+ */
+function gecxRefreshCartSurfaces(cartToken, directCart, eventCount, ready, allowOpen) {
   const store = gecxGetCartDataStore();
   const previousCount = gecxPreviousItemsCount(store);
 
@@ -809,23 +1159,27 @@ function handleCartUpdate(e) {
       gecxUpdateCartBadges(count);
     }
     // Classic headers and mini-carts render from cart fragments. Refreshed
-    // only now, after the cart read: for a shopper who had no WooCommerce
-    // session cookie, that read is what hands the agent's cart session to
-    // the browser, and fragments requested before it describe an empty
-    // cart. A no-op on pages without wc-cart-fragments.
+    // only now, after the binding and the cart read: for a shopper whose
+    // browser was not on the agent's cart, those are what hand the agent's
+    // cart session to the browser, and fragments requested before them
+    // describe an empty cart. A no-op on pages without wc-cart-fragments.
     if (window.jQuery && window.jQuery(document.body).trigger) {
       window.jQuery(document.body).trigger('wc_fragment_refresh');
     }
     gecxRefreshCartOrCheckoutSurface(storeUpdated);
     gecxAnnounceCartChange(
         gecxClassifyCartChange(previousCount, count), storeUpdated, cart || directCart,
-        count, previousCount);
+        count, previousCount, allowOpen);
   };
 
-  gecxFetchCart(cartId).then(finish, function(err) {
-    gecxReportError('cart refresh', err);
-    finish(null);
-  });
+  ready
+      .then(function() {
+        return gecxFetchCart(cartToken);
+      })
+      .then(finish, function(err) {
+        gecxReportError('cart refresh', err);
+        finish(null);
+      });
 }
 
 // Helper to check if an element is visible in the viewport layout.
@@ -1726,12 +2080,15 @@ document.addEventListener('chat-messenger-update-cart', handleCartUpdate);
 
 window.addEventListener('chat-messenger-visibility-changed', updateFloatingWidgetCentering);
 document.addEventListener('chat-messenger-visibility-changed', updateFloatingWidgetCentering);
+window.addEventListener('chat-messenger-visibility-changed', gecxHandleChatVisibilityForCart);
+document.addEventListener('chat-messenger-visibility-changed', gecxHandleChatVisibilityForCart);
 
 if (typeof MutationObserver !== 'undefined' && document.body) {
   const chatObserver = new MutationObserver(function(mutations) {
     for (let i = 0; i < mutations.length; i++) {
       if (mutations[i].attributeName === 'class') {
         updateFloatingWidgetCentering();
+        gecxHandleChatVisibilityForCart();
         break;
       }
     }

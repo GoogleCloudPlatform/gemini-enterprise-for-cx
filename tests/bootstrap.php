@@ -101,6 +101,9 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_inline_styles']        = [];
     $GLOBALS['gecx_test_localized_scripts']    = [];
     $GLOBALS['gecx_test_wc_session']           = null;
+    // Each WooCommerce session cookie a WC_Session_Handler set, as
+    // [ customer ID, expiration ].
+    $GLOBALS['gecx_test_session_cookies_set']  = [];
     $GLOBALS['gecx_test_deleted_cache_keys']   = [];
     $GLOBALS['gecx_test_wc_sessions_table']    = [];
     // Rows of {prefix}woocommerce_api_keys, keyed by key_id.
@@ -331,43 +334,97 @@ if ( ! class_exists( 'WC_Cache_Helper' ) ) {
     }
 }
 
+// Mirrors WooCommerce's abstract WC_Session: the customer ID and data are
+// protected, and no WooCommerce version has a public setter for the ID. The
+// magic methods read and write session data, as WooCommerce's do.
+if ( ! class_exists( 'WC_Session' ) ) {
+    abstract class WC_Session {
+        protected $_customer_id; // phpcs:ignore PSR2.Classes.PropertyDeclaration.Underscore
+        protected $_data = []; // phpcs:ignore PSR2.Classes.PropertyDeclaration.Underscore
+        public function __get( $key ) {
+            return $this->get( $key );
+        }
+        public function __set( $key, $value ) {
+            $this->set( $key, $value );
+        }
+        public function get( string $key, $default = null ) {
+            return $this->_data[ $key ] ?? $default;
+        }
+        public function set( string $key, $value ): void {
+            $this->_data[ $key ] = $value;
+        }
+        public function get_customer_id() {
+            return $this->_customer_id;
+        }
+    }
+}
+
 if ( ! class_exists( 'WC_Session_Handler' ) ) {
-    class WC_Session_Handler {
-        private array $data = [];
+    class WC_Session_Handler extends WC_Session {
+        protected $_session_expiration = 0; // phpcs:ignore PSR2.Classes.PropertyDeclaration.Underscore
         public bool $cookie_set = false;
         public int $cookie_set_calls = 0;
         public int $save_data_calls = 0;
-        // WooCommerce generates guest customer IDs with a t_ prefix. See
-        // WC_Session_Handler::generate_customer_id() and is_customer_guest().
-        public string $customer_id = 't_guest_session_123';
         public bool $has_active_session = false;
+        public int $session_expiration_calls = 0;
+        /** Each update_session_timestamp() call, as [ customer ID, timestamp ]. */
+        public array $session_timestamp_updates = [];
+        public function __construct() {
+            // WooCommerce generates guest customer IDs with a t_ prefix. See
+            // WC_Session_Handler::generate_customer_id() and is_customer_guest().
+            $this->_customer_id = 't_guest_session_123';
+        }
         public function init(): void {}
-        public function get( string $key, $default = null ) {
-            return $this->data[ $key ] ?? $default;
-        }
-        public function set( string $key, $value ): void {
-            $this->data[ $key ] = $value;
-        }
+        /** Test helper; WooCommerce has no such method. */
         public function set_customer_id( string $id ): void {
-            $this->customer_id = $id;
+            $this->_customer_id = $id;
         }
         public function get_customer_id(): string {
-            return $this->customer_id;
+            return (string) $this->_customer_id;
+        }
+        /** Reads a session row from the table, as WooCommerce does. */
+        public function get_session( $customer_id, $default = false ) {
+            $value = $GLOBALS['wpdb']->wc_sessions[ (string) $customer_id ] ?? null;
+            return null === $value ? $default : maybe_unserialize( $value );
         }
         public function save_data(): void {
             $this->save_data_calls++;
         }
+        /**
+         * Stands in for WC_Session_Handler::set_customer_session_cookie(),
+         * which signs and sets the cookie for the session's customer ID.
+         * Records what it would sign, wherever the handler came from.
+         */
         public function set_customer_session_cookie( bool $val ): void {
             $this->cookie_set = $val;
             $this->cookie_set_calls++;
+            if ( $val ) {
+                $GLOBALS['gecx_test_session_cookies_set'][] = [ (string) $this->_customer_id, $this->_session_expiration ];
+            }
         }
         public function has_session(): bool {
             return $this->has_active_session;
         }
+        public function set_session_expiration(): void {
+            $this->session_expiration_calls++;
+            $this->_session_expiration = time() + 2 * DAY_IN_SECONDS;
+        }
+        public function update_session_timestamp( $customer_id, $timestamp ): void {
+            $this->session_timestamp_updates[] = [ $customer_id, $timestamp ];
+        }
+        /** Session data, for asserting what binding loaded. */
+        public function get_session_data_for_test(): array {
+            return $this->_data;
+        }
+        /** Session expiration, for asserting what binding stored. */
+        public function get_session_expiration_for_test(): int {
+            return $this->_session_expiration;
+        }
         /**
-         * Mirrors WC_Session_Handler::get_session_cookie(): parses the
-         * wp_woocommerce_session_* cookie and returns false unless its hash
-         * verifies. Here a hash of 'forged' stands in for a failed HMAC check.
+         * Stands in for WC_Session_Handler::get_session_cookie(): parses the
+         * wp_woocommerce_session_* cookie and returns false unless WooCommerce
+         * accepts its signature. Here a hash of 'forged' stands in for one it
+         * rejects; the real check differs between WooCommerce versions.
          *
          * @return array|false
          */
@@ -384,6 +441,19 @@ if ( ! class_exists( 'WC_Session_Handler' ) ) {
             }
             return false;
         }
+    }
+}
+
+// Mirrors StoreApi\SessionHandler, which WooCommerce uses for a Store API
+// request carrying a valid Cart-Token: it extends WC_Session directly, keeps
+// the session the token names, and has no cookie methods at all, so neither
+// get_session_cookie() nor set_customer_session_cookie().
+if ( ! class_exists( 'GECX_Store_API_Session_Mock' ) ) {
+    class GECX_Store_API_Session_Mock extends WC_Session {
+        public function __construct( string $customer_id ) {
+            $this->_customer_id = $customer_id;
+        }
+        public function save_data(): void {}
     }
 }
 
@@ -462,6 +532,12 @@ if ( ! class_exists( 'WooCommerce_Mock' ) ) {
         public function __construct() {
             $this->session = new WC_Session_Handler();
             $this->cart    = new WC_Cart_Mock();
+        }
+        /** Mirrors WooCommerce::initialize_session(): starts a session handler when there is none. */
+        public function initialize_session(): void {
+            if ( null === $this->session ) {
+                $this->session = new WC_Session_Handler();
+            }
         }
     }
 }

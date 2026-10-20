@@ -223,22 +223,34 @@ class Cart_Session {
 
     /**
      * Customer ID named by the request's WooCommerce session cookie, once
-     * WooCommerce has verified the cookie's HMAC.
+     * WooCommerce has verified the cookie's signature.
      *
      * has_woocommerce_session_cookie() only checks that a cookie is present,
      * which any client can fake. WC_Session_Handler::get_session_cookie()
      * checks the hash WooCommerce signed the cookie with and returns false for
-     * anything else.
+     * anything else. Only WooCommerce can make that check: how it signs the
+     * cookie differs between versions, and on some it depends on what
+     * WordPress provides.
+     *
+     * A Store API request that carries a valid Cart-Token runs on
+     * StoreApi\SessionHandler, which has no get_session_cookie(), so a
+     * WC_Session_Handler is constructed to check the cookie. Its constructor
+     * only sets the cookie name, table and expiration; it registers no hooks.
+     * Otherwise a Cart-Token cart read by the browser that owns the session
+     * could never be matched to that browser's cookie.
      *
      * @return string Customer ID, or '' when there is no valid session cookie.
      */
     public static function get_verified_session_cookie_customer_id(): string {
-        if ( ! self::has_woocommerce_session_cookie() || ! function_exists( 'WC' ) ) {
+        if ( ! self::has_woocommerce_session_cookie() ) {
             return '';
         }
-        $session = WC()->session;
+        $session = function_exists( 'WC' ) ? WC()->session : null;
         if ( ! is_object( $session ) || ! method_exists( $session, 'get_session_cookie' ) ) {
-            return '';
+            if ( ! class_exists( 'WC_Session_Handler' ) ) {
+                return '';
+            }
+            $session = new \WC_Session_Handler();
         }
         $cookie = $session->get_session_cookie();
         if ( ! is_array( $cookie ) || empty( $cookie[0] ) ) {
@@ -248,65 +260,42 @@ class Cart_Session {
     }
 
     /**
-     * Sets the WooCommerce session cookie for a guest customer ID.
+     * Sets the WooCommerce session cookie for a guest customer ID, signed by
+     * WooCommerce.
      *
      * In WooCommerce Store API requests, WC()->session is an instance of
-     * StoreApi\SessionHandler which does not implement set_customer_session_cookie().
-     * This helper constructs and sets the standard WooCommerce session cookie so
-     * that subsequent browser requests (such as /cart and /checkout) have access
-     * to the session created via Cart-Token.
+     * StoreApi\SessionHandler, which sets no cookie. A WC_Session_Handler is
+     * pointed at the guest's session instead, and its
+     * set_customer_session_cookie() writes the cookie, so that subsequent
+     * browser requests (such as /cart and /checkout) have access to the
+     * session created via Cart-Token. The cookie is never built here: its
+     * format and signature differ between WooCommerce versions, and some
+     * accept no other signature than their own (WooCommerce 10.0 to 11.0 use
+     * wp_fast_hash() wherever WordPress 6.8+ provides it). WC_Session_Handler
+     * has no public setter for the customer ID, so it is set from inside the
+     * class's scope.
      *
      * @param string $customer_id Guest customer ID (e.g. t_...).
      */
     private static function set_guest_session_cookie( string $customer_id ): void {
-        if ( empty( $customer_id ) ) {
+        if ( '' === $customer_id || ! class_exists( 'WC_Session_Handler' ) ) {
             return;
         }
 
-        if (
-            isset( WC()->session ) &&
-            method_exists( WC()->session, 'set_customer_session_cookie' ) &&
-            method_exists( WC()->session, 'get_customer_id' ) &&
-            (string) WC()->session->get_customer_id() === $customer_id
-        ) {
-            WC()->session->set_customer_session_cookie( true );
+        $handler = function_exists( 'WC' ) ? WC()->session : null;
+        if ( ! $handler instanceof \WC_Session_Handler || (string) $handler->get_customer_id() !== $customer_id ) {
+            $handler = new \WC_Session_Handler();
         }
-
-        $cookie_hash_val = defined( 'COOKIEHASH' ) ? COOKIEHASH : md5( (string) get_site_option( 'siteurl' ) );
-        // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
-        $cookie_name = (string) apply_filters( 'woocommerce_cookie', 'wp_woocommerce_session_' . $cookie_hash_val );
-
-        $default_expiring_seconds   = DAY_IN_SECONDS;
-        $default_expiration_seconds = 2 * DAY_IN_SECONDS;
-        // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
-        $expiring_seconds   = (int) apply_filters( 'wc_session_expiring', $default_expiring_seconds );
-        $expiring_seconds   = $expiring_seconds > 0 ? $expiring_seconds : $default_expiring_seconds;
-        // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
-        $expiration_seconds = (int) apply_filters( 'wc_session_expiration', $default_expiration_seconds );
-        $expiration_seconds = $expiration_seconds > 0 ? $expiration_seconds : $default_expiration_seconds;
-
-        $session_expiring   = time() + $expiring_seconds;
-        $session_expiration = time() + $expiration_seconds;
-
-        $to_hash     = $customer_id . '|' . $session_expiration;
-        $cookie_hash = function_exists( 'wp_hash' )
-            ? hash_hmac( 'md5', $to_hash, wp_hash( $to_hash ) )
-            : md5( $to_hash );
-        $cookie_value = $customer_id . '||' . $session_expiration . '||' . $session_expiring . '||' . $cookie_hash;
-
-        $use_secure = function_exists( 'wc_site_is_https' ) && function_exists( 'is_ssl' ) && wc_site_is_https() && is_ssl();
-        // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
-        $use_secure = (bool) apply_filters( 'wc_session_use_secure_cookie', $use_secure );
-
-        if ( function_exists( 'wc_setcookie' ) ) {
-            wc_setcookie( $cookie_name, $cookie_value, $session_expiration, $use_secure, true );
-        } elseif ( ! headers_sent() ) {
-            $cookie_path   = defined( 'COOKIEPATH' ) && COOKIEPATH ? COOKIEPATH : '/';
-            $cookie_domain = defined( 'COOKIE_DOMAIN' ) ? COOKIE_DOMAIN : '';
-            setcookie( $cookie_name, $cookie_value, $session_expiration, $cookie_path, $cookie_domain, $use_secure, true );
-        }
-
-        $_COOKIE[ $cookie_name ] = $cookie_value;
+        $point_at = \Closure::bind(
+            function ( string $guest_key ): void {
+                $this->_customer_id = $guest_key;
+            },
+            $handler,
+            \WC_Session_Handler::class
+        );
+        $point_at( $customer_id );
+        $handler->set_session_expiration();
+        $handler->set_customer_session_cookie( true );
     }
 
     /**
@@ -542,9 +531,15 @@ class Cart_Session {
                 }
             }
 
-            // Set the WooCommerce session cookie for un-cookied guests with cart items:
-            // 1) when bridging a Cart-Token cart to the browser on GET /wc/store/v1/cart, or
-            // 2) when a non-empty cart was mutated directly by the browser without a Cart-Token.
+            // Set the WooCommerce session cookie for an un-cookied guest when
+            // it reads a Cart-Token cart that holds items, bridging that cart
+            // to the browser on GET /wc/store/v1/cart.
+            //
+            // A guest's own first cart change needs nothing from here.
+            // WooCommerce sets the session cookie on that response itself, as
+            // WC_Cart_Session::maybe_set_cart_cookies() runs on
+            // woocommerce_add_to_cart, and a second cookie set here would be
+            // the one the browser keeps.
             //
             // Only guest session keys are eligible. A Cart-Token minted while the shopper was
             // logged in carries a numeric user_id, and that token stays valid after the shopper
@@ -553,11 +548,9 @@ class Cart_Session {
             // and deletes that user's row from the sessions table along with their saved cart.
             $is_guest_session_key = ( 0 === strpos( $session_key, 't_' ) );
             $bridged_to_browser   = false;
-            if ( ! $has_cookie && $has_cart_items && 0 === get_current_user_id() && $is_guest_session_key ) {
-                if ( $is_cart_token_cart_read || ( $is_mutation && ! $has_cart_token ) ) {
-                    self::set_guest_session_cookie( $session_key );
-                    $bridged_to_browser = true;
-                }
+            if ( $is_cart_token_cart_read && ! $has_cookie && $has_cart_items && 0 === get_current_user_id() && $is_guest_session_key ) {
+                self::set_guest_session_cookie( $session_key );
+                $bridged_to_browser = true;
             }
 
             // Only when the cart just loaded is the browser's own: the session

@@ -14,7 +14,9 @@
 #   2. REST route registration and permission callbacks over HTTP
 #   3. Cart-Token authentication hooks and Store API scoping
 #   4. Webhook lifecycle through WooCommerce's own WC_Webhook
-#   5. The uninstall sweep, run the way WordPress runs it
+#   5. WooCommerce session cookies the plugin sets and checks
+#   6. Binding the browser to the agent's cart over HTTP
+#   7. The uninstall sweep, run the way WordPress runs it
 #
 
 set -euo pipefail
@@ -71,6 +73,7 @@ wp eval '
   $routes = rest_get_server()->get_routes();
   $expected = [
       "/gecx/v1/session",
+      "/gecx/v1/cart-session",
       "/gecx/v1/refresh-token",
       "/gecx/v1/auth-context",
       "/gecx/v1/webhooks/order-created",
@@ -246,7 +249,299 @@ wp eval '
 '
 
 echo '================================================================='
-echo '5. Uninstall sweep'
+echo '5. WooCommerce session cookies'
+echo '================================================================='
+
+# How WooCommerce signs its session cookie differs between versions, and some
+# accept no signature but their own: 10.0 to 11.0 use wp_fast_hash() wherever
+# WordPress 6.8+ provides it. Only a real WC_Session_Handler can say which
+# cookies the version under test accepts. WP-CLI cannot send a header, so
+# woocommerce_set_cookie_enabled captures each cookie instead.
+wp eval '
+  $captured = [];
+  add_filter(
+      "woocommerce_set_cookie_enabled",
+      static function ( $enabled, $name, $value ) use ( &$captured ) {
+          $captured[] = [ $name, $value ];
+          return false;
+      },
+      10,
+      3
+  );
+  $cookie_name     = apply_filters( "woocommerce_cookie", "wp_woocommerce_session_" . COOKIEHASH );
+  $session_cookies = static function () use ( &$captured, $cookie_name ): array {
+      $values = [];
+      foreach ( $captured as $cookie ) {
+          if ( $cookie_name === $cookie[0] ) {
+              $values[] = $cookie[1];
+          }
+      }
+      return $values;
+  };
+
+  // The cookie the plugin sets to bridge a Cart-Token cart to a browser.
+  $guest_key = "t_gecx_runtime_" . wp_generate_password( 12, false );
+  $bridge    = new ReflectionMethod( \Google\Gemini_Enterprise_For_CX\REST\Cart_Session::class, "set_guest_session_cookie" );
+  $bridge->setAccessible( true );
+  $bridge->invoke( null, $guest_key );
+
+  $bridged = $session_cookies();
+  if ( 1 !== count( $bridged ) ) {
+      fwrite( STDERR, "FAIL: set_guest_session_cookie() set " . count( $bridged ) . " session cookies, expected 1\n" );
+      exit( 1 );
+  }
+  $_COOKIE[ $cookie_name ] = $bridged[0];
+  $parsed                  = ( new WC_Session_Handler() )->get_session_cookie();
+  if ( ! is_array( $parsed ) || $guest_key !== $parsed[0] ) {
+      fwrite( STDERR, "FAIL: WooCommerce rejected the session cookie the plugin set: " . $bridged[0] . "\n" );
+      exit( 1 );
+  }
+  echo "PASS: WooCommerce accepts the session cookie the plugin sets.\n";
+
+  // A cookie WooCommerce issues for a session of its own.
+  unset( $_COOKIE[ $cookie_name ] );
+  $captured = [];
+  $issuer   = new WC_Session_Handler();
+  $issuer->init();
+  $issuer->set_customer_session_cookie( true );
+  $issued      = $session_cookies();
+  $customer_id = (string) $issuer->get_customer_id();
+  if ( 1 !== count( $issued ) || 0 !== strpos( $issued[0], $customer_id ) ) {
+      fwrite( STDERR, "FAIL: WooCommerce did not issue a session cookie for " . $customer_id . "\n" );
+      exit( 1 );
+  }
+
+  // Checked on StoreApi\SessionHandler, which a Store API request with a
+  // Cart-Token runs on and which cannot check a cookie, and on the session
+  // handler a browser request runs on.
+  $request_session = WC()->session;
+  $verify          = static function () {
+      return \Google\Gemini_Enterprise_For_CX\REST\Cart_Session::get_verified_session_cookie_customer_id();
+  };
+  try {
+      foreach (
+          [
+              "StoreApi\\SessionHandler" => ( new ReflectionClass( \Automattic\WooCommerce\StoreApi\SessionHandler::class ) )->newInstanceWithoutConstructor(),
+              "WC_Session_Handler"       => $issuer,
+          ] as $label => $session
+      ) {
+          WC()->session = $session;
+
+          $_COOKIE[ $cookie_name ] = $issued[0];
+          if ( $customer_id !== $verify() ) {
+              fwrite( STDERR, "FAIL: on " . $label . ", the plugin rejected a session cookie WooCommerce issued\n" );
+              exit( 1 );
+          }
+
+          // The same signature, presented for another session.
+          $_COOKIE[ $cookie_name ] = "t_gecx_tampered" . substr( $issued[0], strlen( $customer_id ) );
+          if ( "" !== $verify() ) {
+              fwrite( STDERR, "FAIL: on " . $label . ", the plugin accepted a tampered session cookie\n" );
+              exit( 1 );
+          }
+      }
+  } finally {
+      WC()->session = $request_session;
+      unset( $_COOKIE[ $cookie_name ] );
+  }
+  echo "PASS: the plugin accepts the session cookie WooCommerce issues and rejects a tampered one.\n";
+'
+
+# A guest's own first add to cart, with no cookie and no Cart-Token:
+# WooCommerce sets the session cookie on that response itself, and a second
+# one from the plugin would be the cookie the browser keeps. The guest then
+# has to find its cart on the next request.
+product_id="$(wp eval '
+  $product = new WC_Product_Simple();
+  $product->set_name( "GECX session cookie check" );
+  $product->set_regular_price( "10" );
+  $product->set_status( "publish" );
+  echo "GECX_PRODUCT_ID=" . $product->save() . "\n";
+' | tr -d '\r' | sed -n 's/^GECX_PRODUCT_ID=//p')"
+if [[ -z "${product_id}" ]]; then
+  echo 'FAIL: the product for the add-to-cart check was not created'
+  exit 1
+fi
+
+# The Store API nonce a cookieless guest gets with a cart read, which sets no
+# cookie of its own.
+curl -s -o /tmp/gecx_cart_before.json -D /tmp/gecx_cart_before_headers.txt "${SITE_URL}/wp-json/wc/store/v1/cart"
+nonce="$(tr -d '\r' < /tmp/gecx_cart_before_headers.txt | sed -n 's/^[Nn]once: //p' | tail -n 1)"
+
+rm -f /tmp/gecx_cookies.txt
+status="$(curl -s -o /tmp/gecx_add_item.json -D /tmp/gecx_add_item_headers.txt -c /tmp/gecx_cookies.txt -w '%{http_code}' \
+  -X POST "${SITE_URL}/wp-json/wc/store/v1/cart/add-item" \
+  -H 'Content-Type: application/json' \
+  -H "Nonce: ${nonce}" \
+  --data "{\"id\":${product_id},\"quantity\":1}")"
+assert_status 'a cookieless guest adds to the cart through the Store API' '200,201' "${status}" /tmp/gecx_add_item.json
+
+# Counted by value: the same cookie sent twice still leaves one in the
+# browser, two different ones leave whichever came last.
+session_cookies="$(tr -d '\r' < /tmp/gecx_add_item_headers.txt \
+  | awk 'tolower($0) ~ /^set-cookie: wp_woocommerce_session_/ { sub(/;.*/, ""); print }' \
+  | sort -u | wc -l)"
+if [[ "${session_cookies}" -ne 1 ]]; then
+  echo "FAIL: the add to cart set ${session_cookies} different session cookies, expected 1"
+  cat /tmp/gecx_add_item_headers.txt
+  exit 1
+fi
+echo 'PASS: the add to cart set exactly one session cookie.'
+
+status="$(curl -s -o /tmp/gecx_cart_after.json -b /tmp/gecx_cookies.txt -w '%{http_code}' "${SITE_URL}/wp-json/wc/store/v1/cart")"
+assert_status 'the guest reads its cart with the cookie it was given' '200' "${status}" /tmp/gecx_cart_after.json
+if ! grep -q '"items_count":1' /tmp/gecx_cart_after.json; then
+  echo 'FAIL: WooCommerce did not accept the session cookie: the cart came back without the item'
+  cat /tmp/gecx_cart_after.json
+  echo
+  exit 1
+fi
+echo 'PASS: WooCommerce accepted the session cookie, and the cart still holds the item.'
+
+echo '================================================================='
+echo '6. Binding the browser to the agent cart'
+echo '================================================================='
+
+# The /cart-session route over HTTP, against the real session handler: the
+# browser binding the stub suite can only model. The agent's cart is filled
+# the way the agent fills it, through the Store API with a Cart-Token and no
+# cookies, and its reads carry a query parameter no other request uses, as
+# the agent's own do, so a page cache cannot answer them.
+agent_cart() {
+  local headers_file="$1"
+  curl -s -o /dev/null -D "${headers_file}" "${SITE_URL}/wp-json/wc/store/v1/cart?_nocache=$(date +%s%N)"
+}
+header_value() {
+  tr -d '\r' < "$2" | awk -v name="$1" 'tolower($0) ~ "^" tolower(name) ": " { sub(/^[^:]*: /, ""); value = $0 } END { print value }'
+}
+
+agent_cart /tmp/gecx_agent_cart_headers.txt
+agent_token="$(header_value 'Cart-Token' /tmp/gecx_agent_cart_headers.txt)"
+agent_nonce="$(header_value 'Nonce' /tmp/gecx_agent_cart_headers.txt)"
+status="$(curl -s -o /tmp/gecx_agent_add.json -w '%{http_code}' \
+  -X POST "${SITE_URL}/wp-json/wc/store/v1/cart/add-item" \
+  -H 'Content-Type: application/json' \
+  -H "Cart-Token: ${agent_token}" \
+  -H "Nonce: ${agent_nonce}" \
+  --data "{\"id\":${product_id},\"quantity\":1}")"
+assert_status 'the agent adds to its cart through the Store API' '200,201' "${status}" /tmp/gecx_agent_add.json
+
+agent_key="$(wp eval '
+  echo "GECX_AGENT_KEY=" . \Google\Gemini_Enterprise_For_CX\Auth::get_cart_token_customer_id( "'"${agent_token}"'" ) . "\n";
+' | tr -d '\r' | sed -n 's/^GECX_AGENT_KEY=//p')"
+if [[ "${agent_key}" != t_* ]]; then
+  echo "FAIL: the agent cart token names no guest session: '${agent_key}'"
+  exit 1
+fi
+
+# A browser that has never had a WooCommerce session asks with its wp_rest
+# nonce, which it gets from auth-context like the storefront script does.
+rm -f /tmp/gecx_browser_cookies.txt
+curl -s -o /tmp/gecx_browser_auth.json -c /tmp/gecx_browser_cookies.txt \
+  -X POST -H 'Sec-Fetch-Site: same-origin' "${SITE_URL}/wp-json/gecx/v1/auth-context"
+rest_nonce="$(sed -n 's/.*"nonce":"\([^"]*\)".*/\1/p' /tmp/gecx_browser_auth.json)"
+if [[ -z "${rest_nonce}" ]]; then
+  echo 'FAIL: auth-context returned no nonce for the binding check'
+  cat /tmp/gecx_browser_auth.json
+  exit 1
+fi
+
+# The shared logged-out nonce is not enough on its own: without proof the
+# request is same-origin, another site could bind a shopper's browser.
+status="$(curl -s -o /tmp/gecx_bind_bare.json -w '%{http_code}' \
+  -X POST "${SITE_URL}/wp-json/gecx/v1/cart-session" \
+  -H 'Content-Type: application/json' \
+  -H "X-WP-Nonce: ${rest_nonce}" \
+  --data "{\"cart_token\":\"${agent_token}\"}")"
+assert_status 'cart-session refuses a request that is not shown to be same-origin' '403' "${status}" /tmp/gecx_bind_bare.json
+
+status="$(curl -s -o /tmp/gecx_bind.json -D /tmp/gecx_bind_headers.txt \
+  -b /tmp/gecx_browser_cookies.txt -c /tmp/gecx_browser_cookies.txt -w '%{http_code}' \
+  -X POST "${SITE_URL}/wp-json/gecx/v1/cart-session" \
+  -H 'Content-Type: application/json' \
+  -H 'Sec-Fetch-Site: same-origin' \
+  -H "Origin: ${SITE_URL}" \
+  -H "X-WP-Nonce: ${rest_nonce}" \
+  --data "{\"cart_token\":\"${agent_token}\"}")"
+assert_status 'cart-session binds a cookieless browser' '200' "${status}" /tmp/gecx_bind.json
+if ! grep -q '"binding":"agent"' /tmp/gecx_bind.json; then
+  echo 'FAIL: cart-session did not bind the browser to the agent cart'
+  cat /tmp/gecx_bind.json
+  echo
+  exit 1
+fi
+bound_token="$(header_value 'Cart-Token' /tmp/gecx_bind_headers.txt)"
+bound_key="$(wp eval '
+  echo "GECX_BOUND_KEY=" . \Google\Gemini_Enterprise_For_CX\Auth::get_cart_token_customer_id( "'"${bound_token}"'" ) . "\n";
+' | tr -d '\r' | sed -n 's/^GECX_BOUND_KEY=//p')"
+if [[ "${bound_key}" != "${agent_key}" ]] || grep -q 'eyJ' /tmp/gecx_bind.json; then
+  echo 'FAIL: the bound cart token must come only in the Cart-Token header, for the agent cart'
+  cat /tmp/gecx_bind_headers.txt /tmp/gecx_bind.json
+  exit 1
+fi
+if ! header_value 'Cache-Control' /tmp/gecx_bind_headers.txt | grep -q 'no-store'; then
+  echo 'FAIL: the cart-session response is cacheable'
+  cat /tmp/gecx_bind_headers.txt
+  exit 1
+fi
+
+session_cookies="$(tr -d '\r' < /tmp/gecx_bind_headers.txt \
+  | awk 'tolower($0) ~ /^set-cookie: wp_woocommerce_session_/ { sub(/^[^:]*: [^=]*=/, ""); sub(/;.*/, ""); print }' \
+  | sort -u)"
+if [[ "$(printf '%s\n' "${session_cookies}" | grep -c .)" -ne 1 ]] || [[ "${session_cookies}" != "${agent_key}"* ]]; then
+  echo "FAIL: binding should set one session cookie for ${agent_key}, set: ${session_cookies}"
+  exit 1
+fi
+echo 'PASS: cart-session bound the browser, set one session cookie for the agent cart and sent its token in a header only.'
+
+# WooCommerce must accept that cookie: the browser now reads the agent's cart
+# with nothing but its cookies.
+status="$(curl -s -o /tmp/gecx_bound_cart.json -b /tmp/gecx_browser_cookies.txt -w '%{http_code}' \
+  "${SITE_URL}/wp-json/wc/store/v1/cart?_nocache=$(date +%s%N)")"
+assert_status 'the bound browser reads its cart with its cookie' '200' "${status}" /tmp/gecx_bound_cart.json
+if ! grep -q '"items_count":1' /tmp/gecx_bound_cart.json; then
+  echo 'FAIL: the bound browser does not see the agent cart'
+  cat /tmp/gecx_bound_cart.json
+  echo
+  exit 1
+fi
+echo 'PASS: WooCommerce accepted the binding cookie, and the browser sees the agent cart.'
+
+# The session row has to live as long as the cookie naming it, or
+# cleanup_sessions() deletes the cart while the cookie still points at it.
+cookie_expiration="$(printf '%s' "${session_cookies}" | sed 's/%7C/|/g; s/||/|/g' | cut -d'|' -f2)"
+row_expiry="$(wp eval '
+  global $wpdb;
+  echo "GECX_ROW_EXPIRY=" . $wpdb->get_var( $wpdb->prepare( "SELECT session_expiry FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s", "'"${agent_key}"'" ) ) . "\n";
+' | tr -d '\r' | sed -n 's/^GECX_ROW_EXPIRY=//p')"
+if [[ -z "${row_expiry}" ]] || [[ "${row_expiry}" -lt "${cookie_expiration}" ]]; then
+  echo "FAIL: the bound session row expires at '${row_expiry}', before its cookie (${cookie_expiration})"
+  exit 1
+fi
+echo 'PASS: the bound session row lives as long as its cookie.'
+
+# An agent cart with nothing in it is not worth a session cookie: binding
+# would turn page caching off for the visitor and change the nonces on the page.
+agent_cart /tmp/gecx_empty_agent_headers.txt
+empty_token="$(header_value 'Cart-Token' /tmp/gecx_empty_agent_headers.txt)"
+rm -f /tmp/gecx_fresh_cookies.txt
+status="$(curl -s -o /tmp/gecx_bind_empty.json -D /tmp/gecx_bind_empty_headers.txt -c /tmp/gecx_fresh_cookies.txt -w '%{http_code}' \
+  -X POST "${SITE_URL}/wp-json/gecx/v1/cart-session" \
+  -H 'Content-Type: application/json' \
+  -H 'Sec-Fetch-Site: same-origin' \
+  -H "Origin: ${SITE_URL}" \
+  -H "X-WP-Nonce: ${rest_nonce}" \
+  --data "{\"cart_token\":\"${empty_token}\"}")"
+assert_status 'cart-session answers for an empty agent cart' '200' "${status}" /tmp/gecx_bind_empty.json
+if ! grep -q '"binding":"deferred"' /tmp/gecx_bind_empty.json || grep -qi '^set-cookie: wp_woocommerce_session_' /tmp/gecx_bind_empty_headers.txt; then
+  echo 'FAIL: an empty agent cart must be deferred, without a session cookie'
+  cat /tmp/gecx_bind_empty_headers.txt /tmp/gecx_bind_empty.json
+  exit 1
+fi
+echo 'PASS: an empty agent cart is deferred without a session cookie.'
+
+echo '================================================================='
+echo '7. Uninstall sweep'
 echo '================================================================='
 
 # uninstall.php is included the way WordPress includes it rather than run via
