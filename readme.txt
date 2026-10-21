@@ -1,6 +1,6 @@
-=== Gemini Enterprise for CX ===
+=== Gemini Enterprise for CX - AI Shopping Assistant & Chatbot for WooCommerce ===
 Contributors: google
-Tags: woocommerce, ai, chatbot, ai agent, shopping assistant
+Tags: woocommerce, ai chatbot, chatbot, shopping assistant, gemini
 Requires at least: 6.2
 WC requires at least: 7.1
 WC tested up to: 11.2
@@ -10,11 +10,11 @@ Stable tag: 1.1.0
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
-AI shopping assistant and chatbot for your WooCommerce store, from Google Cloud. Answers product questions, gives advice and adds items to the cart.
+AI chatbot and shopping assistant for WooCommerce, powered by Google Gemini. Answers product questions, tracks orders and adds items to the cart.
 
 == Description ==
 
-Gemini Enterprise for CX adds an AI shopping assistant to your WooCommerce store. Shoppers open a chat widget on your storefront and talk to an AI agent that knows your products and store policies, answers their questions and manages their cart. The agent runs on Google's Gemini Enterprise for CX (GECX) service.
+Gemini Enterprise for CX is an AI chatbot and AI shopping assistant for WooCommerce, powered by Google Gemini. Shoppers open a chat widget on your storefront and talk to an AI agent that knows your products and store policies, helps them find and compare products, answers "Where is my order?" questions and manages their cart. The agent runs on Google's Gemini Enterprise for CX (GECX) service.
 
 The plugin is an interface to the Gemini Enterprise for CX software as a service (SaaS) provided by Google Cloud. Connecting a store requires a Google account with access to Gemini Enterprise for CX.
 
@@ -87,6 +87,12 @@ Log in to your WordPress dashboard, navigate to the Plugins menu and click Add N
 Upload the plugin folder to the `/wp-content/plugins/` directory, then activate the plugin through the 'Plugins' screen in WordPress.
 
 == FAQ ==
+
+= Is this a chatbot for WooCommerce? =
+Yes. It adds an AI chatbot to your WooCommerce storefront that acts as a shopping assistant: it answers questions about your products and store policies, compares products, checks stock, adds items to the cart and answers order status questions. It needs WooCommerce and does not work on WordPress sites without it.
+
+= Does it use Google Gemini? =
+Yes. The agent runs on Google Cloud's Gemini Enterprise for CX service, which is built on Google's Gemini models. You do not need your own Gemini or OpenAI API key; the plugin connects your store to the service with your Google account.
 
 = Are back-in-stock alerts available? =
 Not yet. Back-in-stock alerts are planned for a future release of the service.
