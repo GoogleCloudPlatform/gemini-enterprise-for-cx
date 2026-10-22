@@ -9,7 +9,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Plugin Name: Gemini Enterprise for CX
+ * Plugin Name: Gemini Enterprise for CX - AI Shopping Assistant & Chatbot for WooCommerce
  * Description: Drive sales with an AI agent that's already an expert on your brand and products. Go live instantly on your WooCommerce storefront.
  * Requires Plugins: woocommerce
  * Requires at least: 6.2
