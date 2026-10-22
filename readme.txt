@@ -14,7 +14,7 @@ AI chatbot and shopping assistant for WooCommerce, powered by Google Gemini. Ans
 
 == Description ==
 
-Gemini Enterprise for CX is an AI chatbot and AI shopping assistant for WooCommerce, powered by Google Gemini. Shoppers open a chat widget on your storefront and talk to an AI agent that knows your products and store policies, helps them find and compare products, answers "Where is my order?" questions and manages their cart. The agent runs on Google's Gemini Enterprise for CX (GECX) service.
+Gemini Enterprise for CX is an AI chatbot and AI shopping assistant for WooCommerce, powered by Google Gemini. Shoppers chat with an AI agent on your storefront that knows your products and store policies. It helps them find and compare products, answers order status questions and manages their cart. The agent runs on Google's Gemini Enterprise for CX (GECX) service.
 
 The plugin is an interface to the Gemini Enterprise for CX software as a service (SaaS) provided by Google Cloud. Connecting a store requires a Google account with access to Gemini Enterprise for CX.
 
