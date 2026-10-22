@@ -308,6 +308,82 @@ test('lifts the floating launcher above a fixed bottom bar', async ({ page }) =>
   expect(rect.y + rect.height).toBeLessThanOrEqual(700 - 56);
 });
 
+test('places the launcher in an Elementor header with Max Mega Menu on desktop and mobile', async ({ page }) => {
+  const megaMenuHeader = {
+    themeCss: `.mega-menu{display:flex;list-style:none;gap:12px;margin:0;padding:0}
+      .mega-menu-toggle{display:none}
+      @media (max-width:768px){.mega-menu{display:none}.mega-menu-toggle{display:flex;align-items:center}}`,
+    body: `<div data-elementor-type="header" class="elementor-location-header">
+      <div id="mega-menu-wrap-primary-menu" class="mega-menu-wrap">
+        <div class="mega-menu-toggle"><div class="mega-toggle-blocks-right">
+          <button class="mega-toggle-animated" aria-label="Toggle Menu">Menu</button>
+        </div></div>
+        <ul id="mega-menu-primary-menu" class="mega-menu max-mega-menu">
+          <li class="mega-menu-item"><a href="#">Shop</a><ul class="mega-sub-menu"><li><a href="#">Parts</a></li></ul></li>
+          <li class="mega-menu-item"><a href="#">About</a></li>
+        </ul>
+      </div></div><main>Content</main>`,
+  };
+
+  await openFixture(page, { width: 1280, ...megaMenuHeader });
+  let launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-nav-menu-item');
+  expect(await page.locator('#mega-menu-primary-menu > .gecx-nav-menu-item').count()).toBe(1);
+
+  await page.setViewportSize({ width: 375, height: 800 });
+  await settle(page);
+  launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-mobile-header-button');
+  expect(launchers[0].container).not.toContain('gecx-launcher-fallback');
+});
+
+test('places the mobile header button in its own centered row when the hamburger sits in a narrow column', async ({ page }) => {
+  await openFixture(page, {
+    width: 375,
+    height: 800,
+    themeCss: `.elementor-container{display:flex;align-items:center;width:355px}
+      .col-burger{width:57px;display:flex}
+      .col-logo{width:192px;display:flex;justify-content:center}
+      .col-cart{width:106px;display:flex;justify-content:flex-end}
+      .mega-menu{display:none}
+      .mega-menu-toggle{display:flex}
+      .mega-toggle-animated{width:32px;height:32px}`,
+    body: `<div data-elementor-type="header" class="elementor-location-header">
+      <section class="elementor-top-section"><div class="elementor-container">
+        <div class="elementor-column col-burger"><div class="mega-menu-wrap">
+          <div class="mega-menu-toggle"><button class="mega-toggle-animated">M</button></div>
+          <ul class="mega-menu max-mega-menu"><li class="mega-menu-item"><a href="#">Shop</a></li></ul>
+        </div></div>
+        <div class="elementor-column col-logo"><a id="logo" href="#">REV6</a></div>
+        <div class="elementor-column col-cart"><a href="#">Cart</a></div>
+      </div></section></div>`,
+  });
+  const launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-mobile-header-button--row');
+  const burgerBox = await page.locator('.mega-toggle-animated').boundingBox();
+  const logoBox = await page.locator('#logo').boundingBox();
+  expect(burgerBox.x + burgerBox.width).toBeLessThanOrEqual(logoBox.x);
+});
+
+test('lifts a bottom-right fallback or floating launcher above a fixed corner widget', async ({ page }) => {
+  await openFixture(page, {
+    width: 375,
+    height: 700,
+    config: { placement: 'nav_menu' },
+    themeCss: '#podium-bubble{position:fixed;bottom:0;right:0;width:160px;height:100px;border:0}',
+    body: `<main style="height:1200px">Content</main>
+      <div id="podium-website-widget"><iframe id="podium-bubble" title="Text us"></iframe></div>`,
+  });
+  const launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-launcher-fallback');
+  const rect = await page.locator('.gecx-launcher-fallback gecx-agent-button').boundingBox();
+  expect(rect.y + rect.height).toBeLessThanOrEqual(700 - 100);
+});
+
 test('narrows fixed headers while the chat panel pushes the page', async ({ page }) => {
   await openFixture(page, {
     themeCss: '.sticky{position:fixed;top:0;left:0;width:100%;height:60px;background:#eee}',

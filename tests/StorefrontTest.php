@@ -1699,6 +1699,16 @@ JS;
         // The add-to-cart block filter still places them.
         $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->inject_block_suggested_prompts( '<div class="wp-block-woocommerce-add-to-cart-form"></div>', [] ) );
     }
+
+    public function test_inline_styles_cover_megamenu_drawer_and_mobile_header_row(): void {
+        $storefront = $this->activate_widget();
+        $storefront->enqueue_storefront_assets();
+        $css = $GLOBALS['gecx_test_inline_styles']['gecx-widget-style'] ?? '';
+
+        $this->assertStringContainsString( '.mega-menu-open .gecx-nav-menu-item', $css );
+        $this->assertStringContainsString( '.gecx-mobile-header-button.gecx-mobile-header-button--row', $css );
+        $this->assertStringContainsString( 'body.gecx-chat-open .gecx-mobile-header-button--floating', $css );
+    }
 }
 
 /**
