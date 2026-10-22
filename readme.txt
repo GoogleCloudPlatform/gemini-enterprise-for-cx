@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.0
+Stable tag: 1.2.0
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -131,6 +131,13 @@ After the agent changes the cart, the plugin refreshes WooCommerce cart fragment
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 1.2.0 =
+* Bind the shopper's browser to the cart the agent is using when the chat opens, so items the agent adds are in the cart the shopper checks out with. Only a guest without a cart of their own is bound: a logged-in shopper, or a guest whose browser already holds items, keeps their own cart. Adds a `gecx/v1/cart-session` REST route, which accepts only a request carrying the store's nonce.
+* Read the cart past page caches after the agent changes it. A page cache such as Batcache can answer a cookieless cart read from a copy it cached by URL, which could load another shopper's cart into the page; the read now goes to a URL no other request uses.
+* Let WooCommerce sign and check the session cookies the plugin sets, so a cart the plugin binds survives the session validation WooCommerce applies to its own cookies.
+* Stop a fallback launcher flashing beside a launcher the widget has not revealed yet. Until the widget knows the agent is enabled every launcher is laid out but hidden, and the placement pass treated them as missing, adding a duplicate that disappeared a moment later.
+* Disclose in the readme that the cart a guest's browser is bound to, and the checkout details they enter while on it, can be read by Gemini Enterprise for CX.
 
 = 1.1.0 =
 * Load the plugin's classes with a Composer autoloader, shipped in `vendor/`, under the `Google\Gemini_Enterprise_For_CX` namespace. The global `GECX_*` classes are removed without aliases, so code that referenced them must use the namespaced classes. No behavior changes.
