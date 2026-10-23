@@ -17,6 +17,7 @@ declare(strict_types=1);
 namespace Google\Gemini_Enterprise_For_CX\REST;
 
 use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\Storefront;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
@@ -472,6 +473,7 @@ class Auth_Context {
             'success'      => true,
             'nonce'        => $nonce,
             'customer_jwt' => $customer_jwt,
+            'launcher'     => self::build_live_launcher_config(),
         ], 200 );
 
         $response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, private, max-age=0' );
@@ -480,5 +482,103 @@ class Auth_Context {
         $response->header( 'Vary', 'Cookie, Origin' );
 
         return $response;
+    }
+
+    /**
+     * Current launcher configuration from WordPress options.
+     *
+     * Returned with the uncached auth-context response so a storefront page
+     * served from an external edge CDN (such as Cloudflare with a 30-day
+     * s-maxage) can reconcile its launcher placement, position, and button
+     * markup when the merchant updates settings without purging the edge CDN.
+     *
+     * @return array{enabled: bool, placement: string, floatingPosition: string, floatingStyle: string, button: string}
+     */
+    private static function build_live_launcher_config(): array {
+        $agent_name = (string) get_option( 'gecx_agent_name', '' );
+        if ( function_exists( 'apply_filters' ) ) {
+            // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Existing plugin filter name.
+            $agent_name = (string) apply_filters( 'gecx_active_agent_name', $agent_name );
+        }
+        $enabled = (bool) get_option( 'gecx_agent_enabled', 0 );
+        if ( function_exists( 'apply_filters' ) ) {
+            // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Existing plugin filter name.
+            $enabled = (bool) apply_filters( 'gecx_is_widget_enabled', $enabled );
+        }
+        $is_active    = $enabled && '' !== $agent_name;
+        $placement    = Storefront::sanitize_button_placement( get_option( 'gecx_button_placement', Storefront::DEFAULT_BUTTON_PLACEMENT ) );
+        $floating_pos = Storefront::sanitize_floating_position( get_option( 'gecx_floating_position', Storefront::DEFAULT_FLOATING_POSITION ) );
+
+        $is_rtl     = function_exists( 'is_rtl' ) && is_rtl();
+        $right_side = $is_rtl ? 'left' : 'right';
+        $left_side  = $is_rtl ? 'right' : 'left';
+        $bottom     = static function ( int $base ): string {
+            return 'bottom: calc(' . $base . 'px + var(--gecx-floating-offset, 0px) + var(--gecx-floating-extra-offset, 0px) + env(safe-area-inset-bottom, 0px));';
+        };
+        switch ( $floating_pos ) {
+            case 'center_left':
+                $floating_style = 'position: fixed; top: 50%; ' . $left_side . ': 0; transform: translateY(-50%); z-index: 999999;';
+                break;
+            case 'center_right':
+                $floating_style = 'position: fixed; top: 50%; ' . $right_side . ': 0; transform: translateY(-50%); z-index: 999999;';
+                break;
+            case 'bottom_right':
+                $floating_style = 'position: fixed; ' . $bottom( 20 ) . ' ' . $right_side . ': 20px; z-index: 999999;';
+                break;
+            case 'bottom_left':
+                $floating_style = 'position: fixed; ' . $bottom( 20 ) . ' ' . $left_side . ': 20px; z-index: 999999;';
+                break;
+            case 'bottom_center':
+            default:
+                $floating_style = 'position: fixed; ' . $bottom( 24 ) . ' left: 50%; transform: translateX(-50%); z-index: 999999;';
+                break;
+        }
+
+        $display_style       = Storefront::sanitize_button_display_style( get_option( 'gecx_button_display_style', Storefront::DEFAULT_DISPLAY_STYLE ) );
+        $label               = (string) get_option( 'gecx_button_label', '' );
+        $default_short_label = __( 'Shop', 'gemini-enterprise-for-cx' );
+        $short_label         = (string) get_option( 'gecx_button_short_label', $default_short_label );
+        if ( '' === $short_label ) {
+            $short_label = $default_short_label;
+        }
+        $enable_shimmer = (bool) get_option( 'gecx_button_enable_shimmer', 1 );
+
+        $attrs = [
+            'display-style'    => $display_style,
+            'collapse-to'      => 'short-label',
+            'preset-icon'      => 'button_magic',
+            'enable-shimmer'   => $enable_shimmer ? 'true' : 'false',
+            'hide-chat-bubble' => true,
+        ];
+        if ( '' !== $label ) {
+            $attrs['label'] = $label;
+        }
+        if ( '' !== $short_label ) {
+            $attrs['short-label'] = $short_label;
+        }
+        if ( function_exists( 'is_customize_preview' ) && is_customize_preview() ) {
+            $attrs['preview'] = 'true';
+        }
+        if ( function_exists( 'apply_filters' ) ) {
+            // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Existing plugin filter name.
+            $attrs = (array) apply_filters( 'gecx_agent_button_attributes', $attrs );
+        }
+
+        $attrs_string = '';
+        foreach ( $attrs as $key => $val ) {
+            if ( true === $val || '' === $val ) {
+                $attrs_string .= ' ' . esc_attr( (string) $key );
+            } elseif ( false !== $val && null !== $val ) {
+                $attrs_string .= ' ' . esc_attr( (string) $key ) . '="' . esc_attr( (string) $val ) . '"';
+            }
+        }
+
+        return [
+            'enabled'          => $is_active,
+            'placement'        => $placement,
+            'floatingPosition' => $floating_pos,
+            'floatingStyle'    => $floating_style,
+            'button'           => $is_active ? '<gecx-agent-button' . $attrs_string . '></gecx-agent-button>' : '',
+        ];
     }
 }

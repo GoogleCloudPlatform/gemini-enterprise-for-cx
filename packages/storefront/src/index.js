@@ -74,11 +74,17 @@ function gecxConfigMarkup(cfg, key) {
   return (markup && typeof markup[key] === 'string') ? markup[key] : '';
 }
 
+/** @type {?Object} Live storefront config reconciled from /gecx/v1/auth-context. */
+let gecxLiveStorefrontConfig = null;
+
 /**
  * Returns the frozen storefront configuration object.
  * @return {?Object}
  */
 function gecxGetStorefrontConfig() {
+  if (gecxLiveStorefrontConfig) {
+    return gecxLiveStorefrontConfig;
+  }
   if (gecxInitialStorefrontConfig) {
     return gecxInitialStorefrontConfig;
   }
@@ -286,6 +292,19 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
           if (gecxIsValidCartTokenFormat(token)) {
             gecxLatestCartToken = token;
             gecxOnCartTokenObserved();
+          }
+        }
+        if (response && response.ok && typeof response.clone === 'function' &&
+            url && url.indexOf('auth-context') !== -1) {
+          const cfg = gecxGetStorefrontConfig();
+          if (gecxIsTargetEndpoint(
+                  url, (cfg && cfg.authContextUrl) ? cfg.authContextUrl : '',
+                  /\/gecx\/v1\/auth-context(\b|\/|$)/)) {
+            response.clone().json().then(function(data) {
+              if (data && data.launcher) {
+                gecxApplyLiveLauncherConfig(data.launcher);
+              }
+            }).catch(function() {});
           }
         }
       } catch (err) {
@@ -759,6 +778,9 @@ function gecxResolveRestNonce() {
             return res.json();
           })
           .then(function(data) {
+            if (data && data.launcher) {
+              gecxApplyLiveLauncherConfig(data.launcher);
+            }
             return (data && data.nonce) ? data.nonce : '';
           })
           .catch(function(err) {
@@ -768,6 +790,114 @@ function gecxResolveRestNonce() {
           });
 
   return gecxRestNoncePromise;
+}
+
+/**
+ * Reconciles a page served from a long-lived edge cache (such as Cloudflare
+ * s-maxage) with the store's current launcher settings returned by the
+ * uncached /gecx/v1/auth-context route.
+ * @param {*} live
+ */
+function gecxApplyLiveLauncherConfig(live) {
+  if (!live || typeof live !== 'object' || !document.body) {
+    return;
+  }
+  const base = gecxGetStorefrontConfig();
+  if (!base || typeof base !== 'object') {
+    return;
+  }
+  const enabled = typeof live.enabled === 'boolean' ? live.enabled : !!base.isWidgetEnabled;
+  const placement = (typeof live.placement === 'string' &&
+      (live.placement === 'nav_menu' || live.placement === 'floating' || live.placement === 'manual')) ?
+      live.placement :
+      base.placement;
+  const button = (typeof live.button === 'string' && live.button !== '') ?
+      live.button :
+      gecxConfigMarkup(base, 'button');
+  const floatingPosition = typeof live.floatingPosition === 'string' ?
+      live.floatingPosition :
+      (base.floatingPosition || 'bottom_center');
+  const floatingStyle = typeof live.floatingStyle === 'string' ?
+      live.floatingStyle :
+      '';
+
+  const prevPlacement = base.placement;
+  const prevButton = gecxConfigMarkup(base, 'button');
+  const prevEnabled = !!base.isWidgetEnabled;
+  const floatingEl = document.querySelector('.gecx-floating-button-container');
+  const expectedFloatingClass =
+      'gecx-floating-button-container--' + floatingPosition.replace(/_/g, '-');
+  const floatingPosChanged = placement === 'floating' && !!floatingEl &&
+      (!floatingEl.classList || !floatingEl.classList.contains(expectedFloatingClass));
+
+  if (enabled === prevEnabled && placement === prevPlacement &&
+      button === prevButton && !floatingPosChanged) {
+    return;
+  }
+
+  const nextMarkup = Object.assign({}, base.markup || {}, {button: button});
+  const nextConfig = Object.assign({}, base, {
+    isWidgetEnabled: enabled,
+    placement: placement,
+    floatingPosition: floatingPosition,
+    markup: nextMarkup
+  });
+  if (typeof Object.freeze === 'function') {
+    try {
+      Object.freeze(nextMarkup);
+      Object.freeze(nextConfig);
+    } catch (err) {
+      // Ignore freeze failure.
+    }
+  }
+  gecxLiveStorefrontConfig = nextConfig;
+
+  if (!enabled) {
+    gecxEach(
+        '.gecx-floating-button-container, .gecx-nav-menu-item, .gecx-mobile-header-button, .gecx-launcher-fallback, gecx-woocommerce-chat-widget',
+        function(el) {
+          if (el.parentNode) {
+            el.parentNode.removeChild(el);
+          }
+        });
+    return;
+  }
+
+  if (placement !== 'floating') {
+    gecxEach('.gecx-floating-button-container', function(el) {
+      if (el.parentNode) {
+        el.parentNode.removeChild(el);
+      }
+    });
+  }
+  if (placement !== 'nav_menu' || button !== prevButton) {
+    gecxEach(
+        '.gecx-nav-menu-item, .gecx-mobile-header-button, .gecx-launcher-fallback',
+        function(el) {
+          if (el.parentNode) {
+            el.parentNode.removeChild(el);
+          }
+        });
+  }
+  if (placement === 'floating') {
+    let container = document.querySelector('.gecx-floating-button-container');
+    if (container && (button !== prevButton || floatingPosChanged) && container.parentNode) {
+      container.parentNode.removeChild(container);
+      container = null;
+    }
+    if (!container) {
+      container = gecxCreateLauncherContainer(
+          'div', 'gecx-floating-button-container ' + expectedFloatingClass);
+      if (container) {
+        if (floatingStyle && typeof container.setAttribute === 'function') {
+          container.setAttribute('style', floatingStyle);
+        }
+        document.body.appendChild(container);
+      }
+    }
+  }
+
+  gecxPlaceAll();
 }
 
 /** @const {!Array<string>} Badge selectors used when the config names none. */

@@ -2460,6 +2460,27 @@ class RestApiTest extends GECX_TestCase {
 
         $this->assertSame( '1', $cookies['woocommerce_items_in_cart']['value'] );
     }
+
+    public function test_auth_context_returns_live_launcher_config_for_edge_cached_pages(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+        update_option( 'gecx_button_placement', 'nav_menu' );
+        update_option( 'gecx_floating_position', 'bottom_right' );
+        update_option( 'gecx_button_label', 'Shop with Ask Mike' );
+        update_option( 'gecx_button_short_label', 'Ask Mike' );
+
+        $rest_api = new REST_API();
+        $response = $rest_api->auth_context->auth_context_handler( new WP_REST_Request() );
+        $data     = $response->get_data();
+
+        $this->assertArrayHasKey( 'launcher', $data );
+        $this->assertTrue( $data['launcher']['enabled'] );
+        $this->assertSame( 'nav_menu', $data['launcher']['placement'] );
+        $this->assertSame( 'bottom_right', $data['launcher']['floatingPosition'] );
+        $this->assertStringContainsString( 'right: 20px;', $data['launcher']['floatingStyle'] );
+        $this->assertStringContainsString( 'label="Shop with Ask Mike"', $data['launcher']['button'] );
+        $this->assertStringContainsString( 'short-label="Ask Mike"', $data['launcher']['button'] );
+    }
 }
 
 if ( php_sapi_name() === 'cli' ) {
