@@ -1488,6 +1488,29 @@ const GECX_HEADER_MENU_LIST_SELECTORS =
     '.mega-menu-wrap > ul.mega-menu, ul.max-mega-menu';
 
 /**
+ * Selectors for header columns that may be too narrow to hold both a mobile
+ * hamburger toggle and an inline launcher pill.
+ * @const {string}
+ */
+const GECX_MOBILE_HEADER_COLUMN_SELECTORS =
+    '.elementor-column, .e-con, [class*="col-"]';
+
+/**
+ * Selectors for full-width header sections or containers that can hold a
+ * centered launcher row when a narrow column cannot fit it inline.
+ * @const {string}
+ */
+const GECX_MOBILE_HEADER_ROW_CONTAINER_SELECTORS =
+    '.elementor-top-section, .e-con-full, header, [data-elementor-type="header"], .elementor-location-header, .site-header, #masthead, [role="banner"]';
+
+/**
+ * Maximum column width (as a fraction of the viewport width) considered a
+ * narrow multi-column mobile header cell.
+ * @const {number}
+ */
+const GECX_NARROW_HEADER_COLUMN_MAX_VIEWPORT_RATIO = 0.5;
+
+/**
  * The header menu list most likely to be the main navigation: a top-level
  * list, on screen if possible, with the most items. The first match in
  * document order is often a top bar, account or language menu instead.
@@ -1549,24 +1572,24 @@ function gecxFindMobileHeaderRowContainer(anchor) {
   if (typeof anchor.closest !== 'function') {
     return null;
   }
-  const col = anchor.closest('.elementor-column, .e-con, [class*="col-"]');
+  const col = anchor.closest(GECX_MOBILE_HEADER_COLUMN_SELECTORS);
   if (!col || typeof col.getBoundingClientRect !== 'function' ||
       typeof anchor.getBoundingClientRect !== 'function') {
     return null;
   }
   const viewportWidth = window.innerWidth || 0;
   const colRect = col.getBoundingClientRect();
-  const anchorRect = anchor.getBoundingClientRect();
-  if (colRect.width <= 0 || !viewportWidth || colRect.width >= viewportWidth * 0.5) {
+  if (colRect.width <= 0 || !viewportWidth ||
+      colRect.width >= viewportWidth * GECX_NARROW_HEADER_COLUMN_MAX_VIEWPORT_RATIO) {
     return null;
   }
   // A column narrower than the toggle plus a collapsed pill (~56px) cannot fit
   // both side by side without overflowing into adjacent header columns.
+  const anchorRect = anchor.getBoundingClientRect();
   if (colRect.width - anchorRect.width >= 56) {
     return null;
   }
-  return anchor.closest(
-      '.elementor-top-section, .e-con-full, header, [data-elementor-type="header"], .elementor-location-header, .site-header, #masthead, [role="banner"]');
+  return anchor.closest(GECX_MOBILE_HEADER_ROW_CONTAINER_SELECTORS);
 }
 
 /**
@@ -1600,21 +1623,21 @@ function initMobileHeaderPlacement() {
         if (mobileButton.nextSibling !== anchor) {
           anchor.parentNode.insertBefore(mobileButton, anchor);
         }
-        // If the rendered button still overflows a narrow column (< 50%
-        // viewport width), move it to its own centered row in the header.
+        // If the rendered button still overflows a narrow column, move it to
+        // its own centered row in the header.
         const col = typeof anchor.closest === 'function' ?
-            anchor.closest('.elementor-column, .e-con, [class*="col-"]') : null;
+            anchor.closest(GECX_MOBILE_HEADER_COLUMN_SELECTORS) : null;
         if (col && typeof col.getBoundingClientRect === 'function' &&
             typeof mobileButton.getBoundingClientRect === 'function') {
           const colRect = col.getBoundingClientRect();
           const btnRect = mobileButton.getBoundingClientRect();
           const anchorRect = anchor.getBoundingClientRect();
-          if (colRect.width > 0 && colRect.width < (window.innerWidth || 0) * 0.5 &&
+          if (colRect.width > 0 &&
+              colRect.width < (window.innerWidth || 0) * GECX_NARROW_HEADER_COLUMN_MAX_VIEWPORT_RATIO &&
               btnRect.width > 0 &&
               (Math.max(btnRect.right, anchorRect.right) > colRect.right + 4 ||
                Math.min(btnRect.left, anchorRect.left) < colRect.left - 4)) {
-            rowContainer = anchor.closest(
-                '.elementor-top-section, .e-con-full, header, [data-elementor-type="header"], .elementor-location-header, .site-header, #masthead, [role="banner"]');
+            rowContainer = anchor.closest(GECX_MOBILE_HEADER_ROW_CONTAINER_SELECTORS);
           }
         }
       }
