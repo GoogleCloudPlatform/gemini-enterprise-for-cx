@@ -71,6 +71,7 @@ function gecx_init_components(): void {
     new Google\Gemini_Enterprise_For_CX\REST\REST_API();
     new Google\Gemini_Enterprise_For_CX\Admin( __FILE__ );
     new Google\Gemini_Enterprise_For_CX\Storefront( __FILE__ );
+    new Google\Gemini_Enterprise_For_CX\Page_Cache();
 }
 add_action( 'plugins_loaded', 'gecx_init_components' );
 
