@@ -1315,14 +1315,18 @@ const GECX_FOOTER_SELECTOR =
 const GECX_MOBILE_TOGGLE_SELECTORS = [
   // Block themes (FSE)
   '.wp-block-navigation__responsive-container-open',
-  // Accessible toggles
+  // Accessible toggles inside semantic or builder headers
   'header button[aria-label*="menu" i]',
   'header button[aria-controls*="nav" i]',
   'header button[aria-controls*="menu" i]',
   'header a[aria-label*="menu" i]',
   'header [role="button"][aria-label*="menu" i]',
+  '[data-elementor-type="header"] button[aria-label*="menu" i]',
+  '.elementor-location-header button[aria-label*="menu" i]',
+  '[data-elementor-type="header"] [role="button"][aria-label*="menu" i]',
+  '.elementor-location-header [role="button"][aria-label*="menu" i]',
   // Frameworks and popular themes (Bootstrap, Astra, GeneratePress,
-  // Storefront, Kadence, Neve, Elementor, Divi)
+  // Storefront, Kadence, Neve, Elementor, Max Mega Menu, Divi)
   '.navbar-toggle',
   '.navbar-toggler',
   '.off-canvas-toggle',
@@ -1330,6 +1334,8 @@ const GECX_MOBILE_TOGGLE_SELECTORS = [
   '.menu-toggle-open',
   '.mobile-menu-toggle',
   '.elementor-menu-toggle',
+  '.mega-menu-toggle .mega-toggle-animated',
+  '.mega-menu-toggle button',
   '#et_mobile_nav_menu',
   '[data-toggle="offcanvas"]',
   // Flatsome
@@ -1369,7 +1375,9 @@ function findMobileHeaderAnchor() {
     const cartSelectors = [
       'header .wc-block-mini-cart',
       'header .header-cart',
-      'header .cart-contents'
+      'header .cart-contents',
+      '[data-elementor-type="header"] .elementor-menu-cart__toggle_button',
+      '.elementor-location-header .elementor-menu-cart__toggle_button'
     ];
     for (let i = 0; i < cartSelectors.length; i++) {
       let found = null;
@@ -1467,6 +1475,42 @@ function gecxRemoveFooterNavItems() {
 }
 
 /**
+ * Selectors for top-level navigation menu lists inside semantic and page
+ * builder headers (including Elementor Theme Builder and Max Mega Menu).
+ * @const {string}
+ */
+const GECX_HEADER_MENU_LIST_SELECTORS =
+    'header nav ul, [data-elementor-type="header"] nav ul, .elementor-location-header nav ul, ' +
+    'nav.main-navigation ul, nav.primary-navigation ul, nav.elementor-nav-menu--main ul, #site-navigation ul, ' +
+    'header .wp-block-navigation__container, [data-elementor-type="header"] .wp-block-navigation__container, .elementor-location-header .wp-block-navigation__container, ' +
+    'header .nav-menu, [data-elementor-type="header"] .nav-menu, .elementor-location-header .nav-menu, ' +
+    'header ul.menu, [data-elementor-type="header"] ul.menu, .elementor-location-header ul.menu, ' +
+    '.mega-menu-wrap > ul.mega-menu, ul.max-mega-menu';
+
+/**
+ * Selectors for header columns that may be too narrow to hold both a mobile
+ * hamburger toggle and an inline launcher pill.
+ * @const {string}
+ */
+const GECX_MOBILE_HEADER_COLUMN_SELECTORS =
+    '.elementor-column, .e-con, [class*="col-"]';
+
+/**
+ * Selectors for full-width header sections or containers that can hold a
+ * centered launcher row when a narrow column cannot fit it inline.
+ * @const {string}
+ */
+const GECX_MOBILE_HEADER_ROW_CONTAINER_SELECTORS =
+    '.elementor-top-section, .e-con-full, header, [data-elementor-type="header"], .elementor-location-header, .site-header, #masthead, [role="banner"]';
+
+/**
+ * Maximum column width (as a fraction of the viewport width) considered a
+ * narrow multi-column mobile header cell.
+ * @const {number}
+ */
+const GECX_NARROW_HEADER_COLUMN_MAX_VIEWPORT_RATIO = 0.5;
+
+/**
  * The header menu list most likely to be the main navigation: a top-level
  * list, on screen if possible, with the most items. The first match in
  * document order is often a top bar, account or language menu instead.
@@ -1476,9 +1520,9 @@ function gecxFindHeaderMenuList() {
   let best = null;
   let bestScore = -1;
   gecxEach(
-      'header nav ul, nav.main-navigation ul, nav.primary-navigation ul, #site-navigation ul, header .wp-block-navigation__container, header .nav-menu, header ul.menu',
+      GECX_HEADER_MENU_LIST_SELECTORS,
       function(list) {
-        if (list.closest('.sub-menu, .children, .dropdown-menu') ||
+        if (list.closest('.sub-menu, .children, .dropdown-menu, .mega-sub-menu, .elementor-nav-menu--dropdown') ||
             (list.parentElement && list.parentElement.closest('li')) ||
             list.closest(GECX_FOOTER_SELECTOR)) {
           return;
@@ -1519,6 +1563,36 @@ function initNavPlacement() {
 }
 
 /**
+ * Header section or container that can hold a full-width centered launcher row
+ * when the mobile hamburger sits inside a column too narrow for both.
+ * @param {!Element} anchor
+ * @return {?Element}
+ */
+function gecxFindMobileHeaderRowContainer(anchor) {
+  if (typeof anchor.closest !== 'function') {
+    return null;
+  }
+  const col = anchor.closest(GECX_MOBILE_HEADER_COLUMN_SELECTORS);
+  if (!col || typeof col.getBoundingClientRect !== 'function' ||
+      typeof anchor.getBoundingClientRect !== 'function') {
+    return null;
+  }
+  const viewportWidth = window.innerWidth || 0;
+  const colRect = col.getBoundingClientRect();
+  if (colRect.width <= 0 || !viewportWidth ||
+      colRect.width >= viewportWidth * GECX_NARROW_HEADER_COLUMN_MAX_VIEWPORT_RATIO) {
+    return null;
+  }
+  // A column narrower than the toggle plus a collapsed pill (~56px) cannot fit
+  // both side by side without overflowing into adjacent header columns.
+  const anchorRect = anchor.getBoundingClientRect();
+  if (colRect.width - anchorRect.width >= 56) {
+    return null;
+  }
+  return anchor.closest(GECX_MOBILE_HEADER_ROW_CONTAINER_SELECTORS);
+}
+
+/**
  * Shows the launcher beside the theme's hamburger while it is visible, and
  * in the menu otherwise.
  *
@@ -1542,10 +1616,37 @@ function initMobileHeaderPlacement() {
       mobileButton = gecxCreateLauncherContainer('div', 'gecx-mobile-header-button');
     }
     if (mobileButton) {
-      if (mobileButton.nextSibling !== anchor) {
-        anchor.parentNode.insertBefore(mobileButton, anchor);
-      }
       mobileButton.style.removeProperty('display');
+      let rowContainer = gecxFindMobileHeaderRowContainer(anchor);
+      if (!rowContainer) {
+        mobileButton.classList.remove('gecx-mobile-header-button--row');
+        if (mobileButton.nextSibling !== anchor) {
+          anchor.parentNode.insertBefore(mobileButton, anchor);
+        }
+        // If the rendered button still overflows a narrow column, move it to
+        // its own centered row in the header.
+        const col = typeof anchor.closest === 'function' ?
+            anchor.closest(GECX_MOBILE_HEADER_COLUMN_SELECTORS) : null;
+        if (col && typeof col.getBoundingClientRect === 'function' &&
+            typeof mobileButton.getBoundingClientRect === 'function') {
+          const colRect = col.getBoundingClientRect();
+          const btnRect = mobileButton.getBoundingClientRect();
+          const anchorRect = anchor.getBoundingClientRect();
+          if (colRect.width > 0 &&
+              colRect.width < (window.innerWidth || 0) * GECX_NARROW_HEADER_COLUMN_MAX_VIEWPORT_RATIO &&
+              btnRect.width > 0 &&
+              (Math.max(btnRect.right, anchorRect.right) > colRect.right + 4 ||
+               Math.min(btnRect.left, anchorRect.left) < colRect.left - 4)) {
+            rowContainer = anchor.closest(GECX_MOBILE_HEADER_ROW_CONTAINER_SELECTORS);
+          }
+        }
+      }
+      if (rowContainer) {
+        mobileButton.classList.add('gecx-mobile-header-button--row');
+        if (mobileButton.parentNode !== rowContainer) {
+          rowContainer.appendChild(mobileButton);
+        }
+      }
     }
     // The in-menu copies would only duplicate it inside the opened drawer.
     for (let i = 0; i < navItems.length; i++) {
@@ -1746,6 +1847,15 @@ const GECX_BOTTOM_BAR_SELECTORS =
     '.storefront-handheld-footer-bar, .ast-sticky-add-to-cart, .sticky-add-to-cart, [class*="sticky-add-to-cart"], .wd-toolbar, .elementor-sticky--active';
 
 /**
+ * Fixed third-party corner widgets (chat bubbles, SMS launchers) that sit at
+ * the bottom edge of the viewport and would otherwise cover a bottom-corner
+ * floating or fallback launcher.
+ * @const {string}
+ */
+const GECX_CORNER_WIDGET_SELECTORS =
+    '#podium-bubble, #podium-website-widget [style*="fixed"], #intercom-container, .intercom-lightweight-app-launcher, #tidio-chat, #tidio-chat-iframe, .crisp-client, #hubspot-messages-iframe-container, #gorgias-chat-container, #launcher, #chat-widget-container';
+
+/**
  * Whether an element is ours or the chat widget's.
  * @param {!Element} el
  * @return {boolean}
@@ -1761,7 +1871,9 @@ function gecxIsOwnElement(el) {
 
 /**
  * Lifts floating launchers above bars the theme fixes to the bottom of the
- * viewport: handheld footer bars, sticky add-to-cart bars, mobile toolbars.
+ * viewport (handheld footer bars, sticky add-to-cart bars, mobile toolbars)
+ * and fixed third-party corner widgets (such as Podium or Intercom) occupying
+ * the same bottom corner.
  *
  * Sets --gecx-floating-offset on the root element, which the floating
  * positions add to their bottom offset along with the device's safe area.
@@ -1777,6 +1889,29 @@ function updateFloatingOffset() {
   if (!viewportHeight || !viewportWidth) {
     return;
   }
+  let hasCornerLauncher = false;
+  let cornerLeft = 0;
+  let cornerRight = 0;
+  gecxEach(
+      '.gecx-floating-button-container--bottom-right, .gecx-floating-button-container--bottom-left, .gecx-launcher-fallback',
+      function(launcher) {
+        if (hasCornerLauncher || window.getComputedStyle(launcher).display === 'none') {
+          return;
+        }
+        hasCornerLauncher = true;
+        const isLeft = launcher.classList.contains('gecx-floating-button-container--bottom-left') ||
+            (launcher.classList.contains('gecx-launcher-fallback') && document.body.classList.contains('rtl'));
+        cornerLeft = isLeft ? 0 : Math.max(0, viewportWidth - 200);
+        cornerRight = isLeft ? Math.min(viewportWidth, 200) : viewportWidth;
+        if (typeof launcher.getBoundingClientRect === 'function') {
+          const r = launcher.getBoundingClientRect();
+          if (r.width > 0) {
+            cornerLeft = Math.min(cornerLeft, r.left);
+            cornerRight = Math.max(cornerRight, r.right);
+          }
+        }
+      });
+
   let offset = 0;
   const consider = function(el) {
     if (gecxIsOwnElement(el) || typeof el.getBoundingClientRect !== 'function') {
@@ -1791,13 +1926,21 @@ function updateFloatingOffset() {
         rect.width > viewportWidth * 0.5 && rect.bottom >= viewportHeight - 2 &&
         rect.top > viewportHeight * 0.5) {
       offset = Math.max(offset, Math.ceil(viewportHeight - rect.top));
+    } else if (hasCornerLauncher && rect.height > 0 && rect.height <= 140 &&
+        rect.width > 0 && rect.width <= 260 &&
+        rect.bottom >= viewportHeight - 32 && rect.top >= viewportHeight - 160 &&
+        rect.left < cornerRight && rect.right > cornerLeft) {
+      offset = Math.max(offset, Math.ceil(viewportHeight - rect.top));
     }
   };
   const children = document.body.children || [];
   for (let i = 0; i < children.length; i++) {
     consider(children[i]);
+    if (children[i].firstElementChild) {
+      consider(children[i].firstElementChild);
+    }
   }
-  gecxEach(GECX_BOTTOM_BAR_SELECTORS, consider);
+  gecxEach(GECX_BOTTOM_BAR_SELECTORS + ', ' + GECX_CORNER_WIDGET_SELECTORS, consider);
 
   if (offset > 0) {
     document.documentElement.style.setProperty('--gecx-floating-offset', offset + 'px');
