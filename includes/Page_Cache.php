@@ -125,8 +125,8 @@ class Page_Cache {
             sg_cachepress_purge_cache();
         }
         // SpinupWP.
-        if ( function_exists( 'spinupwp_purge_page_cache' ) ) {
-            spinupwp_purge_page_cache();
+        if ( function_exists( 'spinupwp_purge_site' ) ) {
+            spinupwp_purge_site();
         }
         // Pantheon Advanced Page Cache.
         if ( function_exists( 'pantheon_wp_clear_edge_all' ) ) {

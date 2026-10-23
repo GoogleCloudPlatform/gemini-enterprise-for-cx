@@ -23,6 +23,12 @@ if ( ! function_exists( 'w3tc_flush_all' ) ) {
         $GLOBALS['gecx_test_page_cache_purges'][] = 'w3-total-cache';
     }
 }
+if ( ! function_exists( 'spinupwp_purge_site' ) ) {
+    function spinupwp_purge_site(): bool {
+        $GLOBALS['gecx_test_page_cache_purges'][] = 'spinupwp';
+        return true;
+    }
+}
 
 class PageCacheTest extends GECX_TestCase {
 
@@ -122,7 +128,7 @@ class PageCacheTest extends GECX_TestCase {
     public function test_purge_asks_installed_caches_and_then_fires_the_purge_action(): void {
         Page_Cache::purge_all();
 
-        $this->assertSame( [ 'wp-rocket', 'w3-total-cache' ], $GLOBALS['gecx_test_page_cache_purges'] );
+        $this->assertSame( [ 'wp-rocket', 'w3-total-cache', 'spinupwp' ], $GLOBALS['gecx_test_page_cache_purges'] );
         $fired = $this->fired_actions();
         $this->assertContains( 'cloudflare_purge_everything', $fired );
         $this->assertContains( 'litespeed_purge_all', $fired );
