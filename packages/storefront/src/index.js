@@ -165,6 +165,18 @@ function gecxAuthContextRestUrl() {
 }
 
 /**
+ * The GECX refresh-token REST endpoint for this store, derived from the
+ * auth-context URL, or '' when the page config names none.
+ * @return {string}
+ */
+function gecxRefreshTokenRestUrl() {
+  const authContextUrl = gecxAuthContextRestUrl();
+  return authContextUrl ?
+      authContextUrl.replace(/\/auth-context(\b|\/|$)/, '/refresh-token$1') :
+      '';
+}
+
+/**
  * Checks whether a URL resolves to the current window's origin.
  * @param {string} candidateUrl
  * @return {boolean}
@@ -273,14 +285,16 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
         gecxIsTargetEndpoint(url, gecxSessionRestUrl(), /\/gecx\/v1\/session(\b|$)/);
     const isAuthContextRequest = mayBeGecxRequest && !isSessionRequest &&
         gecxIsTargetEndpoint(url, gecxAuthContextRestUrl(), /\/gecx\/v1\/auth-context(\b|$)/);
-    // The server accepts the widget's session annotation and auth-context
-    // requests only from the store's own pages, and on a subdirectory
-    // multisite it tells this site's pages from a sibling's by the Referer
-    // path. The widget sets no referrer policy, so a site-wide Referrer-Policy
-    // such as no-referrer would strip that path. Send them as storefront.js
-    // sends its own cart and auth-context requests, unless the caller chose a
-    // policy itself.
-    if ((isSessionRequest || isAuthContextRequest) &&
+    const isRefreshTokenRequest = mayBeGecxRequest && !isSessionRequest && !isAuthContextRequest &&
+        gecxIsTargetEndpoint(url, gecxRefreshTokenRestUrl(), /\/gecx\/v1\/refresh-token(\b|$)/);
+    // The server accepts the widget's session annotation, auth-context and
+    // refresh-token requests only from the store's own pages, and on a
+    // subdirectory multisite it tells this site's pages from a sibling's by
+    // the Referer path. The widget sets no referrer policy on some of them, so
+    // a site-wide Referrer-Policy such as no-referrer would strip that path.
+    // Send them as storefront.js sends its own cart and auth-context requests,
+    // unless the caller chose a policy itself.
+    if ((isSessionRequest || isAuthContextRequest || isRefreshTokenRequest) &&
         !(init && init.referrerPolicy) &&
         !(input && typeof input === 'object' && input.referrerPolicy)) {
       init = Object.assign({}, init, {referrerPolicy: 'same-origin'});

@@ -1685,6 +1685,83 @@ class RestApiTest extends GECX_TestCase {
         $this->assertTrue( true === ( new REST_API() )->auth_context->check_auth_context_permissions( $request ) );
     }
 
+    public function test_refresh_token_permissions_accept_a_same_origin_post_with_a_nonce(): void {
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $request->set_header( 'Origin', 'https://example.com' );
+
+        $this->assertTrue( true === ( new REST_API() )->auth_context->check_refresh_token_permissions( $request ) );
+    }
+
+    public function test_refresh_token_permissions_still_require_a_nonce(): void {
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $request->set_header( 'Origin', 'https://example.com' );
+
+        $perm = ( new REST_API() )->auth_context->check_refresh_token_permissions( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
+    }
+
+    /**
+     * The route hands out the same customer JWT as auth-context. A nonce does
+     * not say where a request came from: logged-out shoppers share one, and
+     * WordPress answers credentialed CORS preflights from any origin.
+     */
+    public function test_refresh_token_permissions_refuse_a_request_from_another_origin(): void {
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+        $request->set_header( 'Sec-Fetch-Site', 'same-site' );
+        $request->set_header( 'Origin', 'https://evil.example.com' );
+
+        $perm = ( new REST_API() )->auth_context->check_refresh_token_permissions( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
+    }
+
+    /**
+     * WordPress dispatches GET ?_method=POST to the POST handler, and a CDN
+     * told to cache everything would store that response, JWT included.
+     */
+    public function test_refresh_token_permissions_refuse_a_get_dispatched_as_post(): void {
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $request->set_header( 'Origin', 'https://example.com' );
+
+        $perm = ( new REST_API() )->auth_context->check_refresh_token_permissions( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 'rest_method_not_allowed', $perm->get_error_code() );
+        $this->assertSame( 405, $perm->get_error_data()['status'] );
+    }
+
+    public function test_refresh_token_response_is_not_cacheable(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'customer@example.com', [ 'customer' ] );
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+
+        $response = ( new REST_API() )->auth_context->refresh_token_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $response );
+        $headers = $response->get_headers();
+        $this->assertStringContainsString( 'no-store', $headers['Cache-Control'] );
+        $this->assertStringContainsString( 'private', $headers['Cache-Control'] );
+        $this->assertSame( 'Cookie, Origin', $headers['Vary'] );
+    }
+
     /**
      * The headers of a batch sub-request are fields of the batch body, chosen
      * by whoever sent it. The headers of the HTTP request the browser made,

@@ -47,8 +47,31 @@ class Auth_Context {
         register_rest_route( 'gecx/v1', '/refresh-token', [
             'methods'             => 'POST',
             'callback'            => [ $this, 'refresh_token_handler' ],
-            'permission_callback' => [ Session_Attribution::class, 'check_session_permissions' ],
+            'permission_callback' => [ $this, 'check_refresh_token_permissions' ],
         ] );
+    }
+
+    /**
+     * Permission check for POST /gecx/v1/refresh-token: a valid wp_rest
+     * nonce, and the same tests /gecx/v1/auth-context applies, since this
+     * route hands out the same customer JWT.
+     *
+     * The nonce alone leaves two gaps. WordPress dispatches GET
+     * `?_method=POST` to this POST handler, so a CDN told to cache everything
+     * could store a response carrying one shopper's JWT for the next visitor.
+     * And WordPress answers credentialed CORS preflights from any origin, so a
+     * page on a same-site sibling host holding the shared logged-out nonce
+     * could read a guest JWT with the shopper's cookies.
+     *
+     * @param \WP_REST_Request $request REST request instance.
+     * @return true|\WP_Error
+     */
+    public function check_refresh_token_permissions( \WP_REST_Request $request ) {
+        $nonce_check = Session_Attribution::check_session_permissions( $request );
+        if ( true !== $nonce_check ) {
+            return $nonce_check;
+        }
+        return $this->check_auth_context_permissions( $request );
     }
 
     /**
@@ -66,10 +89,27 @@ class Auth_Context {
         if ( empty( $customer_jwt ) ) {
             return new \WP_Error( 'jwt_generation_failed', __( 'Unable to generate customer JWT; secret is missing.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
         }
-        return new \WP_REST_Response( [
+        $response = new \WP_REST_Response( [
             'success'      => true,
             'customer_jwt' => $customer_jwt,
         ], 200 );
+
+        self::add_no_store_headers( $response );
+
+        return $response;
+    }
+
+    /**
+     * Marks a response carrying a nonce or customer JWT as uncacheable by any
+     * cache that honours origin headers.
+     *
+     * @param \WP_REST_Response $response Response to mark.
+     */
+    private static function add_no_store_headers( \WP_REST_Response $response ): void {
+        $response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, private, max-age=0' );
+        $response->header( 'Pragma', 'no-cache' );
+        $response->header( 'Expires', 'Wed, 11 Jan 1984 05:00:00 GMT' );
+        $response->header( 'Vary', 'Cookie, Origin' );
     }
 
     /**
@@ -436,7 +476,8 @@ class Auth_Context {
 
     /**
      * Strips WordPress REST API CORS reflection headers on /gecx/v1/auth-context
-     * so cross-origin documents cannot read the response even if preflighted.
+     * and /gecx/v1/refresh-token so cross-origin documents cannot read the
+     * response even if preflighted.
      *
      * @param bool             $served  Whether the request has already been served.
      * @param \WP_HTTP_Response $result  Result to send to the client.
@@ -446,7 +487,7 @@ class Auth_Context {
      */
     // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- rest_pre_serve_request filter signature.
     public function suppress_cors_on_auth_context( $served, $result, $request, $server ) {
-        if ( $request instanceof \WP_REST_Request && '/gecx/v1/auth-context' === $request->get_route() ) {
+        if ( $request instanceof \WP_REST_Request && in_array( $request->get_route(), [ '/gecx/v1/auth-context', '/gecx/v1/refresh-token' ], true ) ) {
             if ( function_exists( 'header_remove' ) && ( ! function_exists( 'headers_sent' ) || ! headers_sent() ) ) {
                 header_remove( 'Access-Control-Allow-Origin' );
                 header_remove( 'Access-Control-Allow-Credentials' );
@@ -549,10 +590,7 @@ class Auth_Context {
             'customer_jwt' => $customer_jwt,
         ], 200 );
 
-        $response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, private, max-age=0' );
-        $response->header( 'Pragma', 'no-cache' );
-        $response->header( 'Expires', 'Wed, 11 Jan 1984 05:00:00 GMT' );
-        $response->header( 'Vary', 'Cookie, Origin' );
+        self::add_no_store_headers( $response );
 
         return $response;
     }
