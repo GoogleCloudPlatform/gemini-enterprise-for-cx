@@ -580,12 +580,11 @@ class WebhookLifecycleTest extends TestCase {
     }
 
     /**
-     * Nothing ties a session ID to the store except the project number in it,
-     * so a session in any project other than the linked agent's is not
-     * delivered: the backend would otherwise record this store's order, line
-     * items and totals, in that other project's session.
+     * A session in a project other than the linked agent's is delivered and
+     * logged, not suppressed: the backend refuses to attribute it, holds
+     * against a store that signs its own payloads, and counts the drop.
      */
-    public function test_delivery_suppressed_for_session_in_another_project(): void {
+    public function test_delivery_logged_for_session_in_another_project(): void {
         $webhook_id = $this->create_gecx_webhook();
         $webhook    = new WC_Webhook( $webhook_id );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
@@ -594,18 +593,25 @@ class WebhookLifecycleTest extends TestCase {
         $foreign = new WC_Order( 604 );
         $foreign->update_meta_data( '_gecx_session_id', 'projects/987654321/locations/global/commerceSessions/sess-123' );
         $foreign->save();
-        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 604 ) );
+        $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 604 ) );
+        $this->assertCount( 1, $GLOBALS['gecx_test_logs'] );
+        $this->assertSame( 'warning', $GLOBALS['gecx_test_logs'][0]['level'] );
+        $this->assertStringContainsString( 'Order 604', $GLOBALS['gecx_test_logs'][0]['message'] );
+        $this->assertStringContainsString( 'project 987654321', $GLOBALS['gecx_test_logs'][0]['message'] );
 
         // A project number that merely starts with the linked one is another project.
         $prefixed = new WC_Order( 605 );
         $prefixed->update_meta_data( '_gecx_session_id', 'projects/1234/locations/global/omnichannelSessions/sess-123' );
         $prefixed->save();
-        $this->assertFalse( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 605 ) );
+        $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 605 ) );
+        $this->assertCount( 2, $GLOBALS['gecx_test_logs'] );
+        $this->assertStringContainsString( 'project 1234,', $GLOBALS['gecx_test_logs'][1]['message'] );
 
         $own = new WC_Order( 606 );
         $own->update_meta_data( '_gecx_session_id', 'projects/123/locations/global/omnichannelSessions/sess-123' );
         $own->save();
         $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, 606 ) );
+        $this->assertCount( 2, $GLOBALS['gecx_test_logs'] );
     }
 
     public function test_delete_order_webhook_clears_transients_on_direct_sql(): void {

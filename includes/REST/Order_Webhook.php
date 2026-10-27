@@ -480,12 +480,15 @@ class Order_Webhook {
     /**
      * Suppresses delivery of the GECX order webhook when:
      * - the agent is unlinked or storefront chat widget is disabled, or
-     * - the order does not carry a valid _gecx_session_id meta value, or
-     * - that session is not in the Google Cloud project of the linked agent.
+     * - the order does not carry a valid _gecx_session_id meta value.
      *
-     * The project check is here, at the one place order data leaves the store,
-     * because a session ID can reach an order by more than one path: the
-     * /gecx/v1/session route, the gecx_session_id cookie, or the session row.
+     * A session outside the Google Cloud project of the linked agent is only
+     * logged, not suppressed. The backend attributes an order only to a session
+     * in the project of the agent the signing store is linked to, and it holds
+     * against a store that sends its own payloads, so it is the enforcing
+     * check. Delivering lets the backend log and count the mismatch; a
+     * mismatch here usually means a gecx_active_agent_name filter that
+     * answers differently in WP-Cron than on the page.
      *
      * @param bool  $should_deliver Whether WooCommerce intends to deliver the webhook.
      * @param mixed $webhook        WC_Webhook instance or webhook ID.
@@ -513,8 +516,22 @@ class Order_Webhook {
         }
 
         $session_id = (string) $order->get_meta( '_gecx_session_id' );
-        return Session_Attribution::is_valid_session_id( $session_id, true )
-            && Session_Attribution::is_in_linked_project( $session_id );
+        if ( ! Session_Attribution::is_valid_session_id( $session_id, true ) ) {
+            return false;
+        }
+
+        if ( ! Session_Attribution::is_in_linked_project( $session_id ) ) {
+            Auth::log(
+                sprintf(
+                    'Order %d is attributed to session project %s, which is not the project of the linked agent; delivering for the backend to decide.',
+                    (int) $order->get_id(),
+                    (string) strtok( substr( $session_id, strlen( 'projects/' ) ), '/' )
+                ),
+                'warning'
+            );
+        }
+
+        return true;
     }
 
     /**
