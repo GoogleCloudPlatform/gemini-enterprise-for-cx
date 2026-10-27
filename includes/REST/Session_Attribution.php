@@ -509,22 +509,20 @@ class Session_Attribution {
         $cart_token = Cart_Session::read_cart_token_from_server();
 
         $session_id = self::get_gecx_session_id_safely( '' === $cart_token || true === Auth_Context::verify_request_origin( $request ) );
-        if ( empty( $session_id ) ) {
-            if ( '' !== $cart_token ) {
-                $customer_id = Auth::get_cart_token_customer_id( $cart_token );
-                if ( '' !== $customer_id ) {
-                    global $wpdb;
-                    if ( isset( $wpdb ) ) {
-                        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Fallback lookup for Store API order creation.
-                        $raw = $wpdb->get_var( $wpdb->prepare(
-                            "SELECT session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s",
-                            $customer_id
-                        ) );
-                        if ( ! empty( $raw ) ) {
-                            $data = maybe_unserialize( $raw );
-                            if ( is_array( $data ) && ! empty( $data['gecx_session_id'] ) ) {
-                                $session_id = (string) $data['gecx_session_id'];
-                            }
+        if ( empty( $session_id ) && '' !== $cart_token ) {
+            $customer_id = Auth::get_cart_token_customer_id( $cart_token );
+            if ( '' !== $customer_id ) {
+                global $wpdb;
+                if ( isset( $wpdb ) ) {
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Fallback lookup for Store API order creation.
+                    $raw = $wpdb->get_var( $wpdb->prepare(
+                        "SELECT session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s",
+                        $customer_id
+                    ) );
+                    if ( ! empty( $raw ) ) {
+                        $data = maybe_unserialize( $raw );
+                        if ( is_array( $data ) && ! empty( $data['gecx_session_id'] ) ) {
+                            $session_id = (string) $data['gecx_session_id'];
                         }
                     }
                 }
