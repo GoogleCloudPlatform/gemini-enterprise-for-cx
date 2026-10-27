@@ -27,6 +27,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up PHP
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
@@ -105,7 +107,75 @@ jobs:
         env:
           PLUGIN_ZIP: ${{ steps.build.outputs.zip }}
         run: |
-          vendor/bin/qit run:activation gemini-enterprise-for-cx --zip="${PLUGIN_ZIP}"
+          # QIT keeps Playwright's output in its report and hides the report
+          # URL in CI unless asked; without it a failure says only how many
+          # tests failed.
+          vendor/bin/qit run:activation gemini-enterprise-for-cx --zip="${PLUGIN_ZIP}" --print-report-url
+
+      - name: Print QIT test failures
+        if: failure() && steps.partner.outputs.configured == 'true'
+        shell: python3 {0}
+        run: |
+          # Prints the failed tests from QIT's CTRF reports, Playwright's
+          # error-context files and the WordPress debug log, which QIT leaves
+          # on the runner and otherwise never writes to the job log.
+          import glob, json, os
+
+          roots = sorted(glob.glob('/tmp/qit-e2e-artifacts-*') + glob.glob('/tmp/qit-results-*'))
+          if not roots:
+              print('No QIT results directories found under /tmp.')
+          files = []
+          for root in roots:
+              for base, _, names in os.walk(root):
+                  files.extend(os.path.join(base, n) for n in names)
+
+          print('::group::QIT results files')
+          for f in sorted(files):
+              print(f)
+          print('::endgroup::')
+
+          seen = set()
+          for f in sorted(files):
+              if not f.endswith('.json'):
+                  continue
+              try:
+                  with open(f, encoding='utf-8') as fh:
+                      tests = json.load(fh).get('results', {}).get('tests', [])
+              except (ValueError, OSError, AttributeError):
+                  continue
+              for t in tests:
+                  if not isinstance(t, dict) or t.get('status') not in ('failed', 'timedOut', 'interrupted'):
+                      continue
+                  key = (t.get('name'), t.get('message'))
+                  if key in seen:
+                      continue
+                  seen.add(key)
+                  print('::error title=QIT test failed::' + str(t.get('name')))
+                  print('::group::FAILED: ' + str(t.get('name')))
+                  for field in ('suite', 'filePath', 'status', 'duration', 'message', 'trace'):
+                      if t.get(field):
+                          print(f'{field}: {t[field]}')
+                  print('::endgroup::')
+          if not seen:
+              print('No failed tests found in CTRF reports.')
+
+          for f in sorted(files):
+              if os.path.basename(f) == 'error-context.md' or f.endswith('debug-prepared.log') or os.path.basename(f) == 'debug.log':
+                  print('::group::' + f)
+                  with open(f, encoding='utf-8', errors='replace') as fh:
+                      print(fh.read()[-20000:])
+                  print('::endgroup::')
+
+      - name: Upload QIT results
+        if: failure() && steps.partner.outputs.configured == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qit-results
+          path: |
+            /tmp/qit-e2e-artifacts-*
+            /tmp/qit-results-*
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload plugin zip
         if: always()
