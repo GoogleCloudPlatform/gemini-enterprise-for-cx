@@ -972,8 +972,9 @@ class Storefront {
      * The widget names its chat sessions in this agent's project, and
      * Session_Attribution::is_in_linked_project() checks session IDs against
      * the same value, so both must read it here. That check also runs in REST
-     * and WP-Cron context, without a page, so a filter callback that picks
-     * the agent per page has to return an agent in the same project there.
+     * and WP-Cron context, without a page; a filter callback that picks the
+     * agent per page and answers differently there produces false mismatch
+     * warnings in the WooCommerce log, though it no longer blocks anything.
      *
      * @return string Agent resource name, or '' when the store is not linked.
      */

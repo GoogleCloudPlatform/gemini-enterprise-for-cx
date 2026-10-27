@@ -152,10 +152,12 @@ class Session_Attribution {
      *
      * The widget names its sessions projects/{project}/locations/.../{id},
      * with {project} taken from the store's agent. An ID naming another
-     * project did not come from this store's widget, and attributing an order
-     * to it would send the order's line items and totals into a session that
-     * belongs to someone else. A bare ID names no project; the order webhook
-     * never delivered one, and it is refused here too.
+     * project did not come from this store's widget. A bare ID names no
+     * project and fails too.
+     *
+     * The plugin only logs a mismatch, on the /gecx/v1/session route and the
+     * order webhook. The backend is what refuses to attribute an order to a
+     * session outside the project of the agent the store is linked to.
      *
      * A store whose agent name carries no project number has nothing to
      * compare against, so every ID passes there, as before.
@@ -186,8 +188,21 @@ class Session_Attribution {
         if ( ! self::is_valid_session_id( $session_id ) ) {
             return new \WP_Error( 'invalid_session_id', __( 'Session ID is invalid.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
+        // A session outside the linked agent's project is logged and still
+        // stored. The order webhook never delivers a bare ID, and the backend
+        // attributes an order only to a session in the project of the agent
+        // the store is linked to, so refusing here would only break a widget
+        // that sends an ID this store did not expect.
         if ( ! self::is_in_linked_project( $session_id ) ) {
-            return new \WP_Error( 'session_not_in_linked_project', __( 'Session ID does not belong to the agent this store is linked to.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
+            Auth::log(
+                sprintf(
+                    'Session annotation names %s, which is not the project of the linked agent; storing it for the backend to decide.',
+                    0 === strpos( $session_id, 'projects/' )
+                        ? 'project ' . (string) strtok( substr( $session_id, strlen( 'projects/' ) ), '/' )
+                        : 'no project'
+                ),
+                'warning'
+            );
         }
 
         // Force WooCommerce to initialize the frontend session based on client cookies

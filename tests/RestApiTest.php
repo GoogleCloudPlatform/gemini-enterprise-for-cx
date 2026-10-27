@@ -602,12 +602,12 @@ class RestApiTest extends GECX_TestCase {
 
     /**
      * Once the store is linked, the widget names its sessions in the linked
-     * agent's project. A session ID naming any other project did not come
-     * from this store's widget and is refused before anything is stored.
+     * agent's project. A session ID naming any other project is stored and
+     * logged, not refused: the backend refuses to attribute an order to it.
      *
      * @dataProvider session_ids_outside_the_linked_project_cases
      */
-    public function test_save_session_handler_refuses_a_session_outside_the_linked_project( string $session_id ): void {
+    public function test_save_session_handler_logs_a_session_outside_the_linked_project( string $session_id, string $logged ): void {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-456' );
 
         $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
@@ -615,20 +615,22 @@ class RestApiTest extends GECX_TestCase {
 
         $res = ( new REST_API() )->session_attribution->save_session_handler( $request );
 
-        $this->assertInstanceOf( WP_Error::class, $res );
-        $this->assertSame( 'session_not_in_linked_project', $res->get_error_code() );
-        $this->assertSame( 400, $res->get_error_data()['status'] );
-        $this->assertArrayNotHasKey( 'gecx_session_id', $_COOKIE );
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( $session_id, $_COOKIE['gecx_session_id'] ?? null );
+        $this->assertCount( 1, $GLOBALS['gecx_test_logs'] );
+        $this->assertSame( 'warning', $GLOBALS['gecx_test_logs'][0]['level'] );
+        $this->assertStringContainsString( 'names ' . $logged . ',', $GLOBALS['gecx_test_logs'][0]['message'] );
     }
 
     /**
-     * @return array<string, array{0: string}>
+     * @return array<string, array{0: string, 1: string}>
      */
     public function session_ids_outside_the_linked_project_cases(): array {
         return [
-            'another project'               => [ 'projects/987654321/locations/global/commerceSessions/sess-foreign' ],
-            'a project sharing the prefix'  => [ 'projects/1234/locations/global/omnichannelSessions/sess-foreign' ],
-            'a bare session ID, no project' => [ 'sess-bare-abc123' ],
+            'another project'               => [ 'projects/987654321/locations/global/commerceSessions/sess-foreign', 'project 987654321' ],
+            'a project sharing the prefix'  => [ 'projects/1234/locations/global/omnichannelSessions/sess-foreign', 'project 1234' ],
+            'a bare session ID, no project' => [ 'sess-bare-abc123', 'no project' ],
         ];
     }
 
@@ -644,6 +646,7 @@ class RestApiTest extends GECX_TestCase {
         $this->assertInstanceOf( WP_REST_Response::class, $res );
         $this->assertSame( 200, $res->get_status() );
         $this->assertSame( $session_id, $_COOKIE['gecx_session_id'] ?? null );
+        $this->assertSame( [], $GLOBALS['gecx_test_logs'] );
     }
 
     public function test_linked_project_follows_the_active_agent_name_filter(): void {
