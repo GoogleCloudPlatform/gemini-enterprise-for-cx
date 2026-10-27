@@ -17,7 +17,11 @@ permissions:
 jobs:
   qit:
     name: WooCommerce QIT
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest: that label moved to Ubuntu 26.04, and the Playwright
+    # version QIT's activation package pins (1.54) has no browser builds for
+    # it. qit-cli ignores the failed `npx playwright install`, so the run
+    # then fails its first test on a missing headless_shell executable.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     env:
