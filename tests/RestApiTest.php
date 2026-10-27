@@ -624,6 +624,89 @@ class RestApiTest extends GECX_TestCase {
     }
 
     /**
+     * The backend attributes an order only to a session in the linked
+     * project. Replacing one the browser already has bound with an ID outside
+     * it would silently cost the shopper's next order its attribution.
+     *
+     * @dataProvider session_ids_outside_the_linked_project_cases
+     */
+    public function test_save_session_handler_keeps_a_bound_session_in_the_linked_project( string $session_id, string $logged ): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-456' );
+        $bound = 'projects/123/locations/global/commerceSessions/sess-own';
+        WC()->session->set( 'gecx_session_id', $bound );
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', $session_id );
+
+        $res = ( new REST_API() )->session_attribution->save_session_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( $bound, WC()->session->get( 'gecx_session_id' ) );
+        $this->assertNotSame( $session_id, $_COOKIE['gecx_session_id'] ?? null );
+        $this->assertCount( 1, $GLOBALS['gecx_test_logs'] );
+        $this->assertSame( 'warning', $GLOBALS['gecx_test_logs'][0]['level'] );
+        $this->assertStringContainsString( 'names ' . $logged . ',', $GLOBALS['gecx_test_logs'][0]['message'] );
+        $this->assertStringContainsString( 'keeping the session already bound', $GLOBALS['gecx_test_logs'][0]['message'] );
+    }
+
+    /**
+     * An uncookied guest who chatted before touching the cart has their
+     * session only in the gecx_session_id cookie.
+     */
+    public function test_save_session_handler_keeps_a_cookie_bound_session_in_the_linked_project(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-456' );
+        $bound                       = 'projects/123/locations/global/commerceSessions/sess-own';
+        $_COOKIE['gecx_session_id'] = $bound;
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', 'sess-bare-abc123' );
+
+        $res = ( new REST_API() )->session_attribution->save_session_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( $bound, $_COOKIE['gecx_session_id'] );
+        $this->assertSame( $bound, WC()->session->get( 'gecx_session_id' ) );
+    }
+
+    /**
+     * A bound session the backend would not attribute anyway is no reason to
+     * refuse the new one.
+     */
+    public function test_save_session_handler_replaces_a_bound_session_outside_the_linked_project(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-456' );
+        WC()->session->set( 'gecx_session_id', 'sess-bare-old' );
+        $session_id = 'projects/987654321/locations/global/commerceSessions/sess-foreign';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', $session_id );
+
+        $res = ( new REST_API() )->session_attribution->save_session_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( $session_id, WC()->session->get( 'gecx_session_id' ) );
+        $this->assertSame( $session_id, $_COOKIE['gecx_session_id'] ?? null );
+        $this->assertStringContainsString( 'storing it for the backend to decide', $GLOBALS['gecx_test_logs'][0]['message'] );
+    }
+
+    public function test_save_session_handler_replaces_a_bound_session_with_one_in_the_linked_project(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-456' );
+        WC()->session->set( 'gecx_session_id', 'projects/123/locations/global/commerceSessions/sess-old' );
+        $session_id = 'projects/123/locations/global/commerceSessions/sess-new';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', $session_id );
+
+        $res = ( new REST_API() )->session_attribution->save_session_handler( $request );
+
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( $session_id, WC()->session->get( 'gecx_session_id' ) );
+        $this->assertSame( [], $GLOBALS['gecx_test_logs'] );
+    }
+
+    /**
      * @return array<string, array{0: string, 1: string}>
      */
     public function session_ids_outside_the_linked_project_cases(): array {

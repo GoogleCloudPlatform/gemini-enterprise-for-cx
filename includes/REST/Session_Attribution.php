@@ -156,8 +156,10 @@ class Session_Attribution {
      * project and fails too.
      *
      * The plugin only logs a mismatch, on the /gecx/v1/session route and the
-     * order webhook. The backend is what refuses to attribute an order to a
-     * session outside the project of the agent the store is linked to.
+     * order webhook; the route also keeps a session in the linked project that
+     * the browser already has bound rather than overwrite it. The backend is
+     * what refuses to attribute an order to a session outside the project of
+     * the agent the store is linked to.
      *
      * A store whose agent name carries no project number has nothing to
      * compare against, so every ID passes there, as before.
@@ -188,23 +190,6 @@ class Session_Attribution {
         if ( ! self::is_valid_session_id( $session_id ) ) {
             return new \WP_Error( 'invalid_session_id', __( 'Session ID is invalid.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
-        // A session outside the linked agent's project is logged and still
-        // stored. The order webhook never delivers a bare ID, and the backend
-        // attributes an order only to a session in the project of the agent
-        // the store is linked to, so refusing here would only break a widget
-        // that sends an ID this store did not expect.
-        if ( ! self::is_in_linked_project( $session_id ) ) {
-            Auth::log(
-                sprintf(
-                    'Session annotation names %s, which is not the project of the linked agent; storing it for the backend to decide.',
-                    0 === strpos( $session_id, 'projects/' )
-                        ? 'project ' . (string) strtok( substr( $session_id, strlen( 'projects/' ) ), '/' )
-                        : 'no project'
-                ),
-                'warning'
-            );
-        }
-
         // Force WooCommerce to initialize the frontend session based on client cookies
         if ( function_exists( 'WC' ) ) {
             if ( is_null( WC()->session ) ) {
@@ -217,6 +202,37 @@ class Session_Attribution {
 
         if ( ! function_exists( 'WC' ) || ! WC()->session ) {
             return new \WP_Error( 'session_not_initialized', __( 'WooCommerce session not active.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
+        }
+
+        // A session outside the linked agent's project is logged, not refused:
+        // the order webhook never delivers a bare ID, and the backend
+        // attributes an order only to a session in the project of the agent
+        // the store is linked to, so a 400 would only break a widget that
+        // sends an ID this store did not expect. It is stored unless this
+        // browser already has a session in the linked project bound. That one
+        // is the only kind the backend attributes an order to, so overwriting
+        // it would silently cost the shopper's next order its attribution.
+        if ( ! self::is_in_linked_project( $session_id ) ) {
+            $bound_session_id   = self::get_gecx_session_id_safely();
+            $keep_bound_session = self::is_valid_session_id( $bound_session_id, true )
+                && self::is_in_linked_project( $bound_session_id );
+
+            Auth::log(
+                sprintf(
+                    'Session annotation names %s, which is not the project of the linked agent; %s.',
+                    0 === strpos( $session_id, 'projects/' )
+                        ? 'project ' . (string) strtok( substr( $session_id, strlen( 'projects/' ) ), '/' )
+                        : 'no project',
+                    $keep_bound_session
+                        ? 'keeping the session already bound in the linked project'
+                        : 'storing it for the backend to decide'
+                ),
+                'warning'
+            );
+
+            if ( $keep_bound_session ) {
+                return new \WP_REST_Response( [ 'success' => true ], 200 );
+            }
         }
 
         WC()->session->set( 'gecx_session_id', $session_id );
