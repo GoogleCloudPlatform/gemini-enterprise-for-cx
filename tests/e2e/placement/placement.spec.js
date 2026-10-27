@@ -698,7 +698,7 @@ test.describe('cart session binding', () => {
     ]);
   });
 
-  test('forwards the bound Cart-Token on widget session annotations without re-posting the bare localStorage ID', async ({ page }) => {
+  test('forwards the latest Cart-Token on widget session annotations without re-posting the bare localStorage ID', async ({ page }) => {
     await openFixture(page, fixture);
     const bindRequests = await stubCartRoutes(page);
     await page.evaluate(() => window.localStorage.setItem('gecx_session_id', 'chat-session-1'));
@@ -707,6 +707,8 @@ test.describe('cart session binding', () => {
     await expect.poll(() => bodyEvents(page)).toHaveLength(2);
     await settle(page);
     expect(bindRequests.sessionRebinds).toEqual([]);
+    // The cart was read after the binding.
+    expect(bindRequests.order).toEqual(['cart-session', 'cart']);
 
     const fullSession = 'projects/123/locations/global/omnichannelSessions/chat-session-1';
     await page.evaluate((s) => fetch('https://store.test/wp-json/gecx/v1/session', {
@@ -715,8 +717,9 @@ test.describe('cart session binding', () => {
       body: JSON.stringify({ session_id: s }),
     }), fullSession);
 
-    // Sent with the token the route returned in its Cart-Token header.
-    expect(bindRequests.sessionRebinds).toEqual([{ body: { session_id: fullSession }, cartToken: boundToken }]);
+    // Sent with the Cart-Token the latest cart read answered with, for the
+    // same cart session the route bound.
+    expect(bindRequests.sessionRebinds).toEqual([{ body: { session_id: fullSession }, cartToken: agentToken }]);
   });
 
   test('stops binding for the page view once the route answers unsupported', async ({ page }) => {
