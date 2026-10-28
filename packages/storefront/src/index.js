@@ -155,6 +155,28 @@ function gecxCartSessionRestUrl() {
 }
 
 /**
+ * The GECX auth-context REST endpoint for this store, or '' when the page
+ * config names none.
+ * @return {string}
+ */
+function gecxAuthContextRestUrl() {
+  const config = gecxGetStorefrontConfig();
+  return (config && config.authContextUrl) ? config.authContextUrl : '';
+}
+
+/**
+ * The GECX refresh-token REST endpoint for this store, derived from the
+ * auth-context URL, or '' when the page config names none.
+ * @return {string}
+ */
+function gecxRefreshTokenRestUrl() {
+  const authContextUrl = gecxAuthContextRestUrl();
+  return authContextUrl ?
+      authContextUrl.replace(/\/auth-context(\b|\/|$)/, '/refresh-token$1') :
+      '';
+}
+
+/**
  * Checks whether a URL resolves to the current window's origin.
  * @param {string} candidateUrl
  * @return {boolean}
@@ -248,12 +270,36 @@ function gecxIsTargetEndpoint(candidateUrl, configuredUrl, fallbackPathRegex) {
 if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
   const originalFetch = window.fetch;
   window.fetch = function(input, init) {
-    const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
-    // Fast path: avoid URL parsing on requests that cannot be the session endpoint.
-    if (gecxLatestCartToken &&
-        url &&
-        (url.indexOf('session') !== -1 || url.indexOf('gecx') !== -1) &&
-        gecxIsTargetEndpoint(url, gecxSessionRestUrl(), /\/gecx\/v1\/session(\b|$)/)) {
+    let url = '';
+    if (typeof input === 'string') {
+      url = input;
+    } else if (typeof URL !== 'undefined' && input instanceof URL) {
+      url = input.href;
+    } else if (input && input.url) {
+      url = input.url;
+    }
+    // Fast path: avoid URL parsing on requests that cannot be a GECX endpoint.
+    const mayBeGecxRequest = url !== '' &&
+        (url.indexOf('session') !== -1 || url.indexOf('gecx') !== -1);
+    const isSessionRequest = mayBeGecxRequest &&
+        gecxIsTargetEndpoint(url, gecxSessionRestUrl(), /\/gecx\/v1\/session(\b|$)/);
+    const isAuthContextRequest = mayBeGecxRequest && !isSessionRequest &&
+        gecxIsTargetEndpoint(url, gecxAuthContextRestUrl(), /\/gecx\/v1\/auth-context(\b|$)/);
+    const isRefreshTokenRequest = mayBeGecxRequest && !isSessionRequest && !isAuthContextRequest &&
+        gecxIsTargetEndpoint(url, gecxRefreshTokenRestUrl(), /\/gecx\/v1\/refresh-token(\b|$)/);
+    // The server accepts the widget's session annotation, auth-context and
+    // refresh-token requests only from the store's own pages, and on a
+    // subdirectory multisite it tells this site's pages from a sibling's by
+    // the Referer path. The widget sets no referrer policy on some of them, so
+    // a site-wide Referrer-Policy such as no-referrer would strip that path.
+    // Send them as storefront.js sends its own cart and auth-context requests,
+    // unless the caller chose a policy itself.
+    if ((isSessionRequest || isAuthContextRequest || isRefreshTokenRequest) &&
+        !(init && init.referrerPolicy) &&
+        !(input && typeof input === 'object' && input.referrerPolicy)) {
+      init = Object.assign({}, init, {referrerPolicy: 'same-origin'});
+    }
+    if (gecxLatestCartToken && isSessionRequest) {
       init = Object.assign({}, init);
       if (typeof Headers !== 'undefined') {
         const headers = new Headers(init.headers || {});
@@ -374,42 +420,6 @@ function gecxRefreshCartOrCheckoutSurface(hasBlockStore) {
       window.location && typeof window.location.reload === 'function') {
     window.location.reload();
   }
-}
-
-/**
- * Re-binds the active GECX session ID from localStorage to the WooCommerce
- * session once a cart mutation establishes a persistent session.
- */
-function gecxRebindSessionOnCartUpdate() {
-  let sessionId = '';
-  try {
-    sessionId = (window.localStorage && window.localStorage.getItem('gecx_session_id')) || '';
-  } catch (err) {
-    return;
-  }
-  if (!sessionId) {
-    return;
-  }
-  const sessionUrl = gecxSessionRestUrl();
-
-  gecxResolveRestNonce()
-      .then(function(nonce) {
-        if (!nonce) {
-          return;
-        }
-        return fetch(sessionUrl, {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-WP-Nonce': nonce
-          },
-          body: JSON.stringify({session_id: sessionId})
-        });
-      })
-      .catch(function(err) {
-        gecxReportError('session rebind', err);
-      });
 }
 
 /**
@@ -559,7 +569,6 @@ function gecxBindCartSession() {
   gecxRequestCartSessionBinding(agentToken)
       .then(function(binding) {
         if (binding === 'agent') {
-          gecxRebindSessionOnCartUpdate();
           // The shopper only opened the chat, so nothing may open a drawer
           // over it.
           gecxRefreshCartSurfaces(agentToken, null, null, Promise.resolve(), false);
@@ -627,6 +636,7 @@ function gecxRequestCartSessionBinding(agentToken) {
         return fetch(gecxCartSessionRestUrl(), {
           method: 'POST',
           credentials: 'include',
+          referrerPolicy: 'same-origin',
           headers: {
             'Content-Type': 'application/json',
             'X-WP-Nonce': nonce
@@ -738,8 +748,7 @@ function gecxResolveRestNonce() {
     return gecxRestNoncePromise;
   }
 
-  const config = gecxGetStorefrontConfig();
-  const url = (config && config.authContextUrl) ? config.authContextUrl : '';
+  const url = gecxAuthContextRestUrl();
   if (!url) {
     gecxRestNoncePromise = Promise.resolve('');
     return gecxRestNoncePromise;
@@ -896,6 +905,11 @@ function gecxClassifyCartChange(previous, current) {
  * woocommerce_cart_hash cookies after the agent changed the cart from
  * elsewhere. A 401 or 403 usually means the nonce went stale during a long
  * chat, so a fresh one is fetched and the request retried once.
+ *
+ * The server bridges a Cart-Token cart into the browser's session cookie only
+ * for a request it can tell came from the store's own pages, so the full
+ * Referer is sent whatever Referrer-Policy the page declares, as it is for the
+ * auth-context request.
  * @param {string} cartToken Cart-Token supplied by the widget, or ''.
  * @return {!Promise<!Object>}
  */
@@ -920,7 +934,8 @@ function gecxFetchCart(cartToken) {
           return fetch(gecxUncachedCartRestUrl(), {
             method: 'GET',
             headers: headers,
-            credentials: 'include'
+            credentials: 'include',
+            referrerPolicy: 'same-origin'
           });
         })
         .then(function(res) {
@@ -1088,12 +1103,8 @@ function handleCartUpdate(e) {
 
   // Read once the binding has settled, so that the cart read, the surfaces
   // refreshed from it and the gecx:cart-updated event all describe the cart
-  // the browser ends up on. The GECX session is re-bound only then too: a
-  // response that refreshes the browser's old WooCommerce session cookie
-  // would undo the binding if it arrived after it.
-  const bound = gecxBindCartSessionAfterAgentChange(cartId).then(function() {
-    gecxRebindSessionOnCartUpdate();
-  });
+  // the browser ends up on.
+  const bound = gecxBindCartSessionAfterAgentChange(cartId);
   gecxRefreshCartSurfaces(cartId, directCart, eventCount, bound, true);
 }
 

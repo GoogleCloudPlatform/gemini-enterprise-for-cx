@@ -25,6 +25,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * Gives the storefront widget a REST nonce and a signed customer JWT (the
  * auth-context and refresh-token routes), only for same-origin requests.
+ *
+ * Also owns the same-origin test, verify_request_origin(), that other routes
+ * apply before acting on a shopper's browser.
  */
 class Auth_Context {
 
@@ -44,8 +47,31 @@ class Auth_Context {
         register_rest_route( 'gecx/v1', '/refresh-token', [
             'methods'             => 'POST',
             'callback'            => [ $this, 'refresh_token_handler' ],
-            'permission_callback' => [ Session_Attribution::class, 'check_session_permissions' ],
+            'permission_callback' => [ $this, 'check_refresh_token_permissions' ],
         ] );
+    }
+
+    /**
+     * Permission check for POST /gecx/v1/refresh-token: a valid wp_rest
+     * nonce, and the same tests /gecx/v1/auth-context applies, since this
+     * route hands out the same customer JWT.
+     *
+     * The nonce alone leaves two gaps. WordPress dispatches GET
+     * `?_method=POST` to this POST handler, so a CDN told to cache everything
+     * could store a response carrying one shopper's JWT for the next visitor.
+     * And WordPress answers credentialed CORS preflights from any origin, so a
+     * page on a same-site sibling host holding the shared logged-out nonce
+     * could read a guest JWT with the shopper's cookies.
+     *
+     * @param \WP_REST_Request $request REST request instance.
+     * @return true|\WP_Error
+     */
+    public function check_refresh_token_permissions( \WP_REST_Request $request ) {
+        $nonce_check = Session_Attribution::check_session_permissions( $request );
+        if ( true !== $nonce_check ) {
+            return $nonce_check;
+        }
+        return $this->check_auth_context_permissions( $request );
     }
 
     /**
@@ -63,10 +89,27 @@ class Auth_Context {
         if ( empty( $customer_jwt ) ) {
             return new \WP_Error( 'jwt_generation_failed', __( 'Unable to generate customer JWT; secret is missing.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
         }
-        return new \WP_REST_Response( [
+        $response = new \WP_REST_Response( [
             'success'      => true,
             'customer_jwt' => $customer_jwt,
         ], 200 );
+
+        self::add_no_store_headers( $response );
+
+        return $response;
+    }
+
+    /**
+     * Marks a response carrying a nonce or customer JWT as uncacheable by any
+     * cache that honours origin headers.
+     *
+     * @param \WP_REST_Response $response Response to mark.
+     */
+    private static function add_no_store_headers( \WP_REST_Response $response ): void {
+        $response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, private, max-age=0' );
+        $response->header( 'Pragma', 'no-cache' );
+        $response->header( 'Expires', 'Wed, 11 Jan 1984 05:00:00 GMT' );
+        $response->header( 'Vary', 'Cookie, Origin' );
     }
 
     /**
@@ -95,14 +138,14 @@ class Auth_Context {
      * logged_in cookie without a prior X-WP-Nonce (in order to bootstrap the
      * nonce on cached storefront pages), cross-origin and cross-site reads
      * must be rejected so another origin cannot read the user's nonce or JWT.
+     * See verify_request_origin().
      *
-     * A request has to positively identify itself as same-origin. Fetch
-     * Metadata, Origin and Referer are each consulted, and a request carrying
-     * none of the three is refused rather than trusted: a cross-origin
-     * `<script src>` under `Referrer-Policy: no-referrer` arrives with all
-     * three absent, and so does a non-browser client replaying a stolen
-     * cookie. Browsers too old to send Fetch Metadata still send Referer,
-     * unless the store suppresses it site-wide.
+     * Only POST is registered, but WordPress dispatches a GET carrying
+     * `?_method=POST` (or `X-HTTP-Method-Override: POST`) to POST handlers.
+     * A CDN told to "cache everything" keys on the method that crossed the
+     * wire and would store that response, nonce and customer JWT included,
+     * for the next visitor. So the request has to have arrived as the method
+     * it is dispatched as.
      *
      * @param \WP_REST_Request $request REST request instance.
      * @return true|\WP_Error
@@ -112,6 +155,64 @@ class Auth_Context {
             return new \WP_Error( 'rest_forbidden', __( 'Unauthorized.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
 
+        if ( self::is_method_overridden( $request ) ) {
+            return new \WP_Error( 'rest_method_not_allowed', __( 'Only POST requests are accepted.', 'gemini-enterprise-for-cx' ), [ 'status' => 405 ] );
+        }
+
+        return self::verify_request_origin( $request );
+    }
+
+    /**
+     * Whether WordPress dispatched the request as a different method from the
+     * one it arrived with, which it does for `?_method=` and
+     * `X-HTTP-Method-Override`.
+     *
+     * WP_REST_Request::get_method() reports the method after the override;
+     * $_SERVER['REQUEST_METHOD'] is the one the client and every cache in
+     * between saw. It is absent only outside a web request.
+     *
+     * @param \WP_REST_Request $request REST request instance.
+     * @return bool
+     */
+    private static function is_method_overridden( \WP_REST_Request $request ): bool {
+        if ( ! isset( $_SERVER['REQUEST_METHOD'] ) ) {
+            return false;
+        }
+        $wire_method = strtoupper( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) );
+        return strtoupper( (string) $request->get_method() ) !== $wire_method;
+    }
+
+    /**
+     * Whether a request provably came from a page on this store.
+     *
+     * Used wherever a request is about to act on the shopper's browser: to
+     * mint the auth context, to record a chat session against it, and to
+     * bridge a Cart-Token session into its cookies. A credentialed request
+     * from another origin carries the shopper's cookies just the same, and
+     * WordPress answers credentialed CORS preflights from any origin, so a
+     * valid nonce or Cart-Token proves nothing about where a request came
+     * from. A same-site sibling host (another subdomain of the store's
+     * domain) is not stopped by the SameSite cookie default either.
+     *
+     * A request has to positively identify itself as same-origin. Fetch
+     * Metadata, Origin and Referer are each consulted, and a request carrying
+     * none of the three is refused rather than trusted: a cross-origin
+     * `<script src>` under `Referrer-Policy: no-referrer` arrives with all
+     * three absent, and so does a non-browser client replaying a stolen
+     * cookie. Browsers too old to send Fetch Metadata still send Referer,
+     * unless the store suppresses it site-wide.
+     *
+     * On the root blog of a subdirectory network, an origin-only Referer
+     * passes here although a sibling subsite can produce the same one (see
+     * referer_identifies_current_site()); a caller that hands out an identity
+     * has to downgrade such a request, as auth_context_handler() does. Sibling
+     * subsites share the origin, so they can reach the shopper's cookies
+     * directly in any case.
+     *
+     * @param \WP_REST_Request $request REST request instance.
+     * @return true|\WP_Error True for a same-origin request, otherwise a 403.
+     */
+    public static function verify_request_origin( \WP_REST_Request $request ) {
         $fetch_site = self::read_request_header( $request, 'Sec-Fetch-Site', 'HTTP_SEC_FETCH_SITE' );
         $origin     = self::read_request_header( $request, 'Origin', 'HTTP_ORIGIN' );
         $referer    = self::read_request_header( $request, 'Referer', 'HTTP_REFERER' );
@@ -122,11 +223,11 @@ class Auth_Context {
 
         if ( '' !== $fetch_site ) {
             // Only same-origin is accepted. "none" means a user-initiated load
-            // with no initiator document (address bar, bookmark); a browser
-            // cannot produce one for a POST, so the sole remaining sender of
-            // "none" here is a non-browser client setting the header itself
-            // around a stolen cookie. It was accepted while GET was still
-            // registered and is not accepted now.
+            // with no initiator document (address bar, bookmark). A browser
+            // cannot produce one for a POST, or for a request carrying the
+            // custom headers (X-WP-Nonce, Cart-Token) the callers act on, so
+            // the sole remaining sender of "none" here is a non-browser client
+            // setting the header itself around a stolen cookie.
             if ( 'same-origin' !== strtolower( trim( $fetch_site ) ) ) {
                 return new \WP_Error( 'rest_forbidden', __( 'Cross-site requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
             }
@@ -140,7 +241,7 @@ class Auth_Context {
         // prove same-host/port, not same-subsite path (e.g. /site-b/ vs /site-a/).
         // Whenever Referer is present it must match the site path prefix, and on
         // multisite subdirectory stores Referer is required so a sibling subsite
-        // cannot read this site's nonce or JWT.
+        // cannot pass for this one.
         if ( '' !== $referer && ! self::is_same_origin( $referer, true ) ) {
             return new \WP_Error( 'rest_forbidden', __( 'Cross-origin requests are not permitted.', 'gemini-enterprise-for-cx' ), [ 'status' => 403 ] );
         }
@@ -197,25 +298,35 @@ class Auth_Context {
     }
 
     /**
-     * Reads a request header, falling back to the raw $_SERVER entry.
+     * Reads a request header as it arrived on the wire, falling back to the
+     * WP_REST_Request copy.
+     *
+     * $_SERVER comes first because the headers of a batch sub-request are
+     * fields of the batch body, chosen by whoever sent it, while $_SERVER
+     * holds the headers of the HTTP request the browser actually made.
+     * Cart_Session::sync_cart_session_after_dispatch() and the Store API
+     * checkout hook reach this for cart mutations and checkout, both of which
+     * /wc/store/v1/batch accepts, and WordPress runs rest_post_dispatch once
+     * per sub-request, so reading the request copy first would let a sibling
+     * host claim same-origin there. For an ordinary request the two are the
+     * same.
      *
      * @param \WP_REST_Request $request     REST request instance.
      * @param string           $header_name Header name as sent on the wire.
      * @param string           $server_key  Matching $_SERVER key.
-     * @return string Sanitized header value, or '' when the header is absent.
+     * @return string Header value, or '' when the header is absent.
      */
     private static function read_request_header( \WP_REST_Request $request, string $header_name, string $server_key ): string {
-        $value = (string) $request->get_header( $header_name );
-        if ( '' === $value && isset( $_SERVER[ $server_key ] ) ) {
-            // Not sanitized, so that this fallback answers with the same bytes
-            // the get_header() path above returns. The callers parse the value
-            // as a URL and compare host and port; sanitize_text_field() strips
-            // percent-octets, which would let a header that is not same-origin
-            // be reduced to one that is.
+        if ( ! empty( $_SERVER[ $server_key ] ) ) {
+            // Not sanitized, so that this path answers with the same bytes
+            // get_header() returns. The callers parse the value as a URL and
+            // compare host and port; sanitize_text_field() strips
+            // percent-octets, which would let a header that is not
+            // same-origin be reduced to one that is.
             // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Parsed as a URL by is_same_origin(), never output. See above.
-            $value = (string) wp_unslash( $_SERVER[ $server_key ] );
+            return (string) wp_unslash( $_SERVER[ $server_key ] );
         }
-        return $value;
+        return (string) $request->get_header( $header_name );
     }
 
     /**
@@ -322,7 +433,7 @@ class Auth_Context {
     }
 
     /**
-     * Builds the set of origins permitted to read /gecx/v1/auth-context.
+     * Builds the set of origins verify_request_origin() accepts.
      *
      * @return array List of arrays with 'host' and 'port' keys.
      */
@@ -336,11 +447,15 @@ class Auth_Context {
         }
 
         /**
-         * Filters the URLs whose host and port may read the auth context.
+         * Filters the URLs whose host and port count as this store's own
+         * pages: those that may read the auth context, record a chat session,
+         * and have a Cart-Token cart bridged into the browser's cookies.
          *
-         * A store that serves the storefront from a domain WordPress does not
-         * know about, such as a headless front end or a mapped domain, adds it
-         * here.
+         * A store whose pages are served from a host WordPress does not know
+         * about, such as a mapped domain, adds it here. The request still has
+         * to be same-origin with the REST API: a browser that sends Fetch
+         * Metadata reports a page on any other origin as same-site or
+         * cross-site, and that is refused before this list is consulted.
          *
          * @param array $urls Allowed URLs.
          */
@@ -361,7 +476,8 @@ class Auth_Context {
 
     /**
      * Strips WordPress REST API CORS reflection headers on /gecx/v1/auth-context
-     * so cross-origin documents cannot read the response even if preflighted.
+     * and /gecx/v1/refresh-token so cross-origin documents cannot read the
+     * response even if preflighted.
      *
      * @param bool             $served  Whether the request has already been served.
      * @param \WP_HTTP_Response $result  Result to send to the client.
@@ -371,7 +487,7 @@ class Auth_Context {
      */
     // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- rest_pre_serve_request filter signature.
     public function suppress_cors_on_auth_context( $served, $result, $request, $server ) {
-        if ( $request instanceof \WP_REST_Request && '/gecx/v1/auth-context' === $request->get_route() ) {
+        if ( $request instanceof \WP_REST_Request && in_array( $request->get_route(), [ '/gecx/v1/auth-context', '/gecx/v1/refresh-token' ], true ) ) {
             if ( function_exists( 'header_remove' ) && ( ! function_exists( 'headers_sent' ) || ! headers_sent() ) ) {
                 header_remove( 'Access-Control-Allow-Origin' );
                 header_remove( 'Access-Control-Allow-Credentials' );
@@ -381,7 +497,7 @@ class Auth_Context {
     }
 
     /**
-     * Handle the GET request for dynamic auth context.
+     * Handle the POST request for dynamic auth context.
      *
      * WordPress's rest_cookie_check_errors() resets the active user to 0
      * when a REST request arrives without an X-WP-Nonce header. Because this
@@ -474,10 +590,7 @@ class Auth_Context {
             'customer_jwt' => $customer_jwt,
         ], 200 );
 
-        $response->header( 'Cache-Control', 'no-store, no-cache, must-revalidate, private, max-age=0' );
-        $response->header( 'Pragma', 'no-cache' );
-        $response->header( 'Expires', 'Wed, 11 Jan 1984 05:00:00 GMT' );
-        $response->header( 'Vary', 'Cookie, Origin' );
+        self::add_no_store_headers( $response );
 
         return $response;
     }

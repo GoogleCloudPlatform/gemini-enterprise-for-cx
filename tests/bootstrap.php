@@ -85,6 +85,7 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_webhooks']             = [];
     $GLOBALS['gecx_test_orders']               = [];
     $GLOBALS['gecx_test_disable_wc_webhook']   = false;
+    $GLOBALS['gecx_test_logs']                 = [];
     if ( class_exists( 'GECX_Mock_WPDB' ) ) {
         $GLOBALS['wpdb'] = new GECX_Mock_WPDB();
     }
@@ -164,7 +165,9 @@ function gecx_reset_test_globals(): void {
     $_COOKIE = [];
     // argv/argc survive: the standalone CLI runner at the foot of each test
     // file decides whether to run from argv[0]. SCRIPT_NAME defaults to the
-    // front controller, which is what a REST request reports.
+    // front controller, which is what a REST request reports. REQUEST_METHOD
+    // is reset rather than carried over, so a test that sets it cannot change
+    // what the method check in Auth_Context sees in the tests after it.
     $_SERVER = array_merge(
         [
             'REQUEST_URI'    => '/',
@@ -172,7 +175,7 @@ function gecx_reset_test_globals(): void {
             'HTTP_HOST'      => 'example.com',
             'REQUEST_METHOD' => 'GET',
         ],
-        array_intersect_key( $_SERVER, [ 'argv' => 1, 'argc' => 1, 'HTTP_HOST' => 1, 'REQUEST_METHOD' => 1 ] )
+        array_intersect_key( $_SERVER, [ 'argv' => 1, 'argc' => 1, 'HTTP_HOST' => 1 ] )
     );
 
     if ( class_exists( Auth::class ) ) {
@@ -562,6 +565,45 @@ if ( ! function_exists( 'wc_get_webhooks' ) ) {
             $webhooks[] = new \WC_Webhook( (int) $id );
         }
         return $webhooks;
+    }
+}
+
+if ( ! function_exists( 'wc_get_logger' ) ) {
+    /**
+     * Records Auth::log() calls in $GLOBALS['gecx_test_logs'].
+     */
+    class GECX_Test_Logger {
+        public function error( string $message, array $context = [] ): void {
+            $this->record( 'error', $message, $context );
+        }
+
+        public function warning( string $message, array $context = [] ): void {
+            $this->record( 'warning', $message, $context );
+        }
+
+        public function info( string $message, array $context = [] ): void {
+            $this->record( 'info', $message, $context );
+        }
+
+        public function debug( string $message, array $context = [] ): void {
+            $this->record( 'debug', $message, $context );
+        }
+
+        private function record( string $level, string $message, array $context ): void {
+            $GLOBALS['gecx_test_logs'][] = [
+                'level'   => $level,
+                'message' => $message,
+                'context' => $context,
+            ];
+        }
+    }
+
+    function wc_get_logger(): GECX_Test_Logger {
+        static $logger = null;
+        if ( null === $logger ) {
+            $logger = new GECX_Test_Logger();
+        }
+        return $logger;
     }
 }
 

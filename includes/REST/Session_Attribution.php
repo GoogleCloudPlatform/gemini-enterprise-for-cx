@@ -17,6 +17,7 @@ declare(strict_types=1);
 namespace Google\Gemini_Enterprise_For_CX\REST;
 
 use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\Storefront;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
@@ -87,7 +88,7 @@ class Session_Attribution {
         register_rest_route( 'gecx/v1', '/session', [
             'methods'             => 'POST',
             'callback'            => [ $this, 'save_session_handler' ],
-            'permission_callback' => [ $this, 'check_session_permissions' ],
+            'permission_callback' => [ $this, 'check_save_session_permissions' ],
             'args'                => [
                 'session_id' => [
                     'description'       => __( 'GECX commerce session resource name or session identifier.', 'gemini-enterprise-for-cx' ),
@@ -128,6 +129,53 @@ class Session_Attribution {
     }
 
     /**
+     * Project number of the agent the storefront widget is configured with,
+     * or '' when the store is not linked or its agent name carries none.
+     *
+     * The widget takes the project number for the session resource names it
+     * sends from its agent-name attribute, so this reads the agent the same
+     * way, through Storefront::resolve_active_agent_name().
+     *
+     * @return string Numeric project number, or ''.
+     */
+    private static function get_linked_project_number(): string {
+        $agent_name = Storefront::resolve_active_agent_name();
+        if ( 1 !== preg_match( '#^projects/([0-9]+)/#', $agent_name, $matches ) ) {
+            return '';
+        }
+        return $matches[1];
+    }
+
+    /**
+     * Whether a session ID names a session in the Google Cloud project of the
+     * agent this store is linked to.
+     *
+     * The widget names its sessions projects/{project}/locations/.../{id},
+     * with {project} taken from the store's agent. An ID naming another
+     * project did not come from this store's widget. A bare ID names no
+     * project and fails too.
+     *
+     * The plugin only logs a mismatch, on the /gecx/v1/session route and the
+     * order webhook; the route also keeps a session in the linked project that
+     * the browser already has bound rather than overwrite it. The backend is
+     * what refuses to attribute an order to a session outside the project of
+     * the agent the store is linked to.
+     *
+     * A store whose agent name carries no project number has nothing to
+     * compare against, so every ID passes there, as before.
+     *
+     * @param string $session_id Session ID, already checked by is_valid_session_id().
+     * @return bool
+     */
+    public static function is_in_linked_project( string $session_id ): bool {
+        $project_number = self::get_linked_project_number();
+        if ( '' === $project_number ) {
+            return true;
+        }
+        return 0 === strpos( $session_id, 'projects/' . $project_number . '/' );
+    }
+
+    /**
      * Handle the POST request to save the session ID in the WooCommerce customer session.
      */
     public function save_session_handler( \WP_REST_Request $request ) {
@@ -142,7 +190,6 @@ class Session_Attribution {
         if ( ! self::is_valid_session_id( $session_id ) ) {
             return new \WP_Error( 'invalid_session_id', __( 'Session ID is invalid.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
-
         // Force WooCommerce to initialize the frontend session based on client cookies
         if ( function_exists( 'WC' ) ) {
             if ( is_null( WC()->session ) ) {
@@ -155,6 +202,37 @@ class Session_Attribution {
 
         if ( ! function_exists( 'WC' ) || ! WC()->session ) {
             return new \WP_Error( 'session_not_initialized', __( 'WooCommerce session not active.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
+        }
+
+        // A session outside the linked agent's project is logged, not refused:
+        // the order webhook never delivers a bare ID, and the backend
+        // attributes an order only to a session in the project of the agent
+        // the store is linked to, so a 400 would only break a widget that
+        // sends an ID this store did not expect. It is stored unless this
+        // browser already has a session in the linked project bound. That one
+        // is the only kind the backend attributes an order to, so overwriting
+        // it would silently cost the shopper's next order its attribution.
+        if ( ! self::is_in_linked_project( $session_id ) ) {
+            $bound_session_id   = self::get_gecx_session_id_safely();
+            $keep_bound_session = self::is_valid_session_id( $bound_session_id, true )
+                && self::is_in_linked_project( $bound_session_id );
+
+            Auth::log(
+                sprintf(
+                    'Session annotation names %s, which is not the project of the linked agent; %s.',
+                    0 === strpos( $session_id, 'projects/' )
+                        ? 'project ' . (string) strtok( substr( $session_id, strlen( 'projects/' ) ), '/' )
+                        : 'no project',
+                    $keep_bound_session
+                        ? 'keeping the session already bound in the linked project'
+                        : 'storing it for the backend to decide'
+                ),
+                'warning'
+            );
+
+            if ( $keep_bound_session ) {
+                return new \WP_REST_Response( [ 'success' => true ], 200 );
+            }
         }
 
         WC()->session->set( 'gecx_session_id', $session_id );
@@ -310,11 +388,40 @@ class Session_Attribution {
     }
 
     /**
+     * Permission check for POST /gecx/v1/session: a valid wp_rest nonce, on a
+     * request from one of the store's own pages.
+     *
+     * The nonce alone does not establish where the request came from. Every
+     * uncookied guest is issued the same logged-out nonce, and WordPress
+     * answers a credentialed CORS preflight from any origin. A page on a
+     * same-site sibling host could otherwise post here from a shopper's
+     * browser, set the gecx_session_id cookie there, and have that shopper's
+     * orders attributed to a session it chose.
+     *
+     * @param \WP_REST_Request $request REST request instance.
+     * @return true|\WP_Error
+     */
+    public static function check_save_session_permissions( \WP_REST_Request $request ) {
+        $nonce_check = self::check_session_permissions( $request );
+        if ( true !== $nonce_check ) {
+            return $nonce_check;
+        }
+        return Auth_Context::verify_request_origin( $request );
+    }
+
+    /**
      * Helper to safely retrieve session ID from WooCommerce, falling back to
      * the first-party `gecx_session_id` cookie set when an uncookied guest
      * started a chat before adding items to the cart.
+     *
+     * @param bool $include_cookie Whether the browser's cookie may be used. The
+     *                             callers acting on a Cart-Token session pass
+     *                             false unless the request came from one of
+     *                             the store's own pages, because that session
+     *                             need not be this browser's.
+     * @return string Session ID, or '' when none is bound.
      */
-    public static function get_gecx_session_id_safely() {
+    public static function get_gecx_session_id_safely( bool $include_cookie = true ) {
         $session_id = '';
         if ( function_exists( 'WC' ) ) {
             if ( is_null( WC()->session ) ) {
@@ -358,7 +465,7 @@ class Session_Attribution {
             }
         }
 
-        if ( empty( $session_id ) && isset( $_COOKIE[ self::SESSION_COOKIE_NAME ] ) ) {
+        if ( $include_cookie && empty( $session_id ) && isset( $_COOKIE[ self::SESSION_COOKIE_NAME ] ) ) {
             $cookie_session_id = sanitize_text_field( wp_unslash( $_COOKIE[ self::SESSION_COOKIE_NAME ] ) );
             if ( self::is_valid_session_id( $cookie_session_id ) ) {
                 $session_id = $cookie_session_id;
@@ -384,33 +491,38 @@ class Session_Attribution {
 
     /**
      * Bind Session ID to Created Order (WooCommerce Blocks Checkout)
+     *
+     * A checkout carrying a Cart-Token places the order from the session of
+     * whoever holds that token, so the browser's gecx_session_id cookie is
+     * attributed to it only on a request from one of the store's own pages,
+     * as in Cart_Session::sync_cart_session_after_dispatch(). Otherwise a page
+     * on a same-site sibling host could check out a cart it holds the token
+     * for from a shopper's browser and have that order delivered into the
+     * shopper's chat session. The session's own gecx_session_id, and the one
+     * stored against the token, are used either way.
      */
     // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- WooCommerce Store API action callback signature.
     public function attach_session_to_order_metadata_store_api( \WC_Order $order, \WP_REST_Request $request ): void {
-        $session_id = self::get_gecx_session_id_safely();
-        if ( empty( $session_id ) ) {
-            $cart_token = (string) $request->get_header( 'Cart-Token' );
-            if ( '' === $cart_token && method_exists( $request, 'get_headers' ) ) {
-                $cart_token = Cart_Session::find_cart_token( $request->get_headers() );
-            }
-            if ( '' === $cart_token ) {
-                $cart_token = Cart_Session::read_cart_token_from_server();
-            }
-            if ( '' !== $cart_token ) {
-                $customer_id = Auth::get_cart_token_customer_id( $cart_token );
-                if ( '' !== $customer_id ) {
-                    global $wpdb;
-                    if ( isset( $wpdb ) ) {
-                        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Fallback lookup for Store API order creation.
-                        $raw = $wpdb->get_var( $wpdb->prepare(
-                            "SELECT session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s",
-                            $customer_id
-                        ) );
-                        if ( ! empty( $raw ) ) {
-                            $data = maybe_unserialize( $raw );
-                            if ( is_array( $data ) && ! empty( $data['gecx_session_id'] ) ) {
-                                $session_id = (string) $data['gecx_session_id'];
-                            }
+        // The Cart-Token WooCommerce chose this checkout's session by. Checkout
+        // can be batched, and a sub-request's own headers do not count; see
+        // Cart_Session::read_cart_token_from_server().
+        $cart_token = Cart_Session::read_cart_token_from_server();
+
+        $session_id = self::get_gecx_session_id_safely( '' === $cart_token || true === Auth_Context::verify_request_origin( $request ) );
+        if ( empty( $session_id ) && '' !== $cart_token ) {
+            $customer_id = Auth::get_cart_token_customer_id( $cart_token );
+            if ( '' !== $customer_id ) {
+                global $wpdb;
+                if ( isset( $wpdb ) ) {
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Fallback lookup for Store API order creation.
+                    $raw = $wpdb->get_var( $wpdb->prepare(
+                        "SELECT session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s",
+                        $customer_id
+                    ) );
+                    if ( ! empty( $raw ) ) {
+                        $data = maybe_unserialize( $raw );
+                        if ( is_array( $data ) && ! empty( $data['gecx_session_id'] ) ) {
+                            $session_id = (string) $data['gecx_session_id'];
                         }
                     }
                 }

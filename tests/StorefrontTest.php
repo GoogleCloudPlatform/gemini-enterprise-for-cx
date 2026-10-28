@@ -1327,7 +1327,7 @@ JS;
         $this->assertSame( $token, $cart_reads[0]['headers']['Cart-Token'] );
     }
 
-    public function test_cart_update_rebinds_the_chat_session_once_the_cart_binding_has_answered(): void {
+    public function test_cart_update_binds_the_cart_session_before_reading_the_cart_without_reposting_the_bare_session_id(): void {
         $log = $this->run_cart_update_scenario(
             [
                 'detail'        => [ 'cartId' => 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidF8xIn0.sig' ],
@@ -1338,10 +1338,10 @@ JS;
             ]
         );
 
-        // Once, and not alongside the binding: a response that refreshes the
-        // browser's old session cookie would undo the binding if it landed
-        // after it.
-        $this->assertSame( [ 'cart-session', 'session', 'cart read' ], $log['sequence'] );
+        // The bare ID in localStorage is not re-posted to /gecx/v1/session:
+        // that would overwrite the full resource name in the cookie and
+        // session row with an ID the linked-project check refuses.
+        $this->assertSame( [ 'cart-session', 'cart read' ], $log['sequence'] );
         $this->assertSame(
             [ 'gecx:cart-session-bound', 'wc-blocks_added_to_cart', 'gecx:cart-updated' ],
             self::event_types( $log )

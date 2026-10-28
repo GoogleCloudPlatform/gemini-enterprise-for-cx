@@ -188,9 +188,14 @@ class Cart_Session {
     /**
      * Reads the raw `Cart-Token` request header from `$_SERVER`.
      *
-     * WP_REST_Request only carries the headers WordPress parsed for the route
-     * it dispatched, so the Store API checkout hooks and the post-dispatch cart
-     * sync still have to fall back to `$_SERVER`. The value is a compact JWS:
+     * This is the token WooCommerce chooses the request's session by
+     * (CartTokenUtils::get_request_cart_token() reads the same header), so it
+     * is the one the post-dispatch cart sync and the Store API checkout hook
+     * act on. The WP_REST_Request copy is not used: for a batch sub-request
+     * its headers are fields of the batch body, and a Cart-Token there would
+     * name a session other than the one whose cart the request loaded. It may
+     * also be missing, since WP_REST_Request only carries the headers
+     * WordPress parsed for the route it dispatched. The value is a compact JWS:
      * three base64url segments separated by dots. `sanitize_text_field()` is
      * lossless over that alphabet, and the charset filter drops anything a JWT
      * cannot contain, so a malformed header can never reach
@@ -448,9 +453,12 @@ class Cart_Session {
             ? strtoupper( (string) $request->get_method() )
             : ( isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ) : 'GET' );
 
-        $has_cart_token = ( Auth::is_cart_token_request() )
-            || ! empty( $_SERVER['HTTP_CART_TOKEN'] )
-            || '' !== (string) $request->get_header( 'Cart-Token' );
+        // Only a Cart-Token on the HTTP request itself counts. That is the one
+        // WooCommerce chose the loaded session by (CartTokenUtils reads
+        // $_SERVER), while a batch sub-request's headers are fields of the batch
+        // body: a token there names a session other than the one whose cart and
+        // data this request loaded.
+        $has_cart_token = Auth::is_cart_token_request() || ! empty( $_SERVER['HTTP_CART_TOKEN'] );
 
         $is_cart_read            = ( 'GET' === $method && 1 === preg_match( '#^/wc/store/v\d+/cart(/.*)?$#', $route ) );
         $is_cart_token_cart_read = ( $is_cart_read && $has_cart_token );
@@ -490,8 +498,19 @@ class Cart_Session {
                 WC()->cart->persistent_cart_update();
             }
 
+            // A Cart-Token selects the session of whoever holds it, and WooCommerce
+            // accepts one from any origin, so that session need not be this
+            // browser's. The browser's gecx_session_id cookie is carried into a
+            // Cart-Token session only on a request from the store's own pages.
+            // From a page on a same-site sibling host it would hand a shopper's
+            // chat session to a cart that page holds the token for, and the
+            // orders placed from that cart would be delivered into the shopper's
+            // session. Store API checkout applies the same rule; see
+            // Session_Attribution::attach_session_to_order_metadata_store_api().
+            $has_verified_origin = ! $has_cart_token || true === Auth_Context::verify_request_origin( $request );
+
             // Persist through WC()->session API so custom session handlers (Redis/Memcached) stay in sync.
-            $bound_session_id = Session_Attribution::get_gecx_session_id_safely();
+            $bound_session_id = Session_Attribution::get_gecx_session_id_safely( $has_verified_origin );
             if ( isset( WC()->session ) ) {
                 if ( method_exists( WC()->session, 'set' ) ) {
                     WC()->session->set( 'cart', $cart_for_session );
@@ -508,13 +527,7 @@ class Cart_Session {
             global $wpdb;
             $session_key = '';
             if ( $has_cart_token ) {
-                $raw_cart_token = (string) $request->get_header( 'Cart-Token' );
-                if ( '' === $raw_cart_token && method_exists( $request, 'get_headers' ) ) {
-                    $raw_cart_token = self::find_cart_token( $request->get_headers() );
-                }
-                if ( '' === $raw_cart_token ) {
-                    $raw_cart_token = self::read_cart_token_from_server();
-                }
+                $raw_cart_token = self::read_cart_token_from_server();
                 if ( '' !== $raw_cart_token ) {
                     $session_key = Auth::get_cart_token_customer_id( $raw_cart_token );
                 }
@@ -532,8 +545,9 @@ class Cart_Session {
             }
 
             // Set the WooCommerce session cookie for an un-cookied guest when
-            // it reads a Cart-Token cart that holds items, bridging that cart
-            // to the browser on GET /wc/store/v1/cart.
+            // it reads a Cart-Token cart that holds items from one of the
+            // store's own pages, bridging that cart to the browser on
+            // GET /wc/store/v1/cart.
             //
             // A guest's own first cart change needs nothing from here.
             // WooCommerce sets the session cookie on that response itself, as
@@ -546,9 +560,18 @@ class Cart_Session {
             // logs out. Writing a numeric key as a session cookie for a logged-out browser makes
             // WC_Session_Handler::is_session_cookie_valid() fail, which calls destroy_session()
             // and deletes that user's row from the sessions table along with their saved cart.
+            //
+            // Bridging also requires the request to come from the store's own pages, which is
+            // where storefront.js reads the cart after an agent update. The Cart-Token is a
+            // bearer credential, and WooCommerce answers a credentialed request carrying a
+            // valid one from any origin (StoreApi\Authentication::send_cors_headers()), so
+            // presenting it proves nothing about whose browser this is. Without the check, a
+            // page on a same-site sibling host could plant a session it holds the token for in
+            // a shopper's browser, then read back the cart and checkout address the shopper
+            // goes on to enter. The cookie's SameSite default does not stop a same-site sender.
             $is_guest_session_key = ( 0 === strpos( $session_key, 't_' ) );
             $bridged_to_browser   = false;
-            if ( $is_cart_token_cart_read && ! $has_cookie && $has_cart_items && 0 === get_current_user_id() && $is_guest_session_key ) {
+            if ( $is_cart_token_cart_read && $has_verified_origin && ! $has_cookie && $has_cart_items && 0 === get_current_user_id() && $is_guest_session_key ) {
                 self::set_guest_session_cookie( $session_key );
                 $bridged_to_browser = true;
             }
