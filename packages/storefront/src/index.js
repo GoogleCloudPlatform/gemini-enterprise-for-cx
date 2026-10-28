@@ -1859,6 +1859,12 @@ const GECX_CORNER_WIDGET_SELECTORS =
     '#podium-bubble, #podium-website-widget [style*="fixed"], #intercom-container, .intercom-lightweight-app-launcher, #tidio-chat, #tidio-chat-iframe, .crisp-client, #hubspot-messages-iframe-container, #gorgias-chat-container, #launcher, #chat-widget-container, #google-merchantwidget-iframe-wrapper';
 
 /**
+ * Every known bar and corner widget the offset pass checks by selector.
+ * @const {string}
+ */
+const GECX_FIXED_CANDIDATE_SELECTORS = GECX_BOTTOM_BAR_SELECTORS + ', ' + GECX_CORNER_WIDGET_SELECTORS;
+
+/**
  * Whether an element is ours or the chat widget's.
  * @param {!Element} el
  * @return {boolean}
@@ -1892,7 +1898,8 @@ const gecxWatchedFixedElements = typeof WeakSet !== 'undefined' ? new WeakSet() 
 
 /**
  * Whether fixed elements can be watched for size changes. Without it, the
- * content observer re-measures on attribute changes of <body> children alone.
+ * content observer's attribute and removal checks are the only re-measure
+ * triggers.
  * @const {boolean}
  */
 const gecxCanWatchSize = typeof ResizeObserver !== 'undefined' && !!gecxWatchedFixedElements;
@@ -2020,7 +2027,7 @@ function updateFloatingOffset() {
       consider(children[i].firstElementChild);
     }
   }
-  gecxEach(GECX_BOTTOM_BAR_SELECTORS + ', ' + GECX_CORNER_WIDGET_SELECTORS, consider);
+  gecxEach(GECX_FIXED_CANDIDATE_SELECTORS, consider);
 
   if (offset > 0) {
     document.documentElement.style.setProperty('--gecx-floating-offset', offset + 'px');
@@ -2340,14 +2347,16 @@ if (typeof MutationObserver !== 'undefined' && document.body) {
         if (!gecxIsOwnElement(target) && (target.parentElement === document.body ||
             (gecxWatchedFixedElements && gecxWatchedFixedElements.has(target)) ||
             (typeof target.matches === 'function' &&
-             target.matches(GECX_BOTTOM_BAR_SELECTORS + ', ' + GECX_CORNER_WIDGET_SELECTORS)))) {
+             target.matches(GECX_FIXED_CANDIDATE_SELECTORS)))) {
           gecxScheduleFloatingOffset();
         }
         continue;
       }
       // A removed widget may not report a size change (no ResizeObserver, or
       // already 0x0), so re-measure when a watched element or a child of
-      // <body> goes away, and stop watching it.
+      // <body> goes away, and stop watching it. Without ResizeObserver a
+      // widget can also go with an ancestor that is neither, so any removal
+      // re-measures there (debounced; only old browsers take this path).
       const removed = mutations[i].removedNodes || [];
       for (let j = 0; j < removed.length; j++) {
         const node = removed[j];
@@ -2361,7 +2370,7 @@ if (typeof MutationObserver !== 'undefined' && document.body) {
           }
           gecxWatchedFixedElements.delete(node);
         }
-        if (watched || mutations[i].target === document.body) {
+        if (watched || mutations[i].target === document.body || !gecxCanWatchSize) {
           gecxScheduleFloatingOffset();
         }
       }

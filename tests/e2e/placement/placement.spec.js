@@ -557,6 +557,23 @@ test.describe('corner widget that sizes itself after load', () => {
     await settle(page);
     expect(await floatingOffset(page)).toBe('');
   });
+
+  for (const [what, remove] of [
+    ['the nested widget itself', (id) => document.getElementById(id).remove()],
+    ['an ancestor between it and <body>', (id) => document.getElementById(id).parentElement.remove()],
+  ]) {
+    test(`drops the lift when ${what} is removed without ResizeObserver`, async ({ page }) => {
+      await page.addInitScript(() => { delete window.ResizeObserver; });
+      await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+      await mountEmptyWidget(page, 'right:20px;bottom:20px', { depth: 2 });
+      await resizeWidget(page, 84, 84);
+      expect(await floatingOffset(page)).toBe('104px');
+
+      await page.evaluate(remove, MERCHANT_WIDGET_ID);
+      await settle(page);
+      expect(await floatingOffset(page)).toBe('');
+    });
+  }
 });
 
 test('lifts the floating launcher above a nested sticky bar that becomes fixed after load', async ({ page }) => {
