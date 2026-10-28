@@ -1911,7 +1911,13 @@ let gecxFixedResizeObserver = null;
  * @param {!Element} el
  */
 function gecxWatchFixedElementSize(el) {
-  if (!gecxCanWatchSize || gecxWatchedFixedElements.has(el)) {
+  if (!gecxWatchedFixedElements || gecxWatchedFixedElements.has(el)) {
+    return;
+  }
+  // Recorded even without ResizeObserver, so contentObserver still treats a
+  // nested or re-parented widget's attribute changes as worth a re-measure.
+  gecxWatchedFixedElements.add(el);
+  if (!gecxCanWatchSize) {
     return;
   }
   if (!gecxFixedResizeObserver) {
@@ -1928,7 +1934,6 @@ function gecxWatchFixedElementSize(el) {
       gecxScheduleFloatingOffset();
     });
   }
-  gecxWatchedFixedElements.add(el);
   // The first notification arrives for every newly watched element, so each
   // costs one extra, idempotent re-measure.
   gecxFixedResizeObserver.observe(el);
@@ -1994,8 +1999,11 @@ function updateFloatingOffset() {
       return;
     }
     const rect = el.getBoundingClientRect();
+    // A bar narrowed while the chat panel pushes the page aside
+    // (gecxShiftFixedElementsForChat) still counts as full width.
     if (rect.height > 0 && rect.height < viewportHeight * 0.4 &&
-        rect.width > viewportWidth * 0.5 && rect.bottom >= viewportHeight - 2 &&
+        (rect.width > viewportWidth * 0.5 || el.classList.contains('gecx-shifted-for-chat')) &&
+        rect.bottom >= viewportHeight - 2 &&
         rect.top > viewportHeight * 0.5) {
       offset = Math.max(offset, Math.ceil(viewportHeight - rect.top));
     } else if (hasCornerLauncher && rect.height > 0 && rect.height <= 140 &&
@@ -2323,15 +2331,39 @@ if (typeof MutationObserver !== 'undefined' && document.body) {
           return;
         }
         // A widget can be shown, hidden or moved without changing size, which
-        // the ResizeObserver doesn't report. Re-measure when a child of <body>
-        // or a watched fixed element changes; without ResizeObserver this also
-        // catches widgets sizing themselves through their style attribute.
+        // the ResizeObserver doesn't report. Re-measure when a child of <body>,
+        // a watched fixed element, or a known bar or corner widget changes (one
+        // can become fixed after mount, e.g. a sticky bar on scroll); without
+        // ResizeObserver this also catches widgets sizing themselves through
+        // their style attribute.
         const target = mutations[i].target;
         if (!gecxIsOwnElement(target) && (target.parentElement === document.body ||
-            (gecxWatchedFixedElements && gecxWatchedFixedElements.has(target)))) {
+            (gecxWatchedFixedElements && gecxWatchedFixedElements.has(target)) ||
+            (typeof target.matches === 'function' &&
+             target.matches(GECX_BOTTOM_BAR_SELECTORS + ', ' + GECX_CORNER_WIDGET_SELECTORS)))) {
           gecxScheduleFloatingOffset();
         }
         continue;
+      }
+      // A removed widget may not report a size change (no ResizeObserver, or
+      // already 0x0), so re-measure when a watched element or a child of
+      // <body> goes away, and stop watching it.
+      const removed = mutations[i].removedNodes || [];
+      for (let j = 0; j < removed.length; j++) {
+        const node = removed[j];
+        if (node.nodeType !== 1 || gecxIsOwnElement(node)) {
+          continue;
+        }
+        const watched = !!(gecxWatchedFixedElements && gecxWatchedFixedElements.has(node));
+        if (watched) {
+          if (gecxFixedResizeObserver) {
+            gecxFixedResizeObserver.unobserve(node);
+          }
+          gecxWatchedFixedElements.delete(node);
+        }
+        if (watched || mutations[i].target === document.body) {
+          gecxScheduleFloatingOffset();
+        }
       }
       const added = mutations[i].addedNodes || [];
       for (let j = 0; j < added.length; j++) {

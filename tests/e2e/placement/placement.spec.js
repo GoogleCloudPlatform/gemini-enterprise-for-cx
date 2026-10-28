@@ -535,6 +535,69 @@ test.describe('corner widget that sizes itself after load', () => {
     await resizeWidget(page, 400, 600);
     expect(await floatingOffset(page)).toBe('');
   });
+
+  test('lifts the floating launcher for a nested widget without ResizeObserver', async ({ page }) => {
+    await page.addInitScript(() => { delete window.ResizeObserver; });
+    await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+    await mountEmptyWidget(page, 'right:20px;bottom:20px', { depth: 2 });
+    expect(await floatingOffset(page)).toBe('');
+
+    await resizeWidget(page, 84, 84);
+    await expectLauncherAboveWidget(page);
+  });
+
+  test('drops the lift when the widget is removed without ResizeObserver', async ({ page }) => {
+    await page.addInitScript(() => { delete window.ResizeObserver; });
+    await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+    await mountEmptyWidget(page, 'right:20px;bottom:20px');
+    await resizeWidget(page, 84, 84);
+    expect(await floatingOffset(page)).toBe('104px');
+
+    await page.evaluate((id) => document.getElementById(id).remove(), MERCHANT_WIDGET_ID);
+    await settle(page);
+    expect(await floatingOffset(page)).toBe('');
+  });
+});
+
+test('lifts the floating launcher above a nested sticky bar that becomes fixed after load', async ({ page }) => {
+  await openFixture(page, {
+    config: { placement: 'floating' },
+    themeCss: '.elementor-sticky--active{position:fixed;bottom:0;left:0;right:0;height:56px;background:#333}',
+    body: `<main style="height:1200px"><div><div id="late-bar">Add to cart</div></div></main>
+      <div class="gecx-floating-button-container gecx-floating-button-container--bottom-right" style="${assets.floatingStyles.bottom_right}">${BUTTON}</div>`,
+  });
+  expect(await page.evaluate(() => document.documentElement.style.getPropertyValue('--gecx-floating-offset'))).toBe('');
+
+  // Elementor adds this class on scroll, long after the first placement pass.
+  await page.evaluate(() => document.getElementById('late-bar').classList.add('elementor-sticky--active'));
+  await settle(page);
+  expect(await page.evaluate(() => document.documentElement.style.getPropertyValue('--gecx-floating-offset'))).toBe('56px');
+});
+
+test('keeps the bottom bar lift while the chat panel narrows the bar', async ({ page }) => {
+  await openFixture(page, {
+    width: 650,
+    height: 700,
+    config: { placement: 'floating' },
+    themeCss: '.storefront-handheld-footer-bar{position:fixed;bottom:0;left:0;right:0;height:56px;background:#333}',
+    body: `<main style="height:1200px">Content</main><div class="storefront-handheld-footer-bar"></div>
+      <div class="gecx-floating-button-container gecx-floating-button-container--bottom-center" style="${assets.floatingStyles.bottom_center}">${BUTTON}</div>`,
+  });
+  const offset = () => page.evaluate(() => document.documentElement.style.getPropertyValue('--gecx-floating-offset'));
+  expect(await offset()).toBe('56px');
+
+  // At 650px a 360px panel leaves the bar under half the viewport wide.
+  await page.evaluate(() => {
+    const messenger = document.createElement('chat-messenger');
+    messenger.className = 'slide-over';
+    document.body.appendChild(messenger);
+    document.body.style.paddingRight = '360px';
+    document.body.classList.add('gecx-chat-open');
+    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed'));
+  });
+  await expect.poll(() => page.locator('.storefront-handheld-footer-bar').evaluate((el) => el.classList.contains('gecx-shifted-for-chat'))).toBe(true);
+  await settle(page);
+  expect(await offset()).toBe('56px');
 });
 
 test('narrows fixed headers while the chat panel pushes the page', async ({ page }) => {
