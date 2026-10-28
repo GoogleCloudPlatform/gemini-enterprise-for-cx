@@ -1847,13 +1847,16 @@ const GECX_BOTTOM_BAR_SELECTORS =
     '.storefront-handheld-footer-bar, .ast-sticky-add-to-cart, .sticky-add-to-cart, [class*="sticky-add-to-cart"], .wd-toolbar, .elementor-sticky--active';
 
 /**
- * Fixed third-party corner widgets (chat bubbles, SMS launchers) that sit at
- * the bottom edge of the viewport and would otherwise cover a bottom-corner
- * floating or fallback launcher.
+ * Fixed third-party corner widgets (chat bubbles, SMS launchers, store badges)
+ * that sit at the bottom edge of the viewport and would otherwise cover a
+ * bottom-corner floating or fallback launcher. The Google Merchant Center
+ * store widget mounts its wrapper at 0x0 and sizes it once its iframe loads.
+ * Its wrapper is a direct child of <body>, which the offset pass scans anyway;
+ * it is listed so it is still found if a theme or optimizer re-parents it.
  * @const {string}
  */
 const GECX_CORNER_WIDGET_SELECTORS =
-    '#podium-bubble, #podium-website-widget [style*="fixed"], #intercom-container, .intercom-lightweight-app-launcher, #tidio-chat, #tidio-chat-iframe, .crisp-client, #hubspot-messages-iframe-container, #gorgias-chat-container, #launcher, #chat-widget-container';
+    '#podium-bubble, #podium-website-widget [style*="fixed"], #intercom-container, .intercom-lightweight-app-launcher, #tidio-chat, #tidio-chat-iframe, .crisp-client, #hubspot-messages-iframe-container, #gorgias-chat-container, #launcher, #chat-widget-container, #google-merchantwidget-iframe-wrapper';
 
 /**
  * Whether an element is ours or the chat widget's.
@@ -1867,6 +1870,68 @@ function gecxIsOwnElement(el) {
   }
   const className = typeof el.className === 'string' ? el.className : '';
   return /(^|\s)gecx-(nav-menu-item|mobile-header-button|floating-button-container|agent-button-slot)(\s|$)/.test(className);
+}
+
+/** @type {?number} */
+let gecxFloatingOffsetTimer = null;
+
+/**
+ * Re-measures the floating offset shortly, coalescing bursts of changes.
+ * Only the offset is recomputed, not the whole placement pass.
+ */
+function gecxScheduleFloatingOffset() {
+  clearTimeout(gecxFloatingOffsetTimer);
+  gecxFloatingOffsetTimer = setTimeout(updateFloatingOffset, 100);
+}
+
+// observe() on an element already observed re-delivers an initial
+// notification, which would re-run the measurement forever. Watched elements
+// are remembered here so each is observed once.
+/** @type {?WeakSet<!Element>} */
+const gecxWatchedFixedElements = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+
+/**
+ * Whether fixed elements can be watched for size changes. Without it, the
+ * content observer re-measures on attribute changes of <body> children alone.
+ * @const {boolean}
+ */
+const gecxCanWatchSize = typeof ResizeObserver !== 'undefined' && !!gecxWatchedFixedElements;
+
+/** @type {?ResizeObserver} */
+let gecxFixedResizeObserver = null;
+
+/**
+ * Re-measures the floating offset when a fixed element changes size.
+ *
+ * Third-party widgets often mount empty and size themselves after their
+ * iframe loads. Adding them triggers a placement pass while they are still
+ * 0x0, and the later resize can come from a class or stylesheet the content
+ * observer never sees. Without this, a widget like the Merchant Center store
+ * widget covers the launcher until the window resizes.
+ * @param {!Element} el
+ */
+function gecxWatchFixedElementSize(el) {
+  if (!gecxCanWatchSize || gecxWatchedFixedElements.has(el)) {
+    return;
+  }
+  if (!gecxFixedResizeObserver) {
+    gecxFixedResizeObserver = new ResizeObserver(function(entries) {
+      // Let go of removed elements so pages that swap content don't keep
+      // them alive. One that is attached again is watched again.
+      for (let i = 0; i < entries.length; i++) {
+        const target = entries[i].target;
+        if (!target.isConnected) {
+          gecxFixedResizeObserver.unobserve(target);
+          gecxWatchedFixedElements.delete(target);
+        }
+      }
+      gecxScheduleFloatingOffset();
+    });
+  }
+  gecxWatchedFixedElements.add(el);
+  // The first notification arrives for every newly watched element, so each
+  // costs one extra, idempotent re-measure.
+  gecxFixedResizeObserver.observe(el);
 }
 
 /**
@@ -1918,7 +1983,14 @@ function updateFloatingOffset() {
       return;
     }
     const style = window.getComputedStyle(el);
-    if (style.position !== 'fixed' || style.display === 'none' || style.visibility === 'hidden') {
+    if (style.position !== 'fixed') {
+      return;
+    }
+    // Watched before the size checks: a widget that mounts at 0x0 or hidden
+    // and grows later (the Merchant Center store widget) must be measured
+    // again once it has a size.
+    gecxWatchFixedElementSize(el);
+    if (style.display === 'none' || style.visibility === 'hidden') {
       return;
     }
     const rect = el.getBoundingClientRect();
@@ -2249,6 +2321,15 @@ if (typeof MutationObserver !== 'undefined' && document.body) {
         if (mutations[i].target.tagName === 'GECX-AGENT-BUTTON') {
           gecxScheduleReinit();
           return;
+        }
+        // A widget can be shown, hidden or moved without changing size, which
+        // the ResizeObserver doesn't report. Re-measure when a child of <body>
+        // or a watched fixed element changes; without ResizeObserver this also
+        // catches widgets sizing themselves through their style attribute.
+        const target = mutations[i].target;
+        if (!gecxIsOwnElement(target) && (target.parentElement === document.body ||
+            (gecxWatchedFixedElements && gecxWatchedFixedElements.has(target)))) {
+          gecxScheduleFloatingOffset();
         }
         continue;
       }
