@@ -574,6 +574,25 @@ test.describe('corner widget that sizes itself after load', () => {
       expect(await floatingOffset(page)).toBe('');
     });
   }
+
+  test('lifts the floating launcher while another element keeps changing', async ({ page }) => {
+    await openFixture(page, {
+      config: { placement: 'floating' },
+      body: `${floatingBottomRight}<div id="ticker" style="position:fixed;top:0;left:0">News</div>`,
+    });
+    // A ticker restyling a child of <body> every 30ms, faster than the
+    // re-measure's quiet time, for longer than the test waits.
+    await page.evaluate(() => {
+      const ticker = document.getElementById('ticker');
+      let n = 0;
+      window.__ticker = setInterval(() => { ticker.style.transform = `translateX(${n++ % 50}px)`; }, 30);
+    });
+    await mountEmptyWidget(page, 'right:20px;bottom:20px');
+    await resizeWidget(page, 84, 84);
+    expect(await page.evaluate(() => !!window.__ticker)).toBe(true);
+    expect(await floatingOffset(page)).toBe('104px');
+    await page.evaluate(() => clearInterval(window.__ticker));
+  });
 });
 
 test('lifts the floating launcher above a nested sticky bar that becomes fixed after load', async ({ page }) => {

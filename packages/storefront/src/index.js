@@ -1878,16 +1878,43 @@ function gecxIsOwnElement(el) {
   return /(^|\s)gecx-(nav-menu-item|mobile-header-button|floating-button-container|agent-button-slot)(\s|$)/.test(className);
 }
 
+/**
+ * Quiet time before the floating offset is re-measured, and the longest a
+ * pending re-measure may be put off by further changes.
+ * @const {number}
+ */
+const GECX_FLOATING_OFFSET_DEBOUNCE_MS = 100;
+/** @const {number} */
+const GECX_FLOATING_OFFSET_MAX_WAIT_MS = 300;
+
 /** @type {?number} */
 let gecxFloatingOffsetTimer = null;
+/** @type {number} When the oldest pending re-measure was requested, or 0. */
+let gecxFloatingOffsetPendingSince = 0;
+
+function gecxRunFloatingOffset() {
+  gecxFloatingOffsetTimer = null;
+  gecxFloatingOffsetPendingSince = 0;
+  updateFloatingOffset();
+}
 
 /**
  * Re-measures the floating offset shortly, coalescing bursts of changes.
- * Only the offset is recomputed, not the whole placement pass.
+ * Only the offset is recomputed, not the whole placement pass. A page that
+ * changes a watched element or a child of <body> more often than the quiet
+ * time (a ticker, a confetti overlay, a header animating on scroll) would
+ * otherwise put the re-measure off for as long as it keeps changing, so it
+ * runs at the latest GECX_FLOATING_OFFSET_MAX_WAIT_MS after the first request.
  */
 function gecxScheduleFloatingOffset() {
+  const now = Date.now();
+  if (!gecxFloatingOffsetPendingSince) {
+    gecxFloatingOffsetPendingSince = now;
+  }
   clearTimeout(gecxFloatingOffsetTimer);
-  gecxFloatingOffsetTimer = setTimeout(updateFloatingOffset, 100);
+  const untilMaxWait = gecxFloatingOffsetPendingSince + GECX_FLOATING_OFFSET_MAX_WAIT_MS - now;
+  gecxFloatingOffsetTimer = setTimeout(gecxRunFloatingOffset,
+      Math.max(0, Math.min(GECX_FLOATING_OFFSET_DEBOUNCE_MS, untilMaxWait)));
 }
 
 // observe() on an element already observed re-delivers an initial
