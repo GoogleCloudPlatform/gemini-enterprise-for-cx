@@ -117,7 +117,7 @@ Themes that replace page content without a full page load can call `window.gecxI
 The chat widget's colors, fonts and branding come from your agent's settings in the Gemini Enterprise for CX console, not from your WordPress theme. The widget applies that branding itself.
 
 = The floating button covers part of my theme. =
-The floating button moves up to clear bars your theme fixes to the bottom of the screen. To add more space, set the `--gecx-floating-extra-offset` CSS variable, for example `:root { --gecx-floating-extra-offset: 24px; }`.
+The floating button moves up to clear bars your theme fixes to the bottom of the screen, and small widgets in the same corner, such as chat bubbles and store badges. Custom CSS that sets the button container's `bottom` with `!important` prevents this. To add more space, set the `--gecx-floating-extra-offset` CSS variable, for example `:root { --gecx-floating-extra-offset: 24px; }`.
 
 = Does the plugin work with caching and optimization plugins? =
 Yes. The launcher scripts are kept out of the JavaScript delay features of WP Rocket, LiteSpeed Cache and Cloudflare Rocket Loader automatically. With other optimization plugins, exclude `storefront.js`, `gstatic.com/gecx/` and `gecxStorefrontConfig` from delaying. To opt out of the automatic exclusions, return false from the `gecx_exclude_from_js_delay` filter.

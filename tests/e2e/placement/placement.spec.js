@@ -384,6 +384,258 @@ test('lifts a bottom-right fallback or floating launcher above a fixed corner wi
   expect(rect.y + rect.height).toBeLessThanOrEqual(700 - 100);
 });
 
+test.describe('corner widget that sizes itself after load', () => {
+  const MERCHANT_WIDGET_ID = 'google-merchantwidget-iframe-wrapper';
+  const floatingBottomRight = `<main style="height:1200px">Content</main>
+    <div class="gecx-floating-button-container gecx-floating-button-container--bottom-right" style="${assets.floatingStyles.bottom_right}">${BUTTON}</div>`;
+
+  /**
+   * Mounts a wrapper the way the Merchant Center store widget does: fixed,
+   * appended to <body> at 0x0, and sized later by its iframe. `depth` nests it
+   * in that many plain <div>s, as a theme or optimizer re-parenting it would.
+   */
+  async function mountEmptyWidget(page, position, { width = 0, height = 0, extraStyle = '', depth = 0 } = {}) {
+    await page.evaluate(({ id, position, width, height, extraStyle, depth }) => {
+      const wrapper = document.createElement('div');
+      wrapper.id = id;
+      wrapper.style.cssText = `position:fixed;${position};width:${width}px;height:${height}px;overflow:hidden;z-index:2147483647;${extraStyle}`;
+      wrapper.innerHTML = '<iframe title="Store widget" style="width:100%;height:100%;border:0"></iframe>';
+      let outer = wrapper;
+      for (let i = 0; i < depth; i++) {
+        const parent = document.createElement('div');
+        parent.appendChild(outer);
+        outer = parent;
+      }
+      document.body.appendChild(outer);
+    }, { id: MERCHANT_WIDGET_ID, position, width, height, extraStyle, depth });
+    await settle(page);
+  }
+
+  async function resizeWidget(page, width, height) {
+    await page.evaluate(({ id, width, height }) => {
+      const wrapper = document.getElementById(id);
+      wrapper.style.width = `${width}px`;
+      wrapper.style.height = `${height}px`;
+    }, { id: MERCHANT_WIDGET_ID, width, height });
+    await settle(page);
+  }
+
+  const floatingOffset = (page) => page.evaluate(() =>
+    document.documentElement.style.getPropertyValue('--gecx-floating-offset'));
+
+  async function expectLauncherAboveWidget(page, launcherSelector = '.gecx-floating-button-container gecx-agent-button') {
+    const badge = await page.locator(`#${MERCHANT_WIDGET_ID}`).boundingBox();
+    const launcher = await page.locator(launcherSelector).boundingBox();
+    expect(launcher.y + launcher.height).toBeLessThanOrEqual(badge.y);
+  }
+
+  test('lifts the floating launcher once the widget grows', async ({ page }) => {
+    await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+    await mountEmptyWidget(page, 'right:20px;bottom:20px');
+    expect(await floatingOffset(page)).toBe('');
+
+    await resizeWidget(page, 84, 84);
+    await expectLauncherAboveWidget(page);
+  });
+
+  test('lifts the floating launcher on mobile, where the widget sits flush right', async ({ page }) => {
+    await openFixture(page, { width: 375, height: 700, config: { placement: 'floating' }, body: floatingBottomRight });
+    await mountEmptyWidget(page, 'right:0;bottom:30px');
+    expect(await floatingOffset(page)).toBe('');
+
+    await resizeWidget(page, 84, 84);
+    await expectLauncherAboveWidget(page);
+  });
+
+  test('lifts the fallback launcher once the widget grows', async ({ page }) => {
+    await openFixture(page, {
+      width: 375,
+      height: 700,
+      config: { placement: 'nav_menu' },
+      body: '<main style="height:1200px">Content</main>',
+    });
+    const launchers = await visibleLaunchers(page);
+    expect(launchers).toHaveLength(1);
+    expect(launchers[0].container).toContain('gecx-launcher-fallback');
+    await mountEmptyWidget(page, 'right:20px;bottom:20px');
+    expect(await floatingOffset(page)).toBe('');
+
+    await resizeWidget(page, 84, 84);
+    await expectLauncherAboveWidget(page, '.gecx-launcher-fallback gecx-agent-button');
+  });
+
+  test('lifts the floating launcher when the widget is nested below <body>', async ({ page }) => {
+    await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+    await mountEmptyWidget(page, 'right:20px;bottom:20px', { depth: 2 });
+    expect(await floatingOffset(page)).toBe('');
+
+    await resizeWidget(page, 84, 84);
+    await expectLauncherAboveWidget(page);
+  });
+
+  test('lifts the floating launcher without ResizeObserver', async ({ page }) => {
+    await page.addInitScript(() => {
+      delete window.ResizeObserver;
+    });
+    await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+    expect(await page.evaluate(() => typeof window.ResizeObserver)).toBe('undefined');
+    await mountEmptyWidget(page, 'right:20px;bottom:20px');
+    expect(await floatingOffset(page)).toBe('');
+
+    await resizeWidget(page, 84, 84);
+    await expectLauncherAboveWidget(page);
+  });
+
+  for (const [hidden, shown] of [['visibility:hidden', 'visible'], ['display:none', 'block']]) {
+    const property = hidden.split(':')[0];
+    test(`lifts the floating launcher when a sized widget is shown after ${hidden}`, async ({ page }) => {
+      await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+      await mountEmptyWidget(page, 'right:20px;bottom:20px', { width: 84, height: 84, extraStyle: hidden });
+      expect(await floatingOffset(page)).toBe('');
+
+      await page.evaluate(({ id, property, shown }) => {
+        document.getElementById(id).style.setProperty(property, shown);
+      }, { id: MERCHANT_WIDGET_ID, property, shown });
+      await settle(page);
+      expect(await floatingOffset(page)).toBe('104px');
+      await expectLauncherAboveWidget(page);
+    });
+  }
+
+  test('drops the lift when the widget shrinks away again', async ({ page }) => {
+    await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+    await mountEmptyWidget(page, 'right:20px;bottom:20px');
+    await resizeWidget(page, 84, 84);
+    // 800px viewport - 20px bottom - 84px badge.
+    expect(await floatingOffset(page)).toBe('104px');
+
+    await resizeWidget(page, 0, 0);
+    expect(await floatingOffset(page)).toBe('');
+  });
+
+  test('drops the lift when the widget is removed', async ({ page }) => {
+    await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+    await mountEmptyWidget(page, 'right:20px;bottom:20px');
+    await resizeWidget(page, 84, 84);
+    expect(await floatingOffset(page)).toBe('104px');
+
+    await page.evaluate((id) => document.getElementById(id).remove(), MERCHANT_WIDGET_ID);
+    await settle(page);
+    expect(await floatingOffset(page)).toBe('');
+  });
+
+  test('does not chase the widget when it expands into a panel', async ({ page }) => {
+    await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+    await mountEmptyWidget(page, 'right:20px;bottom:20px');
+    await resizeWidget(page, 84, 84);
+    expect(await floatingOffset(page)).toBe('104px');
+
+    // The corner size limits still apply after a resize: an open panel is
+    // the widget's own overlay, not something to clear.
+    await resizeWidget(page, 400, 600);
+    expect(await floatingOffset(page)).toBe('');
+  });
+
+  test('lifts the floating launcher for a nested widget without ResizeObserver', async ({ page }) => {
+    await page.addInitScript(() => { delete window.ResizeObserver; });
+    await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+    await mountEmptyWidget(page, 'right:20px;bottom:20px', { depth: 2 });
+    expect(await floatingOffset(page)).toBe('');
+
+    await resizeWidget(page, 84, 84);
+    await expectLauncherAboveWidget(page);
+  });
+
+  test('drops the lift when the widget is removed without ResizeObserver', async ({ page }) => {
+    await page.addInitScript(() => { delete window.ResizeObserver; });
+    await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+    await mountEmptyWidget(page, 'right:20px;bottom:20px');
+    await resizeWidget(page, 84, 84);
+    expect(await floatingOffset(page)).toBe('104px');
+
+    await page.evaluate((id) => document.getElementById(id).remove(), MERCHANT_WIDGET_ID);
+    await settle(page);
+    expect(await floatingOffset(page)).toBe('');
+  });
+
+  for (const [what, remove] of [
+    ['the nested widget itself', (id) => document.getElementById(id).remove()],
+    ['an ancestor between it and <body>', (id) => document.getElementById(id).parentElement.remove()],
+  ]) {
+    test(`drops the lift when ${what} is removed without ResizeObserver`, async ({ page }) => {
+      await page.addInitScript(() => { delete window.ResizeObserver; });
+      await openFixture(page, { config: { placement: 'floating' }, body: floatingBottomRight });
+      await mountEmptyWidget(page, 'right:20px;bottom:20px', { depth: 2 });
+      await resizeWidget(page, 84, 84);
+      expect(await floatingOffset(page)).toBe('104px');
+
+      await page.evaluate(remove, MERCHANT_WIDGET_ID);
+      await settle(page);
+      expect(await floatingOffset(page)).toBe('');
+    });
+  }
+
+  test('lifts the floating launcher while another element keeps changing', async ({ page }) => {
+    await openFixture(page, {
+      config: { placement: 'floating' },
+      body: `${floatingBottomRight}<div id="ticker" style="position:fixed;top:0;left:0">News</div>`,
+    });
+    // A ticker restyling a child of <body> every 30ms, faster than the
+    // re-measure's quiet time, for longer than the test waits.
+    await page.evaluate(() => {
+      const ticker = document.getElementById('ticker');
+      let n = 0;
+      window.__ticker = setInterval(() => { ticker.style.transform = `translateX(${n++ % 50}px)`; }, 30);
+    });
+    await mountEmptyWidget(page, 'right:20px;bottom:20px');
+    await resizeWidget(page, 84, 84);
+    expect(await page.evaluate(() => !!window.__ticker)).toBe(true);
+    expect(await floatingOffset(page)).toBe('104px');
+    await page.evaluate(() => clearInterval(window.__ticker));
+  });
+});
+
+test('lifts the floating launcher above a nested sticky bar that becomes fixed after load', async ({ page }) => {
+  await openFixture(page, {
+    config: { placement: 'floating' },
+    themeCss: '.elementor-sticky--active{position:fixed;bottom:0;left:0;right:0;height:56px;background:#333}',
+    body: `<main style="height:1200px"><div><div id="late-bar">Add to cart</div></div></main>
+      <div class="gecx-floating-button-container gecx-floating-button-container--bottom-right" style="${assets.floatingStyles.bottom_right}">${BUTTON}</div>`,
+  });
+  expect(await page.evaluate(() => document.documentElement.style.getPropertyValue('--gecx-floating-offset'))).toBe('');
+
+  // Elementor adds this class on scroll, long after the first placement pass.
+  await page.evaluate(() => document.getElementById('late-bar').classList.add('elementor-sticky--active'));
+  await settle(page);
+  expect(await page.evaluate(() => document.documentElement.style.getPropertyValue('--gecx-floating-offset'))).toBe('56px');
+});
+
+test('keeps the bottom bar lift while the chat panel narrows the bar', async ({ page }) => {
+  await openFixture(page, {
+    width: 650,
+    height: 700,
+    config: { placement: 'floating' },
+    themeCss: '.storefront-handheld-footer-bar{position:fixed;bottom:0;left:0;right:0;height:56px;background:#333}',
+    body: `<main style="height:1200px">Content</main><div class="storefront-handheld-footer-bar"></div>
+      <div class="gecx-floating-button-container gecx-floating-button-container--bottom-center" style="${assets.floatingStyles.bottom_center}">${BUTTON}</div>`,
+  });
+  const offset = () => page.evaluate(() => document.documentElement.style.getPropertyValue('--gecx-floating-offset'));
+  expect(await offset()).toBe('56px');
+
+  // At 650px a 360px panel leaves the bar under half the viewport wide.
+  await page.evaluate(() => {
+    const messenger = document.createElement('chat-messenger');
+    messenger.className = 'slide-over';
+    document.body.appendChild(messenger);
+    document.body.style.paddingRight = '360px';
+    document.body.classList.add('gecx-chat-open');
+    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed'));
+  });
+  await expect.poll(() => page.locator('.storefront-handheld-footer-bar').evaluate((el) => el.classList.contains('gecx-shifted-for-chat'))).toBe(true);
+  await settle(page);
+  expect(await offset()).toBe('56px');
+});
+
 test('narrows fixed headers while the chat panel pushes the page', async ({ page }) => {
   await openFixture(page, {
     themeCss: '.sticky{position:fixed;top:0;left:0;width:100%;height:60px;background:#eee}',
