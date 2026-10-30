@@ -10,10 +10,11 @@
  */
 
 /**
- * @fileoverview Editor side of the gecx/agent-button and
- * gecx/suggested-prompts blocks. Both are rendered on the server; the editor
- * shows placeholders because the launcher and prompts are custom elements
- * from the Google-hosted widget bundle, which the editor does not load.
+ * @fileoverview Editor side of the gecx/agent-button, gecx/suggested-prompts
+ * and gecx/price-history blocks. All are rendered on the server; the editor
+ * shows placeholders because the launcher, prompts and price history link are
+ * custom elements from the Google-hosted widget bundle, which the editor does
+ * not load.
  */
 import { registerBlockType } from '@wordpress/blocks';
 import '@wordpress/element';
@@ -83,6 +84,54 @@ registerBlockType('gecx/suggested-prompts', {
             productId
         ) :
         __('Suggested prompts', 'gemini-enterprise-for-cx');
+
+    return (
+      <>
+        <InspectorControls>
+          <PanelBody title={__('Product', 'gemini-enterprise-for-cx')}>
+            <TextControl
+              label={__('Product ID (optional)', 'gemini-enterprise-for-cx')}
+              help={__(
+                  'Leave empty to use the product being viewed.',
+                  'gemini-enterprise-for-cx')}
+              type="number"
+              value={productId > 0 ? String(productId) : ''}
+              onChange={function(value) {
+                const id = parseInt(value, 10);
+                props.setAttributes({productId: id > 0 ? id : 0});
+              }}
+            />
+          </PanelBody>
+        </InspectorControls>
+        <Placeholder label={label} />
+      </>
+    );
+  },
+  save: function() {
+    return null;
+  }
+});
+
+registerBlockType('gecx/price-history', {
+  apiVersion: 2,
+  title: __('Gemini Enterprise for CX Price History', 'gemini-enterprise-for-cx'),
+  description: __(
+      'A link that opens a 90-day price chart for a product in the chat widget. In the Single Product template it uses the product being viewed; elsewhere, set a Product ID.',
+      'gemini-enterprise-for-cx'),
+  category: 'widgets',
+  icon: 'chart-line',
+  attributes: {productId: {type: 'number', default: 0}},
+  usesContext: ['postId'],
+  supports: {html: false, multiple: false},
+  edit: function(props) {
+    const productId = props.attributes.productId || 0;
+    const label = productId > 0 ?
+        sprintf(
+            /* translators: %d: Product ID. */
+            __('Price history for product #%d', 'gemini-enterprise-for-cx'),
+            productId
+        ) :
+        __('Price history', 'gemini-enterprise-for-cx');
 
     return (
       <>

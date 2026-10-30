@@ -1,5 +1,8 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-10-30 - version 1.3.0
+* Add an opt-in Price history link next to the price on single product pages. Clicking it opens the chat widget with a 90-day price chart for the product. It is off by default: turn on "Show a Price history link next to product prices" in the settings, which places it after the price on classic themes (`woocommerce_single_product_summary` at priority 11, filterable with `gecx_price_history_hook` and `gecx_price_history_priority`) and after the Product Price block on block themes. Place it yourself with the `[gecx_price_history]` shortcode or the Price History block, which render whenever the widget is on. Its attributes are filterable with `gecx_price_history_attributes`. Requires a chat widget bundle that defines `gecx-price-history-link`.
+
 2026-10-22 - version 1.2.0
 * Bind the shopper's browser to the cart the agent is using when the chat opens, so items the agent adds are in the cart the shopper checks out with. Only a guest without a cart of their own is bound: a logged-in shopper, or a guest whose browser already holds items, keeps their own cart. Adds a `gecx/v1/cart-session` REST route, which accepts only a request carrying the store's nonce.
 * Read the cart past page caches after the agent changes it. A page cache such as Batcache can answer a cookieless cart read from a copy it cached by URL, which could load another shopper's cart into the page; the read now goes to a URL no other request uses.

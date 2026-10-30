@@ -881,6 +881,68 @@ class AdminTest extends GECX_TestCase {
         $this->assertMatchesRegularExpression( '/id="gecx-prompts-manual-tip"[^>]*aria-describedby="gecx-prompts-manual-tip-text">/', $html );
     }
 
+    public function test_settings_page_price_history_checkbox_is_off_by_default_and_follows_the_widget(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_webhook_id', 4242 );
+        update_option( 'gecx_auth_complete', 1 );
+        update_option( 'gecx_agent_enabled', 1 );
+
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $render = static function () use ( $admin ): string {
+            ob_start();
+            try {
+                $admin->settings_page->render_settings_page();
+            } finally {
+                $html = ob_get_clean();
+            }
+            return (string) $html;
+        };
+
+        $html = $render();
+        $this->assertStringContainsString( 'Show a Price history link next to product prices', $html );
+        $this->assertStringContainsString( 'Shoppers can open a 90-day price chart for the product in the chat widget.', $html );
+        $this->assertStringContainsString( '<code>[gecx_price_history]</code>', $html );
+        preg_match( '/<input[^>]*id="gecx_price_history_enabled"[^>]*>/s', $html, $checkbox );
+        $this->assertNotEmpty( $checkbox );
+        $this->assertStringNotContainsString( 'checked', $checkbox[0] );
+        $this->assertStringNotContainsString( 'disabled', $checkbox[0] );
+        // Listed after the suggested prompts option.
+        $this->assertGreaterThan( strpos( $html, 'id="gecx_pdp_prompts_enabled"' ), strpos( $html, 'id="gecx_price_history_enabled"' ) );
+
+        update_option( 'gecx_price_history_enabled', 1 );
+        update_option( 'gecx_agent_enabled', 0 );
+        preg_match( '/<input[^>]*id="gecx_price_history_enabled"[^>]*>/s', $render(), $checkbox );
+        $this->assertStringContainsString( 'checked="checked"', $checkbox[0] );
+        $this->assertStringContainsString( 'disabled="disabled"', $checkbox[0] );
+    }
+
+    public function test_toggle_price_history_saves_the_setting(): void {
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $admin = new Admin( dirname( __DIR__ ) . '/gecx-agent.php' );
+
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ), 'enabled' => '1' ];
+        $admin->settings_page->ajax_toggle_price_history();
+        $this->assertTrue( $GLOBALS['gecx_test_last_json_response']['success'] );
+        $this->assertSame( 1, get_option( 'gecx_price_history_enabled' ) );
+
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ), 'enabled' => '0' ];
+        $admin->settings_page->ajax_toggle_price_history();
+        $this->assertSame( 0, get_option( 'gecx_price_history_enabled' ) );
+
+        // Forged nonce or a subscriber: rejected, nothing changes.
+        $_POST = [ 'nonce' => 'forged_nonce', 'enabled' => '1' ];
+        $admin->settings_page->ajax_toggle_price_history();
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertSame( 0, get_option( 'gecx_price_history_enabled' ) );
+
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 5, 'sub@example.com', [ 'subscriber' ] );
+        $_POST = [ 'nonce' => wp_create_nonce( 'gecx_save_agent_nonce' ), 'enabled' => '1' ];
+        $admin->settings_page->ajax_toggle_price_history();
+        $this->assertSame( 403, $GLOBALS['gecx_test_last_json_response']['status'] );
+        $this->assertSame( 0, get_option( 'gecx_price_history_enabled' ) );
+    }
+
     public static function info_tip_cases(): array {
         return [
             'manual placement, auto prompts off' => [ 'manual', 0, true ],
@@ -1023,6 +1085,9 @@ class AdminTest extends GECX_TestCase {
             [ Storefront::class, 'sanitize_button_display_style' ],
             $registered['gecx_button_display_style']['args']['sanitize_callback'] ?? null
         );
+        $this->assertSame( 'gecx_agent_group', $registered['gecx_price_history_enabled']['group'] ?? null );
+        $this->assertSame( 'absint', $registered['gecx_price_history_enabled']['args']['sanitize_callback'] ?? null );
+        $this->assertSame( 0, $registered['gecx_price_history_enabled']['args']['default'] ?? null );
 
         $valid_agent = 'projects/my-proj/locations/us-central1/agents/agent-123';
         $this->assertSame( $valid_agent, Admin::sanitize_agent_name( $valid_agent ) );

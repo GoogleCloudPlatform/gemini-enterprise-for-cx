@@ -63,8 +63,8 @@ const gecxInitialStorefrontConfig = (function() {
 })();
 
 /**
- * Returns a piece of widget markup from the config: 'button', 'prompts' or
- * 'productPrompts'.
+ * Returns a piece of widget markup from the config: 'button', 'prompts',
+ * 'productPrompts' or 'productPriceHistory'.
  * @param {?Object} cfg
  * @param {string} key
  * @return {string}
@@ -1850,6 +1850,69 @@ function initPdpPlacement() {
 }
 
 /**
+ * Product prices the price history link is placed after, most specific
+ * first. Page builders are named where they replace the standard WooCommerce
+ * product template.
+ * @const {!Array<string>}
+ */
+const GECX_PRICE_TARGET_SELECTORS = [
+  '.summary.entry-summary p.price',
+  '.single-product-summary p.price',
+  '.wp-block-woocommerce-product-price',
+  '.elementor-widget-woocommerce-product-price',
+  '.et_pb_wc_price',
+  '.brxe-product-price',
+  'p.price'
+];
+
+/**
+ * Product grids whose prices belong to other products, in addition to the
+ * containers excluded for the prompts.
+ * @const {string}
+ */
+const GECX_PRICE_EXCLUDED_CONTAINERS = GECX_PDP_EXCLUDED_CONTAINERS +
+    ', .wp-block-woocommerce-product-collection, .wp-block-woocommerce-related-products, .wc-block-product-template, .wc-block-grid';
+
+/**
+ * Client-side fallback for the price history link, for block themes still
+ * using the classic product template and templates the server-side hooks do
+ * not reach. The link names the product the page was rendered for, so it is
+ * only placed on that page.
+ */
+function initPriceHistoryPlacement() {
+  const cfg = gecxGetStorefrontConfig();
+  if (!cfg || !cfg.isWidgetEnabled || !gecxOnRenderedPage()) {
+    return;
+  }
+  const html = gecxConfigMarkup(cfg, 'productPriceHistory');
+  if (!html || document.querySelector('gecx-price-history-link')) {
+    return;
+  }
+
+  const scope = gecxFindProductScope();
+  let priceTarget = null;
+  for (let i = 0; i < GECX_PRICE_TARGET_SELECTORS.length && !priceTarget; i++) {
+    gecxEach(GECX_PRICE_TARGET_SELECTORS[i], function(el) {
+      if (!priceTarget && !el.closest(GECX_PRICE_EXCLUDED_CONTAINERS)) {
+        priceTarget = el;
+      }
+    }, scope);
+  }
+  if (!priceTarget) {
+    return;
+  }
+
+  const linkEl = gecxCreateSafeWidgetElement(html, 'gecx-price-history-link');
+  if (linkEl) {
+    if (typeof priceTarget.insertAdjacentElement === 'function') {
+      priceTarget.insertAdjacentElement('afterend', linkEl);
+    } else if (priceTarget.parentNode) {
+      priceTarget.parentNode.insertBefore(linkEl, priceTarget.nextSibling);
+    }
+  }
+}
+
+/**
  * Known bars themes fix to the bottom of the viewport, in addition to the
  * direct children of <body> checked generically.
  * @const {string}
@@ -2255,7 +2318,7 @@ function initDeferredWidgetListeners() {
   const onDeferredInteraction = function(e) {
     const target = e.target && e.target.closest ?
         e.target.closest(
-            'gecx-agent-button, gecx-suggested-prompts, .gecx-floating-button-container, .gecx-nav-menu-item, .gecx-mobile-header-button') :
+            'gecx-agent-button, gecx-suggested-prompts, gecx-price-history-link, .gecx-floating-button-container, .gecx-nav-menu-item, .gecx-mobile-header-button') :
         null;
     if (!target) {
       return;
@@ -2301,6 +2364,7 @@ function gecxPlaceAll() {
   initNavPlacement();
   initMobileHeaderPlacement();
   initPdpPlacement();
+  initPriceHistoryPlacement();
   updateFloatingOffset();
   updateFloatingWidgetCentering();
 }

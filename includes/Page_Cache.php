@@ -46,6 +46,7 @@ class Page_Cache {
         'gecx_button_short_label',
         'gecx_button_enable_shimmer',
         'gecx_pdp_prompts_enabled',
+        'gecx_price_history_enabled',
         'gecx_defer_widget_until_interaction',
     ];
 

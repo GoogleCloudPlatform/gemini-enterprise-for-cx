@@ -253,6 +253,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         delete_option( 'gecx_token_broker_name' );
         delete_option( 'gecx_agent_enabled' );
         delete_option( 'gecx_pdp_prompts_enabled' );
+        delete_option( 'gecx_price_history_enabled' );
         delete_option( 'gecx_button_placement' );
         delete_option( 'gecx_floating_position' );
         delete_option( 'gecx_button_display_style' );

@@ -28,6 +28,7 @@ echo wp_json_encode(
         'css'            => file_get_contents( dirname( __DIR__, 3 ) . '/assets/css/theme.css' ) . "\n" . ( $GLOBALS['gecx_test_inline_styles']['gecx-widget-style'] ?? '' ),
         'buttonHtml'     => $storefront->get_agent_button_html(),
         'pdpPromptsHtml' => $storefront->get_suggested_prompts_html( 0 ),
+        'priceHistoryHtml' => $storefront->get_price_history_html( 12 ),
         'floatingStyles' => $floating,
     ]
 );

@@ -250,6 +250,39 @@ test('places product prompts after the main add-to-cart form, not a sticky bar',
   expect(await page.locator('#main-form + gecx-suggested-prompts').count()).toBe(1);
 });
 
+test('places the price history link after the main product price, not a related product\'s', async ({ page }) => {
+  await openFixture(page, {
+    bodyClass: 'single-product',
+    config: { markup: { button: BUTTON, productPriceHistory: assets.priceHistoryHtml }, isPdp: true },
+    body: `<main><div id="product-12" class="product type-product"><div class="summary entry-summary">
+      <p class="price" id="main-price">$10.00</p><form class="cart"><button>Add to cart</button></form></div></div>
+      <section class="related"><ul class="products"><li><span class="price">$5.00</span></li></ul></section></main>`,
+  });
+  expect(await page.locator('gecx-price-history-link').count()).toBe(1);
+  expect(await page.locator('#main-price + gecx-price-history-link[product-id="12"]').count()).toBe(1);
+});
+
+test('leaves a server-placed price history link alone and places none after a page transition', async ({ page }) => {
+  const productPage = (id, extra) => `<main><div id="product-${id}" class="product type-product"><div class="summary entry-summary">
+      <p class="price" id="price-${id}">$10.00</p>${extra}<form class="cart"><button>Add to cart</button></form></div></div></main>`;
+  await openFixture(page, {
+    bodyClass: 'single-product',
+    config: { markup: { button: BUTTON, productPriceHistory: assets.priceHistoryHtml }, isPdp: true },
+    body: productPage(12, assets.priceHistoryHtml),
+  });
+  expect(await page.locator('gecx-price-history-link').count()).toBe(1);
+
+  // The link names the product the page was rendered for, so it must not be
+  // carried over to another product loaded without a full page load.
+  await page.evaluate((html) => {
+    history.pushState({}, '', '/product/salmon/');
+    document.querySelector('main').outerHTML = html;
+    document.dispatchEvent(new Event('swup:page:view'));
+  }, productPage(34, ''));
+  await settle(page);
+  expect(await page.locator('gecx-price-history-link').count()).toBe(0);
+});
+
 test('uses no product\'s overrides after a page transition to another product', async ({ page }) => {
   const productPrompts = assets.pdpPromptsHtml.replace('<gecx-suggested-prompts', '<gecx-suggested-prompts static-prompts="[&quot;Is the tuna wild caught?&quot;]"');
   const productPage = (id) => `<main><div id="product-${id}" class="product type-product"><div class="summary entry-summary">

@@ -75,6 +75,7 @@ class Settings_Page {
         add_action( 'wp_ajax_gecx_save_button_config', [ $this, 'ajax_save_button_config' ] );
         add_action( 'wp_ajax_gecx_toggle_app_embed', [ $this, 'ajax_toggle_app_embed' ] );
         add_action( 'wp_ajax_gecx_toggle_pdp_prompts', [ $this, 'ajax_toggle_pdp_prompts' ] );
+        add_action( 'wp_ajax_gecx_toggle_price_history', [ $this, 'ajax_toggle_price_history' ] );
         add_action( 'wp_ajax_gecx_dismiss_notice', [ $this, 'ajax_dismiss_notice' ] );
     }
 
@@ -143,6 +144,7 @@ class Settings_Page {
             'statusInactive'       => __( 'Connection Status: Inactive', 'gemini-enterprise-for-cx' ),
             'errorToggleWidget'    => __( 'Failed to update storefront chat widget status. Please try again.', 'gemini-enterprise-for-cx' ),
             'errorTogglePrompts'   => __( 'Failed to update suggested prompts status. Please try again.', 'gemini-enterprise-for-cx' ),
+            'errorTogglePriceHistory' => __( 'Failed to update price history link status. Please try again.', 'gemini-enterprise-for-cx' ),
             'confirmDisconnect'    => __( 'Are you sure you want to disconnect this Gemini agent from your store?', 'gemini-enterprise-for-cx' ),
             'disconnecting'        => __( 'Disconnecting...', 'gemini-enterprise-for-cx' ),
             'disconnectLabel'      => __( 'Disconnect Agent', 'gemini-enterprise-for-cx' ),
@@ -225,6 +227,10 @@ class Settings_Page {
         register_setting( 'gecx_agent_group', 'gecx_pdp_prompts_enabled', [
             'sanitize_callback' => 'absint',
         ] );
+        register_setting( 'gecx_agent_group', 'gecx_price_history_enabled', [
+            'sanitize_callback' => 'absint',
+            'default'           => 0,
+        ] );
         register_setting( 'gecx_agent_group', 'gecx_button_placement', [
             'sanitize_callback' => [ Storefront::class, 'sanitize_button_placement' ],
         ] );
@@ -274,6 +280,7 @@ class Settings_Page {
         $token_broker          = (string) get_option( 'gecx_token_broker_name', '' );
         $embed_enabled         = (bool) get_option( 'gecx_agent_enabled', 0 );
         $pdp_prompts_enabled   = (bool) get_option( 'gecx_pdp_prompts_enabled', 1 );
+        $price_history_enabled = (bool) get_option( 'gecx_price_history_enabled', 0 );
         $button_placement      = (string) get_option( 'gecx_button_placement', 'nav_menu' );
         $nav_menu_target       = Storefront::sanitize_nav_menu_target( get_option( 'gecx_nav_menu_target', '' ) );
         $nav_menu_locations    = function_exists( 'get_registered_nav_menus' ) ? (array) get_registered_nav_menus() : [];
@@ -523,6 +530,41 @@ class Settings_Page {
                                 </span>
                             </td>
                         </tr>
+                        <tr>
+                            <th scope="row"><?php esc_html_e( 'Price History', 'gemini-enterprise-for-cx' ); ?></th>
+                            <td>
+                                <label for="gecx_price_history_enabled">
+                                    <input type="checkbox"
+                                           id="gecx_price_history_enabled"
+                                           name="gecx_price_history_enabled"
+                                           value="1"
+                                           aria-describedby="gecx_price_history_enabled_description"
+                                           <?php checked( $price_history_enabled ); ?>
+                                           <?php disabled( ! $embed_enabled ); ?> />
+                                    <?php esc_html_e( 'Show a Price history link next to product prices', 'gemini-enterprise-for-cx' ); ?>
+                                </label>
+                                <span id="gecx-price-history-manual-tip"
+                                      class="gecx-info-tip"
+                                      tabindex="0"
+                                      aria-label="<?php esc_attr_e( 'Adding the price history link yourself', 'gemini-enterprise-for-cx' ); ?>"
+                                      aria-describedby="gecx-price-history-manual-tip-text">
+                                    <span class="dashicons dashicons-info-outline" aria-hidden="true"></span>
+                                    <span id="gecx-price-history-manual-tip-text" class="gecx-info-tip__text" role="tooltip">
+                                        <?php
+                                        printf(
+                                            /* translators: 1: shortcode, 2: block name. */
+                                            esc_html__( 'To show the link somewhere else, use the %1$s shortcode or the %2$s block, for example in the Single Product template. Turn this setting off if you only want the link where you place it.', 'gemini-enterprise-for-cx' ),
+                                            '<code>[gecx_price_history]</code>',
+                                            '<code>' . esc_html__( 'Gemini Enterprise for CX Price History', 'gemini-enterprise-for-cx' ) . '</code>'
+                                        );
+                                        ?>
+                                    </span>
+                                </span>
+                                <p class="description" id="gecx_price_history_enabled_description">
+                                    <?php esc_html_e( 'Shoppers can open a 90-day price chart for the product in the chat widget.', 'gemini-enterprise-for-cx' ); ?>
+                                </p>
+                            </td>
+                        </tr>
                     </table>
 
                     <hr style="margin: 30px 0 20px 0; border: 0; border-top: 1px solid #dcdcde;" />
@@ -764,6 +806,24 @@ class Settings_Page {
 
         $enabled = isset( $_POST['enabled'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enabled'] ) ) ? 1 : 0;
         update_option( 'gecx_pdp_prompts_enabled', $enabled );
+        wp_send_json_success( [ 'enabled' => $enabled ] );
+    }
+
+    /**
+     * AJAX handler to toggle the automatic price history link.
+     */
+    public function ajax_toggle_price_history(): void {
+        if ( false === check_ajax_referer( 'gecx_save_agent_nonce', 'nonce', false ) ) {
+            wp_send_json_error( [ 'message' => __( 'Invalid nonce', 'gemini-enterprise-for-cx' ) ], 403 );
+            return;
+        }
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Unauthorized', 'gemini-enterprise-for-cx' ) ], 403 );
+            return;
+        }
+
+        $enabled = isset( $_POST['enabled'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['enabled'] ) ) ? 1 : 0;
+        update_option( 'gecx_price_history_enabled', $enabled );
         wp_send_json_success( [ 'enabled' => $enabled ] );
     }
 

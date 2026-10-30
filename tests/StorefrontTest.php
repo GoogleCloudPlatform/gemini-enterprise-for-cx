@@ -1700,6 +1700,243 @@ JS;
         $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->inject_block_suggested_prompts( '<div class="wp-block-woocommerce-add-to-cart-form"></div>', [] ) );
     }
 
+    /**
+     * Activates the widget on product page 101 with the price history link
+     * setting as given.
+     */
+    private function activate_price_history( int $enabled = 1 ): Storefront {
+        $GLOBALS['gecx_test_is_product']        = true;
+        $GLOBALS['gecx_test_the_id']            = 101;
+        $GLOBALS['gecx_test_queried_object_id'] = 101;
+        $GLOBALS['gecx_test_is_block_theme']    = false;
+        if ( $enabled >= 0 ) {
+            update_option( 'gecx_price_history_enabled', $enabled );
+        }
+        return $this->activate_widget();
+    }
+
+    public function test_price_history_link_is_off_by_default(): void {
+        $storefront = $this->activate_price_history( -1 );
+
+        ob_start();
+        $storefront->inject_price_history_link();
+        $this->assertSame( '', (string) ob_get_clean() );
+
+        $block_html = '<div class="wp-block-woocommerce-product-price">$10.00</div>';
+        $this->assertSame( $block_html, $storefront->inject_block_price_history_link( $block_html, [] ) );
+        $this->assertArrayNotHasKey( 'productPriceHistory', $this->localized_storefront_config()['markup'] );
+    }
+
+    public function test_price_history_link_is_placed_after_the_classic_price_when_enabled(): void {
+        $storefront = $this->activate_price_history();
+
+        ob_start();
+        $storefront->inject_price_history_link();
+        $html = (string) ob_get_clean();
+
+        $this->assertStringContainsString( '<gecx-price-history-link', $html );
+        $this->assertStringContainsString( 'chat-widget-selector="gecx-woocommerce-chat-widget"', $html );
+        $this->assertStringContainsString( 'product-id="101"', $html );
+        $this->assertStringContainsString( 'label="Price history"', $html );
+        $this->assertStringNotContainsString( 'variant-id=', $html );
+
+        // Only once per request.
+        ob_start();
+        $storefront->inject_price_history_link();
+        $this->assertSame( '', (string) ob_get_clean() );
+    }
+
+    public function test_price_history_hook_runs_right_after_the_price_and_is_filterable(): void {
+        $storefront = $this->activate_price_history();
+        $this->assertContains( [ [ $storefront, 'inject_price_history_link' ], 11 ], $GLOBALS['gecx_test_action_priorities']['woocommerce_single_product_summary'] );
+
+        add_filter( 'gecx_price_history_hook', static fn() => 'woocommerce_before_add_to_cart_form' );
+        add_filter( 'gecx_price_history_priority', static fn() => 5 );
+        $moved = new Storefront( dirname( __DIR__ ) . '/gecx-agent.php' );
+        $this->assertContains( [ [ $moved, 'inject_price_history_link' ], 5 ], $GLOBALS['gecx_test_action_priorities']['woocommerce_before_add_to_cart_form'] );
+    }
+
+    public function test_price_history_link_needs_the_widget(): void {
+        $storefront = $this->activate_price_history();
+        update_option( 'gecx_agent_enabled', 0 );
+
+        ob_start();
+        $storefront->inject_price_history_link();
+        $this->assertSame( '', (string) ob_get_clean() );
+        $GLOBALS['gecx_test_products'][101] = new WC_Product( 101 );
+        $this->assertSame( '', $storefront->render_price_history_shortcode( [ 'id' => 101 ] ) );
+    }
+
+    public function test_price_history_link_is_appended_to_the_product_price_block_once(): void {
+        $storefront = $this->activate_price_history();
+        $block_html = '<div class="wp-block-woocommerce-product-price">$10.00</div>';
+
+        // A related product's price block, rendered with its own product in context.
+        $this->assertSame( $block_html, $storefront->inject_block_price_history_link( $block_html, [], (object) [ 'context' => [ 'postId' => 202 ] ] ) );
+
+        $output = $storefront->inject_block_price_history_link( $block_html, [], (object) [ 'context' => [ 'postId' => 101 ] ] );
+        $this->assertStringStartsWith( $block_html, $output );
+        $this->assertStringContainsString( '<gecx-price-history-link', $output );
+        $this->assertStringContainsString( 'product-id="101"', $output );
+
+        // Only once, and never into markup that already has the link.
+        $this->assertSame( $block_html, $storefront->inject_block_price_history_link( $block_html, [] ) );
+        $fresh    = $this->activate_price_history();
+        $existing = $block_html . '<gecx-price-history-link product-id="101"></gecx-price-history-link>';
+        $this->assertSame( $existing, $fresh->inject_block_price_history_link( $existing, [] ) );
+        $this->assertSame( '', $fresh->inject_block_price_history_link( '', [] ) );
+    }
+
+    public function test_classic_price_history_hook_is_skipped_on_block_themes(): void {
+        $storefront                          = $this->activate_price_history();
+        $GLOBALS['gecx_test_is_block_theme'] = true;
+
+        ob_start();
+        $storefront->inject_price_history_link();
+        $this->assertSame( '', (string) ob_get_clean() );
+
+        // The product price block filter still places it.
+        $this->assertStringContainsString( '<gecx-price-history-link', $storefront->inject_block_price_history_link( '<div class="wp-block-woocommerce-product-price"></div>', [] ) );
+    }
+
+    public function test_price_history_link_is_not_placed_off_product_pages(): void {
+        $storefront                      = $this->activate_price_history();
+        $GLOBALS['gecx_test_is_product'] = false;
+        $block_html                      = '<div class="wp-block-woocommerce-product-price">$10.00</div>';
+
+        ob_start();
+        $storefront->inject_price_history_link();
+        $this->assertSame( '', (string) ob_get_clean() );
+        $this->assertSame( $block_html, $storefront->inject_block_price_history_link( $block_html, [] ) );
+        $this->assertSame( '', $storefront->render_price_history_shortcode() );
+        $this->assertSame( '', $storefront->render_price_history_shortcode( '' ) );
+        $this->assertSame( '', $storefront->render_price_history_block( [] ) );
+        $this->assertArrayNotHasKey( 'productPriceHistory', $this->localized_storefront_config()['markup'] );
+    }
+
+    public function test_price_history_link_is_withheld_for_password_protected_products(): void {
+        $storefront                                  = $this->activate_price_history();
+        $GLOBALS['gecx_test_password_required'][101] = true;
+        $block_html                                  = '<div class="wp-block-woocommerce-product-price">$10.00</div>';
+
+        ob_start();
+        $storefront->inject_price_history_link();
+        $this->assertSame( '', (string) ob_get_clean() );
+        $this->assertSame( $block_html, $storefront->inject_block_price_history_link( $block_html, [] ) );
+        $this->assertSame( '', $storefront->render_price_history_shortcode() );
+        $this->assertSame( '', $storefront->render_price_history_block( [] ) );
+        $this->assertArrayNotHasKey( 'productPriceHistory', $this->localized_storefront_config()['markup'] );
+
+        $GLOBALS['gecx_test_password_required'][101] = false;
+        $this->assertStringContainsString( 'product-id="101"', $storefront->render_price_history_shortcode() );
+    }
+
+    public function test_price_history_shortcode_renders_with_auto_placement_off(): void {
+        $GLOBALS['gecx_test_is_product'] = false;
+        $storefront                      = $this->activate_widget( 'manual' );
+        update_option( 'gecx_price_history_enabled', 0 );
+        $GLOBALS['gecx_test_products'][101] = new WC_Product( 101 );
+
+        $this->assertStringContainsString( 'product-id="101"', $storefront->render_price_history_shortcode( [ 'id' => 101 ] ) );
+        $this->assertStringContainsString( 'product-id="101"', $storefront->render_price_history_shortcode( [ 'product_id' => '101' ] ) );
+
+        // On the product page itself the shortcode needs no ID, and the
+        // automatic placement then stays out of its way.
+        $GLOBALS['gecx_test_is_product'] = true;
+        $GLOBALS['gecx_test_the_id']     = 101;
+        update_option( 'gecx_price_history_enabled', 1 );
+        $page = $this->activate_widget();
+        $this->assertStringContainsString( 'product-id="101"', $page->render_price_history_shortcode( '' ) );
+        ob_start();
+        $page->inject_price_history_link();
+        $this->assertSame( '', (string) ob_get_clean() );
+    }
+
+    /**
+     * @dataProvider hidden_product_cases
+     */
+    public function test_price_history_for_a_named_product_the_visitor_cannot_see_is_not_shown( string $status, bool $password ): void {
+        $GLOBALS['gecx_test_is_product']             = false;
+        $storefront                                  = $this->activate_widget( 'manual' );
+        $GLOBALS['gecx_test_products'][404]          = new WC_Product( 404 );
+        $GLOBALS['gecx_test_post_statuses'][404]     = $status;
+        $GLOBALS['gecx_test_password_required'][404] = $password;
+
+        $this->assertSame( '', $storefront->render_price_history_shortcode( [ 'id' => 404 ] ) );
+        $this->assertSame( '', $storefront->render_price_history_block( [ 'productId' => 404 ] ) );
+        $this->assertSame( '', $storefront->render_price_history_block( [], '', (object) [ 'context' => [ 'postId' => 404 ] ] ) );
+
+        $GLOBALS['gecx_test_current_user'] = new WP_User( 1, 'admin@example.com', [ 'administrator' ] );
+        $this->assertStringContainsString( 'product-id="404"', $storefront->render_price_history_shortcode( [ 'id' => 404 ] ) );
+    }
+
+    public function test_price_history_for_a_named_post_that_is_not_a_product_is_not_shown(): void {
+        $GLOBALS['gecx_test_is_product'] = false;
+        $storefront                      = $this->activate_widget( 'manual' );
+
+        $this->assertSame( '', $storefront->render_price_history_shortcode( [ 'id' => 77 ] ) );
+    }
+
+    public function test_price_history_block_is_server_rendered(): void {
+        $storefront = $this->activate_widget( 'manual' );
+        $storefront->register_blocks();
+
+        $block = $GLOBALS['gecx_test_block_types']['gecx/price-history'] ?? null;
+        $this->assertIsArray( $block );
+        $this->assertSame( 'gecx-editor-blocks', $block['editor_script'] );
+        $this->assertSame( [ 'postId' ], $block['uses_context'] );
+        $this->assertSame( 0, $block['attributes']['productId']['default'] );
+        $this->assertSame( [ $storefront, 'render_price_history_block' ], $block['render_callback'] );
+    }
+
+    public function test_price_history_block_renders_for_the_chosen_or_context_product(): void {
+        $GLOBALS['gecx_test_is_product'] = false;
+        $storefront                      = $this->activate_widget( 'manual' );
+        update_option( 'gecx_price_history_enabled', 0 );
+
+        $this->assertSame( '', $storefront->render_price_history_block( [] ) );
+        $this->assertSame( '', $storefront->render_price_history_block( [], '', (object) [ 'context' => [ 'postId' => 55 ] ] ) );
+
+        $GLOBALS['gecx_test_products'][101] = new WC_Product( 101 );
+        $this->assertStringContainsString( 'product-id="101"', $storefront->render_price_history_block( [ 'productId' => 101 ] ) );
+
+        $GLOBALS['gecx_test_products'][303] = new WC_Product( 303 );
+        $this->assertStringContainsString( 'product-id="303"', $storefront->render_price_history_block( [], '', (object) [ 'context' => [ 'postId' => 303 ] ] ) );
+    }
+
+    public function test_price_history_attributes_are_filterable_and_escaped(): void {
+        $storefront = $this->activate_price_history();
+        add_filter(
+            'gecx_price_history_attributes',
+            static function ( array $attrs, int $product_id ): array {
+                $attrs['label']      = 'Price "history" <b>';
+                $attrs['variant-id'] = (string) ( $product_id + 1 );
+                $attrs['hidden']     = false;
+                $attrs['compact']    = true;
+                return $attrs;
+            },
+            10,
+            2
+        );
+
+        $html = $storefront->get_price_history_html();
+
+        $this->assertStringContainsString( 'label="Price &quot;history&quot; &lt;b&gt;"', $html );
+        $this->assertStringContainsString( 'variant-id="102"', $html );
+        $this->assertStringContainsString( ' compact', $html );
+        $this->assertStringNotContainsString( 'hidden', $html );
+        $this->assertStringNotContainsString( '<b>', $html );
+    }
+
+    public function test_price_history_markup_is_localized_for_the_rendered_product_only(): void {
+        $this->activate_price_history();
+
+        $markup = $this->localized_storefront_config()['markup'];
+
+        $this->assertStringContainsString( '<gecx-price-history-link', $markup['productPriceHistory'] );
+        $this->assertStringContainsString( 'product-id="101"', $markup['productPriceHistory'] );
+    }
+
     public function test_inline_styles_cover_megamenu_drawer_and_mobile_header_row(): void {
         $storefront = $this->activate_widget();
         $storefront->enqueue_storefront_assets();

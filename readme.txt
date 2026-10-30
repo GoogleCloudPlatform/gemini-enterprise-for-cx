@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.2.0
+Stable tag: 1.3.0
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -30,6 +30,7 @@ The plugin is an interface to the Gemini Enterprise for CX software as a service
 
 * A launcher button in your header menu, a floating button, or wherever you place the `[gecx_agent_button]` shortcode or the launcher block.
 * Suggested questions on product pages, placed automatically or with the `[gecx_suggested_prompts]` shortcode or block.
+* An optional Price history link next to product prices that opens a 90-day price chart in the chat, placed automatically once turned on in the settings or with the `[gecx_price_history]` shortcode or block.
 
 = Merchant console =
 
@@ -132,11 +133,14 @@ After the agent changes the cart, the plugin refreshes WooCommerce cart fragment
 
 1. Step 1: Authorize WooCommerce API permissions for the agent.
 2. Step 2: Connect your store to Google Cloud and link your agent.
-3. Manage agent connection status, storefront launcher placement, button style, and suggested prompts.
+3. Manage agent connection status, storefront launcher placement, button style, suggested prompts, and the Price history link.
 
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 1.3.0 =
+* Add an opt-in Price history link next to the price on single product pages. Clicking it opens the chat widget with a 90-day price chart for the product. It is off by default: turn on "Show a Price history link next to product prices" in the settings, which places it after the price on classic themes (`woocommerce_single_product_summary` at priority 11, filterable with `gecx_price_history_hook` and `gecx_price_history_priority`) and after the Product Price block on block themes. Place it yourself with the `[gecx_price_history]` shortcode or the Price History block, which render whenever the widget is on. Its attributes are filterable with `gecx_price_history_attributes`. Requires a chat widget bundle that defines `gecx-price-history-link`.
 
 = 1.2.0 =
 * Bind the shopper's browser to the cart the agent is using when the chat opens, so items the agent adds are in the cart the shopper checks out with. Only a guest without a cart of their own is bound: a logged-in shopper, or a guest whose browser already holds items, keeps their own cart. Adds a `gecx/v1/cart-session` REST route, which accepts only a request carrying the store's nonce.
