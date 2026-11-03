@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.2.0
+Stable tag: 1.2.1
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -137,6 +137,9 @@ After the agent changes the cart, the plugin refreshes WooCommerce cart fragment
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 1.2.1 =
+* Add a collapsible firewall allowlist banner above the onboarding steps on the settings page with Cloudflare and Wordfence instructions for allowing Google requests to `/wp-json/gecx/v1/*`, `/wp-json/wc/v3/*`, and `/wp-json/wc/store/v1/*`.
 
 = 1.2.0 =
 * Bind the shopper's browser to the cart the agent is using when the chat opens, so items the agent adds are in the cart the shopper checks out with. Only a guest without a cart of their own is bound: a logged-in shopper, or a guest whose browser already holds items, keeps their own cart. Adds a `gecx/v1/cart-session` REST route, which accepts only a request carrying the store's nonce.
