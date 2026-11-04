@@ -113,6 +113,18 @@ class Settings_Page {
             . ' .gecx-info-tip__text::after { content: ""; position: absolute; top: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-top-color: #1d2327; }'
             . ' .gecx-info-tip__text code { background: rgba(255, 255, 255, 0.15); color: #fff; }'
             . ' .gecx-info-tip:hover .gecx-info-tip__text, .gecx-info-tip:focus .gecx-info-tip__text { visibility: visible; opacity: 1; }'
+            . ' .gecx-firewall-banner { margin: 20px 0 0; padding: 12px 16px; background: #fcf9e8; border: 1px solid #c3c4c7; border-left: 4px solid #dba617; border-radius: 2px; box-sizing: border-box; }'
+            . ' .gecx-firewall-banner summary { list-style: none; cursor: pointer; font-size: 13px; line-height: 1.5; color: #1d2327; }'
+            . ' .gecx-firewall-banner summary::-webkit-details-marker { display: none; }'
+            . ' .gecx-firewall-banner__toggle { color: #2271b1; text-decoration: underline; margin-left: 4px; font-weight: 500; }'
+            . ' .gecx-firewall-banner[open] .gecx-firewall-banner__toggle--show, .gecx-firewall-banner:not([open]) .gecx-firewall-banner__toggle--hide { display: none; }'
+            . ' .gecx-firewall-banner__body { margin-top: 12px; padding-top: 12px; border-top: 1px solid #dcdcde; font-size: 13px; line-height: 1.6; color: #3c434a; }'
+            . ' .gecx-firewall-banner__body p { margin: 0 0 10px; font-size: 13px; line-height: 1.6; }'
+            . ' .gecx-firewall-banner__body p:last-child { margin-bottom: 0; }'
+            . ' .gecx-firewall-banner__rules { margin: 0 0 10px; padding: 10px 12px; background: #fff; border: 1px solid #dcdcde; border-radius: 4px; }'
+            . ' .gecx-firewall-banner__rules-label { margin-top: 6px; }'
+            . ' .gecx-firewall-banner__paths { margin: 4px 0 0 18px; list-style: disc; }'
+            . ' .gecx-firewall-banner__paths li { margin: 2px 0; }'
         );
 
         $admin_asset_file = dirname( $this->plugin_file ) . '/build/scripts/admin/index.min.asset.php';
@@ -376,6 +388,43 @@ class Settings_Page {
             ?>
             <?php if ( ! $is_authorized || empty( $current_agent ) ) : ?>
                 <?php if ( ! $is_authorized ) : ?>
+                    <details id="gecx-firewall-banner" class="notice notice-warning inline gecx-firewall-banner">
+                        <summary class="gecx-firewall-banner__summary">
+                            <span aria-hidden="true">&#x26A0;&#xFE0F;</span>
+                            <?php esc_html_e( "Using Cloudflare, Wordfence, or another firewall? Your store's bot protection may block the connection.", 'gemini-enterprise-for-cx' ); ?>
+                            <span class="gecx-firewall-banner__toggle gecx-firewall-banner__toggle--show"><?php esc_html_e( 'Show allowlist steps', 'gemini-enterprise-for-cx' ); ?></span>
+                            <span class="gecx-firewall-banner__toggle gecx-firewall-banner__toggle--hide"><?php esc_html_e( 'Hide allowlist steps', 'gemini-enterprise-for-cx' ); ?></span>
+                        </summary>
+                        <div class="gecx-firewall-banner__body">
+                            <p>
+                                <?php esc_html_e( "To connect your store, your firewall needs to allow requests from Google to your store's WooCommerce REST API. Before you click Authorize Store, add an allow rule for:", 'gemini-enterprise-for-cx' ); ?>
+                            </p>
+                            <div class="gecx-firewall-banner__rules">
+                                <div><?php esc_html_e( 'User-Agent contains:', 'gemini-enterprise-for-cx' ); ?> <code>Google</code></div>
+                                <div class="gecx-firewall-banner__rules-label"><?php esc_html_e( 'URL paths:', 'gemini-enterprise-for-cx' ); ?></div>
+                                <ul class="gecx-firewall-banner__paths">
+                                    <li><code>/wp-json/gecx/v1/*</code></li>
+                                    <li><code>/wp-json/wc/v3/*</code></li>
+                                    <li><code>/wp-json/wc/store/v1/*</code></li>
+                                </ul>
+                            </div>
+                            <p>
+                                <?php esc_html_e( 'Cloudflare: Security → WAF → Custom rules → create a rule matching the User-Agent and paths above with action Skip (all remaining custom rules, Bot Fight Mode, and Super Bot Fight Mode).', 'gemini-enterprise-for-cx' ); ?>
+                            </p>
+                            <p>
+                                <?php esc_html_e( 'Wordfence: Firewall → Allowlisted URLs → add each path above.', 'gemini-enterprise-for-cx' ); ?>
+                            </p>
+                            <p>
+                                <?php esc_html_e( "Note: User-Agent headers can be spoofed. For stricter filtering, also match Cloudflare's verified-bot condition or Google's published IP ranges. Allowing these paths only bypasses bot challenges; /wp-json/wc/v3/* routes still require their WooCommerce API keys.", 'gemini-enterprise-for-cx' ); ?>
+                            </p>
+                            <p>
+                                <?php esc_html_e( 'If you see "An error occurred in the request" after approving access, your firewall blocked the connection. Add the rule above and click Authorize Store again.', 'gemini-enterprise-for-cx' ); ?>
+                            </p>
+                            <p>
+                                <?php esc_html_e( "Don't manage your firewall? Send these steps to your website administrator or hosting provider.", 'gemini-enterprise-for-cx' ); ?>
+                            </p>
+                        </div>
+                    </details>
                     <div class="card" style="margin-top: 20px; padding: 28px 32px;">
                         <h2><?php esc_html_e( 'Step 1: Authorize WooCommerce API', 'gemini-enterprise-for-cx' ); ?></h2>
                         <p style="font-size: 14px; line-height: 1.6; color: #50575e;">

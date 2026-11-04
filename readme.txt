@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.2.0
+Stable tag: 1.2.1
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -137,6 +137,13 @@ After the agent changes the cart, the plugin refreshes WooCommerce cart fragment
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 1.2.1 =
+* Add a collapsible firewall allowlist banner above Step 1 (Authorize WooCommerce API) on the settings page with Cloudflare and Wordfence instructions for allowing Google requests to `/wp-json/gecx/v1/*`, `/wp-json/wc/v3/*`, and `/wp-json/wc/store/v1/*`.
+* Lift floating and fallback launchers above corner widgets that size themselves after load (such as the Google Merchant Center store widget), watching fixed elements with `ResizeObserver` and attribute/removal observers so the offset re-measures when a widget resizes, appears, or is removed, and keeping the bottom-bar lift while the chat panel is open.
+* Require same-origin requests before acting on a shopper's browser across the Store API `Cart-Token` cookie bridge and `POST /wp-json/gecx/v1/session`, gate `POST /wp-json/gecx/v1/refresh-token` with the same method-override, `no-store`, and CORS checks as `/wp-json/gecx/v1/auth-context`, and keep an already-bound session in the linked project over a session annotation from outside it.
+* Support Elementor Theme Builder (`[data-elementor-type="header"]`, `.elementor-location-header`) and Max Mega Menu (`ul.mega-menu`, `ul.max-mega-menu`, `.mega-toggle-animated`) headers, place the mobile header launcher on its own centered row when the hamburger column is too narrow, and lift corner fallback launchers above fixed third-party chat bubbles (Podium, Intercom, Tidio, Crisp, HubSpot, Gorgias, Zendesk).
+* Purge installed page caches (WP Rocket, W3 Total Cache, WP Super Cache, WP Fastest Cache, SiteGround Speed Optimizer, SpinupWP, Pantheon, FlyingPress, WP Engine, Kinsta, Cloudflare, LiteSpeed Cache, Breeze, Cache Enabler, Nginx Helper, and Hummingbird) and fire `gecx_purge_page_caches` after saving a setting that changes storefront pages.
 
 = 1.2.0 =
 * Bind the shopper's browser to the cart the agent is using when the chat opens, so items the agent adds are in the cart the shopper checks out with. Only a guest without a cart of their own is bound: a logged-in shopper, or a guest whose browser already holds items, keeps their own cart. Adds a `gecx/v1/cart-session` REST route, which accepts only a request carrying the store's nonce.
