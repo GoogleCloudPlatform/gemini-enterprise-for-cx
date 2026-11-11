@@ -3,7 +3,7 @@ Contributors: google
 Tags: woocommerce, ai chatbot, chatbot, shopping assistant, gemini
 Requires at least: 6.2
 WC requires at least: 7.1
-WC tested up to: 11.2
+WC tested up to: 11.3
 Tested up to: 7.1
 Requires PHP: 7.4
 Stable tag: 1.2.1
