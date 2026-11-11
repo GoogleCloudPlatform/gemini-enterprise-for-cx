@@ -197,6 +197,144 @@ test('still falls back when the only launcher not yet revealed is off screen', a
   expect(launchers[0].container).toContain('gecx-launcher-fallback');
 });
 
+test('does not inject or show fallback while chat is open or closing over a primary nav launcher', async ({ page }) => {
+  await openFixture(page, {
+    width: 1280,
+    themeCss: `nav ul{display:flex;list-style:none;gap:8px}
+      body.gecx-chat-open nav .gecx-nav-menu-item{display:none !important}`,
+    body: `<header><nav><ul><li><a href="#">Shop</a></li>${navItem}</ul></nav></header>`,
+  });
+  let launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-nav-menu-item');
+
+  await page.evaluate(() => {
+    const messenger = document.createElement('chat-messenger');
+    messenger.className = 'slide-over';
+    document.body.appendChild(messenger);
+    document.body.classList.add('gecx-chat-open');
+    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { detail: { hidden: false } }));
+    window.gecxInit();
+  });
+  await settle(page);
+  expect(await page.locator('.gecx-launcher-fallback').count()).toBe(0);
+
+  const fallbackCountRightAtClose = await page.evaluate(() => {
+    document.querySelector('chat-messenger').classList.add('messenger-hidden');
+    document.body.classList.remove('gecx-chat-open');
+    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { detail: { hidden: true } }));
+    return document.querySelectorAll('.gecx-launcher-fallback').length;
+  });
+  expect(fallbackCountRightAtClose).toBe(0);
+
+  await settle(page);
+  launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-nav-menu-item');
+  expect(await page.locator('.gecx-launcher-fallback').count()).toBe(0);
+});
+
+test('keeps fallback suppressed on close while header unclips during body close transition', async ({ page }) => {
+  await openFixture(page, {
+    width: 1280,
+    themeCss: `header{overflow:hidden;width:300px}
+      nav ul{display:flex;list-style:none;gap:8px;width:280px}
+      body.gecx-chat-open nav .gecx-nav-menu-item{display:none !important}`,
+    body: `<header><nav><ul><li><a href="#">Shop</a></li>${navItem}</ul></nav></header>`,
+  });
+
+  await page.evaluate(() => {
+    const messenger = document.createElement('chat-messenger');
+    messenger.className = 'slide-over';
+    document.body.appendChild(messenger);
+    document.body.classList.add('gecx-chat-open');
+    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { detail: { hidden: false } }));
+    window.gecxInit();
+  });
+  await settle(page);
+  expect(await page.locator('.gecx-launcher-fallback').count()).toBe(0);
+
+  const countMidClose = await page.evaluate(() => {
+    document.querySelector('header').style.maxHeight = '0';
+    document.querySelector('chat-messenger').classList.add('messenger-hidden');
+    document.body.classList.remove('gecx-chat-open');
+    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { detail: { hidden: true } }));
+    document.querySelector('header').style.maxHeight = '';
+    return document.querySelectorAll('.gecx-launcher-fallback').length;
+  });
+  expect(countMidClose).toBe(0);
+
+  await settle(page);
+  const launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-nav-menu-item');
+  expect(await page.locator('.gecx-launcher-fallback').count()).toBe(0);
+});
+
+test('shows fallback after close if the viewport narrowed to mobile while chat was open', async ({ page }) => {
+  await openFixture(page, {
+    width: 1280,
+    themeCss: `nav ul{display:flex;list-style:none;gap:8px}
+      @media (max-width:768px){nav{display:none}}`,
+    body: `<header><nav><ul><li><a href="#">Shop</a></li>${navItem}</ul></nav></header>`,
+  });
+  await page.evaluate(() => {
+    const messenger = document.createElement('chat-messenger');
+    messenger.className = 'slide-over';
+    document.body.appendChild(messenger);
+    document.body.classList.add('gecx-chat-open');
+    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { detail: { hidden: false } }));
+  });
+  await page.setViewportSize({ width: 375, height: 800 });
+  await settle(page);
+  expect(await page.locator('.gecx-launcher-fallback').count()).toBe(0);
+
+  await page.evaluate(() => {
+    document.querySelector('chat-messenger').classList.add('messenger-hidden');
+    document.body.classList.remove('gecx-chat-open');
+    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { detail: { hidden: true } }));
+  });
+  await settle(page);
+  const launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-launcher-fallback');
+});
+
+test('preserves fallback visibility after close on mobile when no primary launcher is visible', async ({ page }) => {
+  await openFixture(page, {
+    width: 375,
+    themeCss: 'nav{display:none}',
+    body: `<header><nav><ul><li><a href="#">Shop</a></li>${navItem}</ul></nav></header>`,
+  });
+  let launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-launcher-fallback');
+
+  await page.evaluate(() => {
+    const messenger = document.createElement('chat-messenger');
+    messenger.className = 'slide-over';
+    document.body.appendChild(messenger);
+    document.body.classList.add('gecx-chat-open');
+    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { detail: { hidden: false } }));
+    window.gecxInit();
+  });
+  await settle(page);
+
+  await page.evaluate(() => {
+    document.querySelector('chat-messenger').classList.add('messenger-hidden');
+    document.body.classList.remove('gecx-chat-open');
+    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { detail: { hidden: true } }));
+  });
+  launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-launcher-fallback');
+
+  await settle(page);
+  launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-launcher-fallback');
+});
+
 test('does not count a launcher clipped inside a collapsed menu as visible', async ({ page }) => {
   // Storefront's handheld menu is collapsed with max-height:0 and overflow
   // hidden; a launcher inside it has a size but can't be seen.

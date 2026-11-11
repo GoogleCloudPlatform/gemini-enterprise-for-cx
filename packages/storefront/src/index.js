@@ -1688,6 +1688,10 @@ function gecxEnsureVisibleLauncher() {
   if (!cfg || !cfg.isWidgetEnabled || cfg.placement !== 'nav_menu' || !document.body) {
     return;
   }
+  if (gecxIsChatOpen()) {
+    gecxChatWasOpenForLauncher = true;
+    return;
+  }
   let fallback = document.querySelector('.gecx-launcher-fallback');
   let visible = false;
   let hiddenByWidget = false;
@@ -1712,6 +1716,12 @@ function gecxEnsureVisibleLauncher() {
     if (fallback) {
       fallback.style.display = 'none';
     }
+    return;
+  }
+  // While the drawer close transition is still settling, a header launcher can
+  // still be temporarily clipped by body padding. Wait until close finishes
+  // before injecting or unhiding a fallback.
+  if (gecxChatClosingForLauncher) {
     return;
   }
   if (!fallback) {
@@ -2139,11 +2149,18 @@ function gecxShiftFixedElementsForChat(pushWidth) {
 /** @type {?number} Pending re-measure once the panel's padding transition ends. */
 let gecxCenteringFollowUp = null;
 
+/** @type {boolean} Whether the drawer was open before the latest close check. */
+let gecxChatWasOpenForLauncher = gecxIsChatOpen();
+
+/** @type {boolean} Whether a close transition is still settling for fallback placement. */
+let gecxChatClosingForLauncher = false;
+
 // Keep floating button centered relative to remaining page content when chat panel opens.
 function updateFloatingWidgetCentering(isFollowUp) {
   if (!document.body || !document.documentElement) {
     return;
   }
+  const eventArg = isFollowUp === true ? null : isFollowUp;
   // The widget stylesheet animates the body padding over 0.4s, so what is
   // measured now is somewhere mid-transition. Measure again once it is done.
   if (isFollowUp !== true) {
@@ -2153,14 +2170,27 @@ function updateFloatingWidgetCentering(isFollowUp) {
       updateFloatingWidgetCentering(true);
     }, 450);
   }
-  const isChatOpen = document.body.classList.contains('gecx-chat-open') ||
-      !!document.querySelector('chat-messenger:not(.messenger-hidden)');
+  const detail = eventArg && eventArg.detail;
+  const isClosingEvent = !!(detail && typeof detail.hidden === 'boolean' && detail.hidden);
+  const isChatOpen = !isClosingEvent && (document.body.classList.contains('gecx-chat-open') ||
+      !!document.querySelector('chat-messenger:not(.messenger-hidden)'));
 
   if (!isChatOpen) {
     document.documentElement.style.removeProperty('--gecx-chat-panel-width');
     gecxShiftFixedElementsForChat(0);
+    if (isFollowUp === true) {
+      gecxChatClosingForLauncher = false;
+      gecxChatWasOpenForLauncher = false;
+    } else if (gecxChatWasOpenForLauncher) {
+      gecxChatClosingForLauncher = true;
+    }
+    if (!gecxIsChatOpen()) {
+      gecxEnsureVisibleLauncher();
+    }
     return;
   }
+  gecxChatWasOpenForLauncher = true;
+  gecxChatClosingForLauncher = false;
 
   const bodyPadding = (typeof window.getComputedStyle === 'function') ?
       (parseFloat(window.getComputedStyle(document.body).paddingRight) || 0) :
