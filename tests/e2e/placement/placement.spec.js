@@ -239,36 +239,150 @@ test('keeps fallback suppressed on close while header unclips during body close 
     width: 1280,
     themeCss: `header{overflow:hidden;width:300px}
       nav ul{display:flex;list-style:none;gap:8px;width:280px}
+      body.gecx-chat-open{padding-right:400px}
       body.gecx-chat-open nav .gecx-nav-menu-item{display:none !important}`,
     body: `<header><nav><ul><li><a href="#">Shop</a></li>${navItem}</ul></nav></header>`,
   });
 
   await page.evaluate(() => {
     const messenger = document.createElement('chat-messenger');
-    messenger.className = 'slide-over';
+    messenger.className = 'slide-in';
+    messenger.style.width = '400px';
     document.body.appendChild(messenger);
     document.body.classList.add('gecx-chat-open');
-    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { detail: { hidden: false } }));
+    messenger.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { bubbles: true, detail: { hidden: false } }));
     window.gecxInit();
   });
   await settle(page);
   expect(await page.locator('.gecx-launcher-fallback').count()).toBe(0);
 
-  const countMidClose = await page.evaluate(() => {
-    document.querySelector('header').style.maxHeight = '0';
-    document.querySelector('chat-messenger').classList.add('messenger-hidden');
+  // Simulate mid-transition close: body padding is still 400px and header is
+  // still clipped while DOM mutations and gecxScheduleReinit run over ~200ms.
+  await page.evaluate(() => {
+    const header = document.querySelector('header');
+    header.style.maxHeight = '0';
+    document.body.style.paddingRight = '400px';
+    const messenger = document.querySelector('chat-messenger');
+    messenger.classList.add('messenger-hidden');
     document.body.classList.remove('gecx-chat-open');
-    document.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { detail: { hidden: true } }));
-    document.querySelector('header').style.maxHeight = '';
-    return document.querySelectorAll('.gecx-launcher-fallback').length;
+    messenger.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { bubbles: true, detail: { hidden: true } }));
   });
-  expect(countMidClose).toBe(0);
+  await page.waitForTimeout(100);
+  await page.evaluate(() => {
+    const marker = document.createElement('div');
+    marker.className = 'third-party-badge';
+    document.body.appendChild(marker);
+  });
+  await page.waitForTimeout(200);
+  expect(await page.locator('.gecx-launcher-fallback').count()).toBe(0);
 
+  // Transition finishes before the bounded 450ms settle deadline.
+  await page.evaluate(() => {
+    document.querySelector('header').style.maxHeight = '';
+    document.body.style.paddingRight = '';
+  });
   await settle(page);
   const launchers = await visibleLaunchers(page);
   expect(launchers).toHaveLength(1);
   expect(launchers[0].container).toContain('gecx-nav-menu-item');
   expect(await page.locator('.gecx-launcher-fallback').count()).toBe(0);
+});
+
+test('does not stretch the 450ms close deadline under repeated DOM mutations or resize events', async ({ page }) => {
+  await openFixture(page, {
+    width: 1280,
+    themeCss: `nav ul{display:flex;list-style:none;gap:8px}
+      body.gecx-chat-open{padding-right:400px}
+      @media (max-width:768px){nav{display:none}}`,
+    body: `<header><nav><ul><li><a href="#">Shop</a></li>${navItem}</ul></nav></header>`,
+  });
+  await page.evaluate(() => {
+    const messenger = document.createElement('chat-messenger');
+    messenger.className = 'slide-in';
+    document.body.appendChild(messenger);
+    document.body.classList.add('gecx-chat-open');
+    messenger.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { bubbles: true, detail: { hidden: false } }));
+  });
+  await page.setViewportSize({ width: 375, height: 800 });
+  await settle(page);
+  expect(await page.locator('.gecx-launcher-fallback').count()).toBe(0);
+
+  await page.evaluate(() => {
+    document.body.style.paddingRight = '400px';
+    const messenger = document.querySelector('chat-messenger');
+    messenger.classList.add('messenger-hidden');
+    document.body.classList.remove('gecx-chat-open');
+    messenger.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { bubbles: true, detail: { hidden: true } }));
+  });
+  // Keep firing body class toggles and resize events that used to reset the 450ms debounce.
+  for (let i = 0; i < 4; i++) {
+    await page.waitForTimeout(100);
+    await page.evaluate((idx) => {
+      document.body.classList.toggle('scroll-sticky', idx % 2 === 0);
+      window.dispatchEvent(new Event('resize'));
+    }, i);
+  }
+  await page.evaluate(() => {
+    document.body.style.paddingRight = '';
+  });
+  await page.waitForTimeout(150);
+  const launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-launcher-fallback');
+});
+
+test('does not falsely suppress fallback on cold load when chat-messenger mounts without messenger-hidden', async ({ page }) => {
+  await openFixture(page, {
+    width: 800,
+    themeCss: 'nav{display:none}',
+    body: `<header><nav><ul><li><a href="#">Shop</a></li>${navItem}</ul></nav></header>
+      <chat-messenger class="slide-in"></chat-messenger>`,
+  });
+  await page.evaluate(() => {
+    document.body.classList.toggle('theme-ready');
+    document.body.style.paddingRight = '360px';
+    const messenger = document.querySelector('chat-messenger');
+    messenger.classList.add('messenger-hidden');
+    messenger.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { bubbles: true, detail: { hidden: true } }));
+  });
+  const launchers = await visibleLaunchers(page);
+  expect(launchers).toHaveLength(1);
+  expect(launchers[0].container).toContain('gecx-launcher-fallback');
+});
+
+test('deduplicates bubbling close visibility events and avoids redundant launcher walks', async ({ page }) => {
+  await openFixture(page, {
+    width: 1280,
+    themeCss: `nav ul{display:flex;list-style:none;gap:8px}
+      body.gecx-chat-open nav .gecx-nav-menu-item{display:none !important}`,
+    body: `<header><nav><ul><li><a href="#">Shop</a></li>${navItem}</ul></nav></header>`,
+  });
+  await page.evaluate(() => {
+    const messenger = document.createElement('chat-messenger');
+    messenger.className = 'slide-over';
+    document.body.appendChild(messenger);
+    document.body.classList.add('gecx-chat-open');
+    messenger.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { bubbles: true, detail: { hidden: false } }));
+  });
+  await settle(page);
+
+  const measureCount = await page.evaluate(async () => {
+    const btn = document.querySelector('gecx-agent-button');
+    const orig = btn.getBoundingClientRect.bind(btn);
+    let calls = 0;
+    btn.getBoundingClientRect = () => {
+      calls++;
+      return orig();
+    };
+    const messenger = document.querySelector('chat-messenger');
+    messenger.classList.add('messenger-hidden');
+    document.body.classList.remove('gecx-chat-open');
+    messenger.dispatchEvent(new CustomEvent('chat-messenger-visibility-changed', { bubbles: true, detail: { hidden: true } }));
+    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+    return calls;
+  });
+  expect(measureCount).toBe(1);
 });
 
 test('shows fallback after close if the viewport narrowed to mobile while chat was open', async ({ page }) => {
