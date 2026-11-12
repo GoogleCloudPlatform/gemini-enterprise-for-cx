@@ -85,6 +85,8 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_webhooks']             = [];
     $GLOBALS['gecx_test_orders']               = [];
     $GLOBALS['gecx_test_disable_wc_webhook']   = false;
+    $GLOBALS['gecx_test_webhook_delete_throws'] = 0;
+    $GLOBALS['gecx_test_http_observer']        = null;
     $GLOBALS['gecx_test_logs']                 = [];
     if ( class_exists( 'GECX_Mock_WPDB' ) ) {
         $GLOBALS['wpdb'] = new GECX_Mock_WPDB();
@@ -292,6 +294,9 @@ if ( ! class_exists( 'WC_Webhook' ) ) {
         }
 
         public function delete( bool $force = false ): void {
+            if ( ! empty( $GLOBALS['gecx_test_webhook_delete_throws'] ) && (int) $GLOBALS['gecx_test_webhook_delete_throws'] === $this->id ) {
+                throw new \Exception( 'Simulated webhook delete failure.' );
+            }
             unset( $GLOBALS['gecx_test_webhooks'][ $this->id ] );
             $this->id = 0;
         }
@@ -843,6 +848,22 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
         }
 
         public function get_results( string $query, string $output = OBJECT ): array {
+            if ( false !== strpos( $query, 'wc_webhooks' ) && preg_match( "/delivery_url LIKE '([^']*)'/", $query, $m ) ) {
+                $needle  = str_replace( [ '\\_', '\\%', '%' ], [ '_', '%', '' ], stripslashes( $m[1] ) );
+                $results = [];
+                foreach ( $GLOBALS['gecx_test_webhooks'] ?? [] as $id => $wh ) {
+                    if ( false !== stripos( (string) ( $wh['delivery_url'] ?? '' ), $needle ) ) {
+                        $results[] = (object) [
+                            'webhook_id'   => (string) $id,
+                            'status'       => $wh['status'] ?? 'active',
+                            'name'         => $wh['name'] ?? '',
+                            'topic'        => $wh['topic'] ?? '',
+                            'delivery_url' => $wh['delivery_url'] ?? '',
+                        ];
+                    }
+                }
+                return $results;
+            }
             if ( false !== strpos( $query, 'woocommerce_sessions' ) && false !== strpos( $query, 'session_value LIKE' ) ) {
                 $min_key = '';
                 if ( preg_match( "/session_key > '([^']*)'/", $query, $m ) ) {
@@ -874,6 +895,16 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
         }
 
         public function update( string $table, array $data, array $where, array $format = [], array $where_format = [] ): int {
+            if ( $table === $this->prefix . 'wc_webhooks' && isset( $where['webhook_id'] ) ) {
+                $id = (int) $where['webhook_id'];
+                $this->rows_affected = 0;
+                if ( isset( $GLOBALS['gecx_test_webhooks'][ $id ] )
+                    && ( ! isset( $where['status'] ) || ( $GLOBALS['gecx_test_webhooks'][ $id ]['status'] ?? 'active' ) === $where['status'] ) ) {
+                    $GLOBALS['gecx_test_webhooks'][ $id ] = array_merge( $GLOBALS['gecx_test_webhooks'][ $id ], $data );
+                    $this->rows_affected = 1;
+                }
+                return $this->rows_affected;
+            }
             if ( false !== strpos( $table, 'woocommerce_sessions' ) && isset( $where['session_key'], $data['session_value'] ) ) {
                 $key = (string) $where['session_key'];
                 $val = (string) $data['session_value'];
@@ -1895,6 +1926,9 @@ if ( ! function_exists( 'wp_remote_post' ) ) {
             'url'  => $url,
             'args' => $args,
         ];
+        if ( isset( $GLOBALS['gecx_test_http_observer'] ) && is_callable( $GLOBALS['gecx_test_http_observer'] ) ) {
+            ( $GLOBALS['gecx_test_http_observer'] )( $url, $args );
+        }
         if ( empty( $GLOBALS['gecx_test_http_responses'] ) ) {
             return new WP_Error( 'gecx_test_no_response', 'No mocked HTTP response queued.' );
         }

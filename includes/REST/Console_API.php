@@ -17,6 +17,7 @@ declare(strict_types=1);
 namespace Google\Gemini_Enterprise_For_CX\REST;
 
 use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\Backend_Webhooks;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
@@ -160,6 +161,10 @@ class Console_API {
         // An explicit link ends the merchant's earlier unlink: from here on
         // SyncState reconciles this binding again.
         delete_option( Auth::MERCHANT_UNLINKED_OPTION );
+
+        // Catalog sync follows the link, not the widget, so the backend's
+        // webhooks paused by an unlink or deactivation resume either way.
+        Backend_Webhooks::resume_webhooks();
 
         // A widget the merchant switched off stays off until they switch it
         // back on, and so does the order webhook.

@@ -138,19 +138,26 @@ class Admin {
 
     /**
      * Triggered upon plugin activation.
+     *
+     * @param bool $network_wide Whether the plugin is being network activated.
      */
-    public static function activate_plugin(): void {
+    public static function activate_plugin( bool $network_wide = false ): void {
         update_option( 'gecx_do_activation_redirect', true );
         delete_option( 'gecx_dismiss_activation_notice' );
         Auth::get_or_generate_keypair();
         Order_Webhook::reconcile_webhook_on_activation();
+        self::for_each_site( $network_wide, [ Backend_Webhooks::class, 'resume_webhooks_if_linked' ] );
     }
 
     /**
      * Triggered upon plugin deactivation.
-     * Pauses the order webhook so no orders are transmitted while deactivated.
+     * Pauses the order webhook so no orders are transmitted while deactivated,
+     * and the backend's catalog webhooks so the backend stops receiving
+     * product changes for a store it no longer serves.
+     *
+     * @param bool $network_wide Whether the plugin is being network deactivated.
      */
-    public static function deactivate_plugin(): void {
+    public static function deactivate_plugin( bool $network_wide = false ): void {
         if ( function_exists( 'wp_clear_scheduled_hook' ) ) {
             wp_clear_scheduled_hook( self::VERSION_SYNC_CRON_HOOK );
         }
@@ -158,6 +165,39 @@ class Admin {
             as_unschedule_all_actions( self::VERSION_SYNC_CRON_HOOK, [], 'gecx' );
         }
         Order_Webhook::set_order_webhook_status( 'paused' );
+        self::for_each_site( $network_wide, [ Backend_Webhooks::class, 'pause_webhooks' ] );
+    }
+
+    /**
+     * Runs a callback on the current site, or on every site of the network.
+     *
+     * Webhooks live in per-site tables, so network activation or deactivation
+     * has to visit each site to reach them. Archived, spam and deactivated
+     * sites are included for the same reason uninstall.php includes them.
+     *
+     * @param bool     $network_wide Whether to visit every site.
+     * @param callable $callback     Callback run once per site.
+     */
+    private static function for_each_site( bool $network_wide, callable $callback ): void {
+        if ( ! $network_wide || ! is_multisite() || ! function_exists( 'switch_to_blog' ) ) {
+            $callback();
+            return;
+        }
+
+        $site_ids = get_sites(
+            [
+                'fields' => 'ids',
+                'number' => 0,
+            ]
+        );
+        foreach ( $site_ids as $site_id ) {
+            switch_to_blog( (int) $site_id );
+            try {
+                $callback();
+            } finally {
+                restore_current_blog();
+            }
+        }
     }
 
     /**

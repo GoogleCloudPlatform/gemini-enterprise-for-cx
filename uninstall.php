@@ -10,6 +10,7 @@
  */
 
 use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\Backend_Webhooks;
 
 // If run outside of WordPress uninstallation, die.
 if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
@@ -70,9 +71,84 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         // Same allowlist as every other outbound call; '' means do not notify.
         $gecx_console_url = class_exists( Auth::class ) ? Auth::get_console_base_url() : '';
         $gecx_store_url   = function_exists( 'home_url' ) ? home_url() : '';
+        $gecx_webhook_id  = get_option( 'gecx_webhook_id' );
 
-        // 1. Delete the order.created webhook if present.
-        $gecx_webhook_id   = get_option( 'gecx_webhook_id' );
+        // 1. Notify Google Backend via RS256 Bearer JWT.
+        //
+        // Only notify Google if the merchant actually connected this site:
+        // it completed authorization, linked an agent, or holds the order
+        // webhook that only a completed authorization creates (the last two
+        // also cover stores that authorized before gecx_auth_complete
+        // existed). Holding a keypair is not evidence of that, because
+        // activation generates one on every site, so a store that was
+        // activated and never connected would otherwise send its URL and the
+        // administrator's email to Google on the way out. Unlinking an agent
+        // clears the agent name but keeps gecx_auth_complete, the paused order
+        // webhook and the WooCommerce API keys, so an unlinked store still
+        // notifies Google, which is correct: the backend still holds its
+        // installation record and credentials.
+        $gecx_was_connected = ! empty( $gecx_agent_name )
+            || ! empty( $gecx_webhook_id )
+            || ! empty( get_option( 'gecx_auth_complete', 0 ) );
+
+        $gecx_jwt = '';
+        if ( $gecx_was_connected && '' !== $gecx_console_url && class_exists( Auth::class ) ) {
+            $gecx_jwt = (string) Auth::generate_existing_rs256_admin_jwt();
+        }
+
+        if ( $gecx_was_connected && '' !== $gecx_console_url && ! empty( $gecx_jwt ) && ! empty( $gecx_store_url ) ) {
+            $gecx_payload_data = [ 'event' => 'uninstall' ];
+            if ( ! empty( $gecx_agent_name ) ) {
+                $gecx_payload_data['agent_name'] = $gecx_agent_name;
+            }
+            $gecx_payload = wp_json_encode( $gecx_payload_data );
+
+            $gecx_headers = [
+                'Content-Type'        => 'application/json',
+                'X-WC-Webhook-Source' => $gecx_store_url,
+                'X-WC-Webhook-Topic'  => 'plugin/uninstalled',
+                'Authorization'       => 'Bearer ' . $gecx_jwt,
+            ];
+
+            $gecx_webhook_url = esc_url_raw( rtrim( (string) $gecx_console_url, '/' ) . '/woocommerce/webhook' );
+            $gecx_scheme      = (string) wp_parse_url( $gecx_webhook_url, PHP_URL_SCHEME );
+
+            $gecx_notify_elapsed = microtime( true ) - $gecx_notify_started_at;
+            $gecx_budget_spent   = ( $gecx_notify_elapsed + $gecx_notify_timeout_seconds ) > $gecx_notify_budget_seconds;
+
+            if ( $gecx_budget_spent ) {
+                if ( class_exists( Auth::class ) ) {
+                    Auth::log( 'Uninstall notification skipped for ' . $gecx_store_url . ': too little of the notification time budget remains to complete a request.', 'warning' );
+                }
+            } elseif ( 'https' === $gecx_scheme && ( function_exists( 'wp_http_validate_url' ) ? wp_http_validate_url( $gecx_webhook_url ) : filter_var( $gecx_webhook_url, FILTER_VALIDATE_URL ) ) ) {
+                // Bounded at $gecx_notify_timeout_seconds for this site, and at
+                // $gecx_notify_budget_seconds across the whole network. Only
+                // sites that hold a store-signed RS256 JWT reach this.
+                //
+                // wp_safe_remote_post() rather than wp_remote_post(), matching
+                // the two Admin\Console_Sync call sites: the destination comes from an
+                // option, so the resolved host is validated against the private
+                // and loopback ranges. redirection 0 because the request
+                // carries the webhook HMAC signature and, on stores that have
+                // one, a store-signed JWT; a 30x would hand both to whatever
+                // host the redirect names.
+                wp_safe_remote_post( $gecx_webhook_url, [
+                    'timeout'             => $gecx_notify_timeout_seconds,
+                    'headers'             => $gecx_headers,
+                    'body'                => $gecx_payload,
+                    'data_format'         => 'body',
+                    'redirection'         => 0,
+                    'limit_response_size' => 10240,
+                ] );
+            }
+        }
+
+        // 2. Delete the webhooks that deliver to Google.
+        //
+        // After the notification above, so the backend is told about the
+        // uninstall while the webhooks it registered still exist.
+        //
+        // First the order.created webhook this plugin created.
         $gecx_wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
 
         if ( $gecx_wc_available ) {
@@ -153,75 +229,21 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         }
         delete_option( 'gecx_webhook_id' );
 
-        // 2. Notify Google Backend via RS256 Bearer JWT.
-        //
-        // Only notify Google if the merchant actually connected this site:
-        // it completed authorization, linked an agent, or holds the order
-        // webhook that only a completed authorization creates (the last two
-        // also cover stores that authorized before gecx_auth_complete
-        // existed). Holding a keypair is not evidence of that, because
-        // activation generates one on every site, so a store that was
-        // activated and never connected would otherwise send its URL and the
-        // administrator's email to Google on the way out. Unlinking an agent
-        // clears the agent name but keeps gecx_auth_complete, the paused order
-        // webhook and the WooCommerce API keys, so an unlinked store still
-        // notifies Google, which is correct: the backend still holds its
-        // installation record and credentials.
-        $gecx_was_connected = ! empty( $gecx_agent_name )
-            || ! empty( $gecx_webhook_id )
-            || ! empty( get_option( 'gecx_auth_complete', 0 ) );
-
-        $gecx_jwt = '';
-        if ( $gecx_was_connected && '' !== $gecx_console_url && class_exists( Auth::class ) ) {
-            $gecx_jwt = (string) Auth::generate_existing_rs256_admin_jwt();
-        }
-
-        if ( $gecx_was_connected && '' !== $gecx_console_url && ! empty( $gecx_jwt ) && ! empty( $gecx_store_url ) ) {
-            $gecx_payload_data = [ 'event' => 'uninstall' ];
-            if ( ! empty( $gecx_agent_name ) ) {
-                $gecx_payload_data['agent_name'] = $gecx_agent_name;
-            }
-            $gecx_payload = wp_json_encode( $gecx_payload_data );
-
-            $gecx_headers = [
-                'Content-Type'        => 'application/json',
-                'X-WC-Webhook-Source' => $gecx_store_url,
-                'X-WC-Webhook-Topic'  => 'plugin/uninstalled',
-                'Authorization'       => 'Bearer ' . $gecx_jwt,
-            ];
-
-            $gecx_webhook_url = esc_url_raw( rtrim( (string) $gecx_console_url, '/' ) . '/woocommerce/webhook' );
-            $gecx_scheme      = (string) wp_parse_url( $gecx_webhook_url, PHP_URL_SCHEME );
-
-            $gecx_notify_elapsed = microtime( true ) - $gecx_notify_started_at;
-            $gecx_budget_spent   = ( $gecx_notify_elapsed + $gecx_notify_timeout_seconds ) > $gecx_notify_budget_seconds;
-
-            if ( $gecx_budget_spent ) {
+        // Then every other webhook delivered to the backend, which the backend
+        // registered itself with the store's API keys: the product.* catalog
+        // webhooks and any order.created webhook of its own. Matched on
+        // delivery URL only, so the merchant's other webhooks are untouched.
+        // Works with WooCommerce inactive by deleting the rows directly.
+        if ( class_exists( Backend_Webhooks::class ) ) {
+            try {
+                Backend_Webhooks::delete_webhooks();
+            } catch ( \Throwable $e ) {
                 if ( class_exists( Auth::class ) ) {
-                    Auth::log( 'Uninstall notification skipped for ' . $gecx_store_url . ': too little of the notification time budget remains to complete a request.', 'warning' );
+                    Auth::log( 'Uninstall could not delete backend webhooks: ' . $e->getMessage(), 'debug' );
                 }
-            } elseif ( 'https' === $gecx_scheme && ( function_exists( 'wp_http_validate_url' ) ? wp_http_validate_url( $gecx_webhook_url ) : filter_var( $gecx_webhook_url, FILTER_VALIDATE_URL ) ) ) {
-                // Bounded at $gecx_notify_timeout_seconds for this site, and at
-                // $gecx_notify_budget_seconds across the whole network. Only
-                // sites that hold a store-signed RS256 JWT reach this.
-                //
-                // wp_safe_remote_post() rather than wp_remote_post(), matching
-                // the two Admin\Console_Sync call sites: the destination comes from an
-                // option, so the resolved host is validated against the private
-                // and loopback ranges. redirection 0 because the request
-                // carries the webhook HMAC signature and, on stores that have
-                // one, a store-signed JWT; a 30x would hand both to whatever
-                // host the redirect names.
-                wp_safe_remote_post( $gecx_webhook_url, [
-                    'timeout'             => $gecx_notify_timeout_seconds,
-                    'headers'             => $gecx_headers,
-                    'body'                => $gecx_payload,
-                    'data_format'         => 'body',
-                    'redirection'         => 0,
-                    'limit_response_size' => 10240,
-                ] );
             }
         }
+        delete_option( 'gecx_paused_backend_webhook_ids' );
 
         // 3. Clear all plugin options and scheduled hooks from the local WordPress database.
         //

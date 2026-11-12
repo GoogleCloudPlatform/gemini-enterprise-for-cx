@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.2.1
+Stable tag: 1.2.2
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -137,6 +137,9 @@ After the agent changes the cart, the plugin refreshes WooCommerce cart fragment
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 1.2.2 =
+* Pause the product and order webhooks that Gemini Enterprise for CX registers on the store (those delivered to `/woocommerce/webhook` on `gecx.cloud.google.com` or the staging console) when the plugin is deactivated or the agent is unlinked, resume them on reactivation or when an agent is linked again, and delete them on uninstall, after the `plugin/uninstalled` notification and even if WooCommerce is inactive. The merchant's other webhooks are not touched.
 
 = 1.2.1 =
 * Add a collapsible firewall allowlist banner above Step 1 (Authorize WooCommerce API) on the settings page with Cloudflare and Wordfence instructions for allowing Google requests to `/wp-json/gecx/v1/*`, `/wp-json/wc/v3/*`, and `/wp-json/wc/store/v1/*`.
