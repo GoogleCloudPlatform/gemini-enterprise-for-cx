@@ -321,6 +321,88 @@ class BackendWebhooksTest extends GECX_TestCase {
         $this->assertEquals( [], $GLOBALS['gecx_test_blog_stack'] );
         $this->assertSame( 'paused', $this->status( $ids['created'] ) );
     }
+
+    public function test_network_deactivation_and_activation_manage_order_and_backend_webhooks_per_subsite(): void {
+        $GLOBALS['gecx_test_is_multisite']    = true;
+        $GLOBALS['gecx_test_sites']           = [ 1, 4 ];
+        // Simulate WooCommerce active on sub-site 4 rather than network-wide,
+        // so Network Admin runs without WC_Webhook loaded.
+        $GLOBALS['gecx_test_disable_wc_webhook'] = true;
+        $GLOBALS['gecx_test_per_site_stores'] = [
+            1 => [
+                'options'          => [],
+                'webhooks'         => [],
+                'scheduled_events' => [],
+            ],
+            4 => [
+                'options'          => [
+                    'gecx_agent_name'                => 'projects/123/locations/global/agents/agent-4',
+                    'gecx_agent_enabled'             => 1,
+                    'gecx_auth_complete'             => 1,
+                    'gecx_webhook_id'                => 51,
+                    'gecx_dismiss_activation_notice' => 1,
+                ],
+                'webhooks'         => [
+                    51 => [
+                        'id'           => 51,
+                        'name'         => 'GECX Agent Order Created',
+                        'user_id'      => 1,
+                        'topic'        => 'order.created',
+                        'delivery_url' => self::PROD_URL,
+                        'secret'       => 'cs_secret',
+                        'status'       => 'active',
+                        'api_version'  => 'wp_api_v3',
+                    ],
+                    52 => [
+                        'id'           => 52,
+                        'name'         => 'Product updated',
+                        'user_id'      => 1,
+                        'topic'        => 'product.updated',
+                        'delivery_url' => self::PROD_URL,
+                        'secret'       => 'cs_secret',
+                        'status'       => 'active',
+                        'api_version'  => 'wp_api_v3',
+                    ],
+                    53 => [
+                        'id'           => 53,
+                        'name'         => 'Merchant ERP',
+                        'user_id'      => 1,
+                        'topic'        => 'order.created',
+                        'delivery_url' => 'https://erp.example.com/woocommerce/webhook',
+                        'secret'       => 'cs_secret',
+                        'status'       => 'active',
+                        'api_version'  => 'wp_api_v3',
+                    ],
+                ],
+                'scheduled_events' => [
+                    [
+                        'timestamp' => time() + 60,
+                        'hook'      => Admin::VERSION_SYNC_CRON_HOOK,
+                        'args'      => [],
+                    ],
+                ],
+            ],
+        ];
+
+        Admin::deactivate_plugin( true );
+
+        $site4 = $GLOBALS['gecx_test_per_site_stores'][4];
+        $this->assertSame( 'paused', $site4['webhooks'][51]['status'] );
+        $this->assertSame( 'paused', $site4['webhooks'][52]['status'] );
+        $this->assertSame( 'active', $site4['webhooks'][53]['status'] );
+        $this->assertSame( [], $site4['scheduled_events'] );
+
+        Admin::activate_plugin( true );
+
+        $site1 = $GLOBALS['gecx_test_per_site_stores'][1];
+        $site4 = $GLOBALS['gecx_test_per_site_stores'][4];
+        $this->assertArrayNotHasKey( 'gecx_do_activation_redirect', $site1['options'] );
+        $this->assertArrayNotHasKey( 'gecx_do_activation_redirect', $site4['options'] );
+        $this->assertArrayNotHasKey( 'gecx_dismiss_activation_notice', $site4['options'] );
+        $this->assertSame( 'active', $site4['webhooks'][51]['status'] );
+        $this->assertSame( 'active', $site4['webhooks'][52]['status'] );
+        $this->assertSame( 'active', $site4['webhooks'][53]['status'] );
+    }
 }
 
 if ( php_sapi_name() === 'cli' && isset( $argv[0] ) && basename( $argv[0] ) === basename( __FILE__ ) ) {

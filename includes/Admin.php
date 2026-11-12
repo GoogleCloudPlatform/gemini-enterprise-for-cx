@@ -139,14 +139,22 @@ class Admin {
     /**
      * Triggered upon plugin activation.
      *
-     * @param bool $network_wide Whether the plugin is being network activated.
+     * @param mixed $network_wide Whether the plugin is being network activated.
      */
-    public static function activate_plugin( bool $network_wide = false ): void {
-        update_option( 'gecx_do_activation_redirect', true );
-        delete_option( 'gecx_dismiss_activation_notice' );
-        Auth::get_or_generate_keypair();
-        Order_Webhook::reconcile_webhook_on_activation();
-        self::for_each_site( $network_wide, [ Backend_Webhooks::class, 'resume_webhooks_if_linked' ] );
+    public static function activate_plugin( $network_wide = false ): void {
+        $network_wide = (bool) $network_wide;
+        if ( ! $network_wide ) {
+            update_option( 'gecx_do_activation_redirect', true );
+            Auth::get_or_generate_keypair();
+        }
+        self::for_each_site(
+            $network_wide,
+            static function (): void {
+                delete_option( 'gecx_dismiss_activation_notice' );
+                Order_Webhook::reconcile_webhook_on_activation();
+                Backend_Webhooks::resume_webhooks_if_linked();
+            }
+        );
     }
 
     /**
@@ -155,17 +163,22 @@ class Admin {
      * and the backend's catalog webhooks so the backend stops receiving
      * product changes for a store it no longer serves.
      *
-     * @param bool $network_wide Whether the plugin is being network deactivated.
+     * @param mixed $network_wide Whether the plugin is being network deactivated.
      */
-    public static function deactivate_plugin( bool $network_wide = false ): void {
-        if ( function_exists( 'wp_clear_scheduled_hook' ) ) {
-            wp_clear_scheduled_hook( self::VERSION_SYNC_CRON_HOOK );
-        }
-        if ( function_exists( 'as_unschedule_all_actions' ) ) {
-            as_unschedule_all_actions( self::VERSION_SYNC_CRON_HOOK, [], 'gecx' );
-        }
-        Order_Webhook::set_order_webhook_status( 'paused' );
-        self::for_each_site( $network_wide, [ Backend_Webhooks::class, 'pause_webhooks' ] );
+    public static function deactivate_plugin( $network_wide = false ): void {
+        self::for_each_site(
+            (bool) $network_wide,
+            static function (): void {
+                if ( function_exists( 'wp_clear_scheduled_hook' ) ) {
+                    wp_clear_scheduled_hook( self::VERSION_SYNC_CRON_HOOK );
+                }
+                if ( function_exists( 'as_unschedule_all_actions' ) ) {
+                    as_unschedule_all_actions( self::VERSION_SYNC_CRON_HOOK, [], 'gecx' );
+                }
+                Order_Webhook::set_order_webhook_status( 'paused' );
+                Backend_Webhooks::pause_webhooks();
+            }
+        );
     }
 
     /**
