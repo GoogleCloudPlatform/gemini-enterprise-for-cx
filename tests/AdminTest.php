@@ -1121,9 +1121,9 @@ class AdminTest extends GECX_TestCase {
         $this->assertStringContainsString( '<code>/wp-json/gecx/v1/*</code>', $step1_html );
         $this->assertStringContainsString( '<code>/wp-json/wc/v3/*</code>', $step1_html );
         $this->assertStringContainsString( '<code>/wp-json/wc/store/v1/*</code>', $step1_html );
-        $this->assertStringContainsString( '<code>AS15169</code>, <code>AS396982</code>', $step1_html );
-        $this->assertStringContainsString( 'Cloudflare: Security → WAF → Custom rules → create a rule matching the paths above and the Google ASNs with action Skip (all remaining custom rules, rate limiting rules, managed rules, and Super Bot Fight Mode). Example expression:', $step1_decoded );
-        $this->assertStringContainsString( 'ip.src.asnum in {15169 396982}', $step1_decoded );
+        $this->assertStringContainsString( '<code>AS15169</code>', $step1_html );
+        $this->assertStringContainsString( 'Cloudflare: Security → WAF → Custom rules → create a rule matching the paths above and the Google ASN with action Skip (all remaining custom rules, rate limiting rules, managed rules, and Super Bot Fight Mode). Example expression:', $step1_decoded );
+        $this->assertStringContainsString( 'ip.src.asnum eq 15169', $step1_decoded );
         $this->assertStringContainsString( "Cloudflare Bot Fight Mode (free plan) can't be skipped by custom rules.", $step1_decoded );
         $this->assertStringContainsString( 'Wordfence: Firewall → Allowlisted URLs → add each path above.', $step1_decoded );
         $this->assertStringContainsString( 'If you see "An error occurred in the request" after approving access, your firewall blocked the connection. Add the rule above and click Authorize Store again.', $step1_decoded );
