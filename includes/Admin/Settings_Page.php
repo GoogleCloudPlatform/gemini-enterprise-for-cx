@@ -401,6 +401,7 @@ class Settings_Page {
                             </p>
                             <div class="gecx-firewall-banner__rules">
                                 <div><?php esc_html_e( 'User-Agent contains:', 'gemini-enterprise-for-cx' ); ?> <code>Google</code></div>
+                                <div><?php esc_html_e( 'Source ASN (Google):', 'gemini-enterprise-for-cx' ); ?> <code>AS15169</code></div>
                                 <div class="gecx-firewall-banner__rules-label"><?php esc_html_e( 'URL paths:', 'gemini-enterprise-for-cx' ); ?></div>
                                 <ul class="gecx-firewall-banner__paths">
                                     <li><code>/wp-json/gecx/v1/*</code></li>
@@ -409,13 +410,17 @@ class Settings_Page {
                                 </ul>
                             </div>
                             <p>
-                                <?php esc_html_e( 'Cloudflare: Security → WAF → Custom rules → create a rule matching the User-Agent and paths above with action Skip (all remaining custom rules, Bot Fight Mode, and Super Bot Fight Mode).', 'gemini-enterprise-for-cx' ); ?>
+                                <?php esc_html_e( 'Cloudflare: Security → WAF → Custom rules → create a rule matching the paths above and the Google ASN with action Skip (all remaining custom rules, rate limiting rules, managed rules, and Super Bot Fight Mode). Example expression:', 'gemini-enterprise-for-cx' ); ?>
+                                <code>(starts_with(http.request.uri.path, "/wp-json/") and ip.src.asnum eq 15169)</code>
+                            </p>
+                            <p>
+                                <?php esc_html_e( "Cloudflare Bot Fight Mode (free plan) can't be skipped by custom rules. If it is on, turn it off under Security → Bots, or use Super Bot Fight Mode on a paid plan with the rule above.", 'gemini-enterprise-for-cx' ); ?>
                             </p>
                             <p>
                                 <?php esc_html_e( 'Wordfence: Firewall → Allowlisted URLs → add each path above.', 'gemini-enterprise-for-cx' ); ?>
                             </p>
                             <p>
-                                <?php esc_html_e( "Note: User-Agent headers can be spoofed. For stricter filtering, also match Cloudflare's verified-bot condition or Google's published IP ranges. Allowing these paths only bypasses bot challenges; /wp-json/wc/v3/* routes still require their WooCommerce API keys.", 'gemini-enterprise-for-cx' ); ?>
+                                <?php esc_html_e( 'Note: User-Agent headers can be spoofed. For stricter filtering, match the Google ASN above (AS15169) rather than the User-Agent alone. Allowing these paths only bypasses bot challenges; /wp-json/wc/v3/* routes still require their WooCommerce API keys.', 'gemini-enterprise-for-cx' ); ?>
                             </p>
                             <p>
                                 <?php esc_html_e( 'If you see "An error occurred in the request" after approving access, your firewall blocked the connection. Add the rule above and click Authorize Store again.', 'gemini-enterprise-for-cx' ); ?>
