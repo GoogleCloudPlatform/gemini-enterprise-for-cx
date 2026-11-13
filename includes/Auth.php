@@ -301,7 +301,7 @@ class Auth {
      *
      * @return string[] Lower-case host names.
      */
-    private static function get_allowed_console_hosts(): array {
+    public static function get_allowed_console_hosts(): array {
         $hosts = self::CONSOLE_ALLOWED_HOSTS;
 
         if ( defined( 'GECX_CONSOLE_ALLOWED_HOSTS' ) ) {

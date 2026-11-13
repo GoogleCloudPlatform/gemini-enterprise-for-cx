@@ -230,6 +230,17 @@ class WebhookLifecycleTest extends TestCase {
         $this->assertSame( 'paused', $webhook->get_status() );
     }
 
+    public function test_deactivation_pauses_order_webhook_without_woocommerce(): void {
+        $webhook_id                              = $this->create_gecx_webhook( 'active' );
+        $GLOBALS['gecx_test_disable_wc_webhook'] = true;
+        set_transient( 'woocommerce_webhook_ids_status_active', [ $webhook_id ] );
+
+        Admin::deactivate_plugin();
+
+        $this->assertSame( 'paused', $GLOBALS['gecx_test_webhooks'][ $webhook_id ]['status'] );
+        $this->assertFalse( get_transient( 'woocommerce_webhook_ids_status_active' ) );
+    }
+
     public function test_activation_reconciles_webhook_when_linked(): void {
         $webhook_id = $this->create_gecx_webhook( 'paused' );
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );

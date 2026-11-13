@@ -18,6 +18,7 @@ namespace Google\Gemini_Enterprise_For_CX\Admin;
 
 use Google\Gemini_Enterprise_For_CX\Admin;
 use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\Backend_Webhooks;
 use Google\Gemini_Enterprise_For_CX\REST\Order_Webhook;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -653,6 +654,10 @@ class Console_Sync {
 
             update_option( 'gecx_agent_name', $actual );
 
+            // The backend holds the link, so it is serving this store's
+            // catalog again whether or not the widget is on.
+            Backend_Webhooks::resume_webhooks();
+
             // An automatic unlink disables the widget and pauses/deletes the
             // order webhook. Adopting a link the backend still holds has to
             // re-enable both, or the store looks connected in wp-admin while
@@ -703,11 +708,15 @@ class Console_Sync {
      *
      * The order webhook is paused rather than deleted so its stored
      * consumer_secret remains available and re-linking an agent in Step 2 can
-     * immediately reactivate it. The merchant's appearance settings are also
-     * left in place so a re-link does not lose their customization.
+     * immediately reactivate it. The backend's catalog webhooks are paused for
+     * the same reason, so the backend stops receiving product changes for a
+     * store with no agent and linking again resumes them. The merchant's
+     * appearance settings are also left in place so a re-link does not lose
+     * their customization.
      */
     private function unlink_agent_internal(): void {
         Order_Webhook::set_order_webhook_status( 'paused' );
+        Backend_Webhooks::pause_webhooks();
         // Legacy shared secret, retired in favour of the store's RSA keypair.
         // Still deleted so a store upgraded from an older version does not keep
         // the row around after disconnecting.

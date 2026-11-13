@@ -268,16 +268,22 @@ class Order_Webhook {
      * Updates the status of the GECX order webhook (e.g. 'active' or 'paused')
      * and sweeps any duplicate/orphaned 'GECX Agent Order Created' webhooks.
      *
+     * Falls back to direct $wpdb updates when WC_Webhook is unavailable (such
+     * as when WooCommerce was deactivated first, or during network
+     * activation/deactivation when WooCommerce is only active on individual
+     * sub-sites).
+     *
      * @param string $status Target WooCommerce webhook status ('active', 'paused', or 'disabled').
      */
     public static function set_order_webhook_status( string $status ): void {
+        $stored_id    = (int) get_option( 'gecx_webhook_id', 0 );
         $wc_available = class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
         if ( ! $wc_available ) {
+            self::set_order_webhook_status_via_db( $status, $stored_id );
             return;
         }
 
-        $stored_id = (int) get_option( 'gecx_webhook_id', 0 );
-        $primary   = null;
+        $primary = null;
 
         if ( $stored_id > 0 ) {
             try {
@@ -330,6 +336,105 @@ class Order_Webhook {
                     Auth::log( 'Failed to save order webhook status: ' . $e->getMessage(), 'debug' );
                 }
             }
+        }
+    }
+
+    /**
+     * Direct $wpdb fallback for set_order_webhook_status() when WooCommerce's
+     * WC_Webhook class is not loaded.
+     *
+     * @param string $status    Target WooCommerce webhook status.
+     * @param int    $stored_id Stored gecx_webhook_id option value, or 0.
+     */
+    private static function set_order_webhook_status_via_db( string $status, int $stored_id ): void {
+        global $wpdb;
+        if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'update' ) || ! method_exists( $wpdb, 'prepare' ) || ! method_exists( $wpdb, 'get_results' ) ) {
+            return;
+        }
+
+        try {
+            $table_name = $wpdb->prefix . 'wc_webhooks';
+            if ( method_exists( $wpdb, 'get_var' ) ) {
+                $escaped_like = method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( $table_name ) : $table_name;
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Schema probe when WooCommerce is not loaded.
+                if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $escaped_like ) ) !== $table_name ) {
+                    return;
+                }
+            }
+
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- WooCommerce is not loaded; caches are cleared below.
+            $rows = $wpdb->get_results(
+                $wpdb->prepare(
+                    'SELECT webhook_id, status FROM %i WHERE ( name = %s AND topic = %s ) OR ( webhook_id = %d AND topic = %s ) ORDER BY webhook_id ASC',
+                    $table_name,
+                    'GECX Agent Order Created',
+                    'order.created',
+                    $stored_id,
+                    'order.created'
+                )
+            );
+            if ( ! is_array( $rows ) || empty( $rows ) ) {
+                return;
+            }
+
+            $primary_id = 0;
+            foreach ( $rows as $row ) {
+                if ( is_object( $row ) && isset( $row->webhook_id ) && $stored_id > 0 && (int) $row->webhook_id === $stored_id ) {
+                    $primary_id = $stored_id;
+                    break;
+                }
+            }
+            if ( 0 === $primary_id && is_object( $rows[0] ) && isset( $rows[0]->webhook_id ) ) {
+                $primary_id = (int) $rows[0]->webhook_id;
+                if ( $primary_id > 0 ) {
+                    update_option( 'gecx_webhook_id', $primary_id );
+                }
+            }
+            if ( $primary_id <= 0 ) {
+                return;
+            }
+
+            foreach ( $rows as $row ) {
+                if ( ! is_object( $row ) || ! isset( $row->webhook_id ) ) {
+                    continue;
+                }
+                $row_id = (int) $row->webhook_id;
+                if ( $row_id <= 0 ) {
+                    continue;
+                }
+                if ( $row_id !== $primary_id ) {
+                    if ( method_exists( $wpdb, 'delete' ) ) {
+                        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Deduplicating orphaned GECX order webhooks when WooCommerce is not loaded.
+                        $wpdb->delete( $table_name, [ 'webhook_id' => $row_id ], [ '%d' ] );
+                    }
+                    if ( function_exists( 'wp_cache_delete' ) ) {
+                        wp_cache_delete( $row_id, 'webhooks' );
+                    }
+                    continue;
+                }
+                if ( (string) ( $row->status ?? '' ) !== $status ) {
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- WooCommerce is not loaded; caches are cleared below.
+                    $wpdb->update(
+                        $table_name,
+                        [ 'status' => $status ],
+                        [ 'webhook_id' => $primary_id ],
+                        [ '%s' ],
+                        [ '%d' ]
+                    );
+                    if ( function_exists( 'wp_cache_delete' ) ) {
+                        wp_cache_delete( $primary_id, 'webhooks' );
+                    }
+                }
+            }
+
+            if ( function_exists( 'delete_transient' ) ) {
+                delete_transient( 'woocommerce_webhook_ids' );
+                delete_transient( 'woocommerce_webhook_ids_status_active' );
+                delete_transient( 'woocommerce_webhook_ids_status_paused' );
+                delete_transient( 'woocommerce_webhook_ids_status_disabled' );
+            }
+        } catch ( \Throwable $e ) {
+            Auth::log( 'Failed to update order webhook status via database: ' . $e->getMessage(), 'debug' );
         }
     }
 

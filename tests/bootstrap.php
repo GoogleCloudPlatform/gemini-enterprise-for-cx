@@ -85,6 +85,8 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_webhooks']             = [];
     $GLOBALS['gecx_test_orders']               = [];
     $GLOBALS['gecx_test_disable_wc_webhook']   = false;
+    $GLOBALS['gecx_test_webhook_delete_throws'] = 0;
+    $GLOBALS['gecx_test_http_observer']        = null;
     $GLOBALS['gecx_test_logs']                 = [];
     if ( class_exists( 'GECX_Mock_WPDB' ) ) {
         $GLOBALS['wpdb'] = new GECX_Mock_WPDB();
@@ -133,6 +135,7 @@ function gecx_reset_test_globals(): void {
     $GLOBALS['gecx_test_sites_by_path']    = [];
     $GLOBALS['gecx_test_switched_blogs']   = [];
     $GLOBALS['gecx_test_blog_stack']       = [];
+    $GLOBALS['gecx_test_per_site_stores']  = null;
 
     // Strings a test wants __() to translate, keyed by the untranslated text.
     $GLOBALS['gecx_test_translations']     = [];
@@ -292,6 +295,9 @@ if ( ! class_exists( 'WC_Webhook' ) ) {
         }
 
         public function delete( bool $force = false ): void {
+            if ( ! empty( $GLOBALS['gecx_test_webhook_delete_throws'] ) && (int) $GLOBALS['gecx_test_webhook_delete_throws'] === $this->id ) {
+                throw new \Exception( 'Simulated webhook delete failure.' );
+            }
             unset( $GLOBALS['gecx_test_webhooks'][ $this->id ] );
             $this->id = 0;
         }
@@ -843,6 +849,43 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
         }
 
         public function get_results( string $query, string $output = OBJECT ): array {
+            if ( false !== strpos( $query, 'wc_webhooks' ) && preg_match( "/WHERE \( name = '([^']*)' AND topic = '([^']*)' \) OR \( webhook_id = (\d+) AND topic = '([^']*)' \)/", $query, $m ) ) {
+                $target_name  = stripslashes( $m[1] );
+                $target_topic = stripslashes( $m[2] );
+                $target_id    = (int) $m[3];
+                $id_topic     = stripslashes( $m[4] );
+                $results      = [];
+                $webhooks     = $GLOBALS['gecx_test_webhooks'] ?? [];
+                ksort( $webhooks );
+                foreach ( $webhooks as $id => $wh ) {
+                    $name  = (string) ( $wh['name'] ?? '' );
+                    $topic = (string) ( $wh['topic'] ?? '' );
+                    if ( ( $name === $target_name && $topic === $target_topic )
+                        || ( $target_id > 0 && (int) $id === $target_id && $topic === $id_topic ) ) {
+                        $results[] = (object) [
+                            'webhook_id' => (string) $id,
+                            'status'     => $wh['status'] ?? 'active',
+                        ];
+                    }
+                }
+                return $results;
+            }
+            if ( false !== strpos( $query, 'wc_webhooks' ) && preg_match( "/delivery_url LIKE '([^']*)'/", $query, $m ) ) {
+                $needle  = str_replace( [ '\\_', '\\%', '%' ], [ '_', '%', '' ], stripslashes( $m[1] ) );
+                $results = [];
+                foreach ( $GLOBALS['gecx_test_webhooks'] ?? [] as $id => $wh ) {
+                    if ( false !== stripos( (string) ( $wh['delivery_url'] ?? '' ), $needle ) ) {
+                        $results[] = (object) [
+                            'webhook_id'   => (string) $id,
+                            'status'       => $wh['status'] ?? 'active',
+                            'name'         => $wh['name'] ?? '',
+                            'topic'        => $wh['topic'] ?? '',
+                            'delivery_url' => $wh['delivery_url'] ?? '',
+                        ];
+                    }
+                }
+                return $results;
+            }
             if ( false !== strpos( $query, 'woocommerce_sessions' ) && false !== strpos( $query, 'session_value LIKE' ) ) {
                 $min_key = '';
                 if ( preg_match( "/session_key > '([^']*)'/", $query, $m ) ) {
@@ -874,6 +917,16 @@ if ( ! class_exists( 'GECX_Mock_WPDB' ) ) {
         }
 
         public function update( string $table, array $data, array $where, array $format = [], array $where_format = [] ): int {
+            if ( $table === $this->prefix . 'wc_webhooks' && isset( $where['webhook_id'] ) ) {
+                $id = (int) $where['webhook_id'];
+                $this->rows_affected = 0;
+                if ( isset( $GLOBALS['gecx_test_webhooks'][ $id ] )
+                    && ( ! isset( $where['status'] ) || ( $GLOBALS['gecx_test_webhooks'][ $id ]['status'] ?? 'active' ) === $where['status'] ) ) {
+                    $GLOBALS['gecx_test_webhooks'][ $id ] = array_merge( $GLOBALS['gecx_test_webhooks'][ $id ], $data );
+                    $this->rows_affected = 1;
+                }
+                return $this->rows_affected;
+            }
             if ( false !== strpos( $table, 'woocommerce_sessions' ) && isset( $where['session_key'], $data['session_value'] ) ) {
                 $key = (string) $where['session_key'];
                 $val = (string) $data['session_value'];
@@ -1366,12 +1419,29 @@ if ( ! function_exists( 'get_sites' ) ) {
     }
 }
 
-// The options store is flat rather than per-site, so these record the calls
-// and let the site body run against the one store. That is enough to pin the
-// loop shape -- every site visited, every switch restored -- which is what the
-// multisite bug was.
+// The options store is flat by default so loop-shape tests do not have to seed
+// per-site state; tests that set $GLOBALS['gecx_test_per_site_stores'] get
+// isolated per-blog options, webhooks and scheduled events across switches.
 if ( ! function_exists( 'switch_to_blog' ) ) {
     function switch_to_blog( int $site_id ): bool {
+        $from_id = get_current_blog_id();
+        if ( isset( $GLOBALS['gecx_test_per_site_stores'] ) && is_array( $GLOBALS['gecx_test_per_site_stores'] ) ) {
+            if ( ! empty( $GLOBALS['gecx_test_blog_stack'] )
+                || ! empty( $GLOBALS['gecx_test_options'] )
+                || ! empty( $GLOBALS['gecx_test_webhooks'] )
+                || ! empty( $GLOBALS['gecx_test_scheduled_events'] )
+                || ! isset( $GLOBALS['gecx_test_per_site_stores'][ $from_id ] ) ) {
+                $GLOBALS['gecx_test_per_site_stores'][ $from_id ] = [
+                    'options'          => $GLOBALS['gecx_test_options'] ?? [],
+                    'webhooks'         => $GLOBALS['gecx_test_webhooks'] ?? [],
+                    'scheduled_events' => $GLOBALS['gecx_test_scheduled_events'] ?? [],
+                ];
+            }
+            $target = $GLOBALS['gecx_test_per_site_stores'][ $site_id ] ?? [];
+            $GLOBALS['gecx_test_options']          = $target['options'] ?? [];
+            $GLOBALS['gecx_test_webhooks']         = $target['webhooks'] ?? [];
+            $GLOBALS['gecx_test_scheduled_events'] = $target['scheduled_events'] ?? [];
+        }
         $GLOBALS['gecx_test_switched_blogs'][] = $site_id;
         $GLOBALS['gecx_test_blog_stack'][]     = $site_id;
         return true;
@@ -1383,7 +1453,19 @@ if ( ! function_exists( 'restore_current_blog' ) ) {
         if ( empty( $GLOBALS['gecx_test_blog_stack'] ) ) {
             return false;
         }
-        array_pop( $GLOBALS['gecx_test_blog_stack'] );
+        $from_id = (int) array_pop( $GLOBALS['gecx_test_blog_stack'] );
+        $to_id   = get_current_blog_id();
+        if ( isset( $GLOBALS['gecx_test_per_site_stores'] ) && is_array( $GLOBALS['gecx_test_per_site_stores'] ) ) {
+            $GLOBALS['gecx_test_per_site_stores'][ $from_id ] = [
+                'options'          => $GLOBALS['gecx_test_options'] ?? [],
+                'webhooks'         => $GLOBALS['gecx_test_webhooks'] ?? [],
+                'scheduled_events' => $GLOBALS['gecx_test_scheduled_events'] ?? [],
+            ];
+            $target = $GLOBALS['gecx_test_per_site_stores'][ $to_id ] ?? [];
+            $GLOBALS['gecx_test_options']          = $target['options'] ?? [];
+            $GLOBALS['gecx_test_webhooks']         = $target['webhooks'] ?? [];
+            $GLOBALS['gecx_test_scheduled_events'] = $target['scheduled_events'] ?? [];
+        }
         return true;
     }
 }
@@ -1895,6 +1977,9 @@ if ( ! function_exists( 'wp_remote_post' ) ) {
             'url'  => $url,
             'args' => $args,
         ];
+        if ( isset( $GLOBALS['gecx_test_http_observer'] ) && is_callable( $GLOBALS['gecx_test_http_observer'] ) ) {
+            ( $GLOBALS['gecx_test_http_observer'] )( $url, $args );
+        }
         if ( empty( $GLOBALS['gecx_test_http_responses'] ) ) {
             return new WP_Error( 'gecx_test_no_response', 'No mocked HTTP response queued.' );
         }

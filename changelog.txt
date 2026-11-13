@@ -1,5 +1,8 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-11-12 - version 1.2.2
+* Pause the product and order webhooks that Gemini Enterprise for CX registers on the store (those delivered to `/woocommerce/webhook` on `gecx.cloud.google.com` or the staging console) when the plugin is deactivated or the agent is unlinked, resume them on reactivation or when an agent is linked again, and delete them on uninstall, after the `plugin/uninstalled` notification and even if WooCommerce is inactive. The merchant's other webhooks are not touched.
+
 2026-11-03 - version 1.2.1
 * Add a collapsible firewall allowlist banner above Step 1 (Authorize WooCommerce API) on the settings page with Cloudflare and Wordfence instructions for allowing Google requests to `/wp-json/gecx/v1/*`, `/wp-json/wc/v3/*`, and `/wp-json/wc/store/v1/*`.
 * Lift floating and fallback launchers above corner widgets that size themselves after load (such as the Google Merchant Center store widget), watching fixed elements with `ResizeObserver` and attribute/removal observers so the offset re-measures when a widget resizes, appears, or is removed, and keeping the bottom-bar lift while the chat panel is open.
