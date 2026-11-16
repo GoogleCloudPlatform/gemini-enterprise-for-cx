@@ -73,7 +73,7 @@ abstract class TestCase extends PolyfilledTestCase {
 		$this->set_permalink_structure( '/%postname%/' );
 		$_SERVER['REQUEST_METHOD'] = 'GET';
 
-		Auth::reset_cart_token_state();
+		self::reset_cart_token_state();
 		Console_API::reset_wc_auth_state();
 
 		if ( function_exists( 'WC' ) ) {
@@ -106,7 +106,7 @@ abstract class TestCase extends PolyfilledTestCase {
 		$this->logs           = [];
 
 		$this->disable_ajax();
-		Auth::reset_cart_token_state();
+		self::reset_cart_token_state();
 		Console_API::reset_wc_auth_state();
 
 		// Clean up custom server headers, superglobals, cookies, and settings errors.
@@ -119,6 +119,24 @@ abstract class TestCase extends PolyfilledTestCase {
 		unset( $_SERVER['HTTP_CART_TOKEN'], $_SERVER['HTTP_AUTHORIZATION'], $_SERVER['HTTP_ORIGIN'], $_SERVER['HTTP_REFERER'], $_SERVER['HTTP_SEC_FETCH_SITE'] );
 
 		parent::tear_down();
+	}
+
+	/**
+	 * Resets the request-scoped Cart-Token authentication state on Auth.
+	 */
+	protected static function reset_cart_token_state(): void {
+		$defaults = [
+			'authenticated_via_cart_token' => false,
+			'cart_token_user_id'           => 0,
+			'resolving_cart_token'         => false,
+		];
+		foreach ( $defaults as $property => $value ) {
+			$ref = new \ReflectionProperty( Auth::class, $property );
+			if ( PHP_VERSION_ID < 80100 ) {
+				$ref->setAccessible( true );
+			}
+			$ref->setValue( null, $value );
+		}
 	}
 
 	/**

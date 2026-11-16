@@ -286,7 +286,7 @@ class AuthTest extends RestTestCase {
      */
     public function test_cart_token_user_is_dropped_for_non_cart_or_empty_routes(): void {
         foreach ( [ '/wc/store/v1/checkout', '/wc/store/v1/order/42', '' ] as $route ) {
-            Auth::reset_cart_token_state();
+            self::reset_cart_token_state();
             $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
             wp_set_current_user( $this->auth->authenticate_via_cart_token( 0 ) );
             $this->assertSame( 456, get_current_user_id() );
@@ -1398,15 +1398,6 @@ class AuthTest extends RestTestCase {
         }
     }
 
-    public function test_reset_cart_token_state_clears_flag(): void {
-        $_SERVER['HTTP_CART_TOKEN'] = $this->generate_jwt( 456 );
-        $this->assertSame( 456, $this->auth->authenticate_via_cart_token( 0 ) );
-        $this->assertTrue( Auth::is_cart_token_request() );
-
-        Auth::reset_cart_token_state();
-        $this->assertFalse( Auth::is_cart_token_request() );
-    }
-
     public function test_non_front_controller_index_php_is_rejected(): void {
         $_SERVER['SCRIPT_FILENAME'] = ABSPATH . 'wp-content/plugins/gecx/index.php';
         $_SERVER['REQUEST_URI']     = '/wp-json/wc/store/v1/cart';
@@ -1468,7 +1459,7 @@ class AuthTest extends RestTestCase {
             '/wp-json/wc/store/v1/batch',
         ];
         foreach ( $allowed as $uri ) {
-            Auth::reset_cart_token_state();
+            self::reset_cart_token_state();
             $_SERVER['REQUEST_URI'] = $uri;
             $this->assertSame( 123, $this->auth->authenticate_via_cart_token( 0 ), 'Expected acceptance on ' . $uri );
         }
@@ -1482,7 +1473,7 @@ class AuthTest extends RestTestCase {
             '/wp-json/wc/store/v1/cart-extensions',
         ];
         foreach ( $rejected as $uri ) {
-            Auth::reset_cart_token_state();
+            self::reset_cart_token_state();
             $_SERVER['REQUEST_URI'] = $uri;
             $this->assertSame( 0, $this->auth->authenticate_via_cart_token( 0 ), 'Expected rejection on ' . $uri );
         }
@@ -1490,7 +1481,7 @@ class AuthTest extends RestTestCase {
         // Verify that if a top-level /wc/store/v1/batch request authenticates
         // via Cart-Token, any sub-request dispatched to /order/* or /checkout/*
         // is blocked with 403 by block_cart_token_off_store_api().
-        Auth::reset_cart_token_state();
+        self::reset_cart_token_state();
         $_SERVER['REQUEST_URI'] = '/wp-json/wc/store/v1/batch';
         $this->assertSame( 123, $this->auth->authenticate_via_cart_token( 0 ) );
 

@@ -435,17 +435,6 @@ class Auth {
     }
 
     /**
-     * Resets the request-scoped authentication state.
-     *
-     * @internal
-     */
-    public static function reset_cart_token_state(): void {
-        self::$authenticated_via_cart_token = false;
-        self::$cart_token_user_id           = 0;
-        self::$resolving_cart_token         = false;
-    }
-
-    /**
      * Registers diagnostic or error messages in the WooCommerce log (WooCommerce > Status > Logs)
      * under the 'gecx' log source.
      *
