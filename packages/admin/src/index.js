@@ -21,16 +21,14 @@
 
 // 1. Native UI Handlers
 $(function() {
-  if (typeof gecx_admin_params === 'undefined') {
+  if (typeof gecx_admin_params === 'undefined' || !window.wp || !window.wp.apiFetch) {
     return;
   }
-  const saveNonce = gecx_admin_params.save_nonce;
 
   // Toggle Storefront Chat Widget
   $(document).on('change', '#gecx_agent_enabled', function() {
     const $checkbox = $(this);
     const isChecked = $checkbox.is(':checked');
-    const isEnabled = isChecked ? '1' : '0';
     $('#gecx_pdp_prompts_enabled').prop('disabled', !isChecked);
     if (typeof gecx_admin_params !== 'undefined') {
       $('#gecx-status-indicator').css('background-color', isChecked ? '#46b450' : '#787c82');
@@ -48,43 +46,38 @@ $(function() {
       showNotice('error', gecx_admin_params.errorToggleWidget);
     }
 
-    $.post(ajaxurl, {
-       action: 'gecx_toggle_app_embed',
-       enabled: isEnabled,
-       nonce: saveNonce
-     }).done(function(res) {
-       if (!res || !res.success) {
-         revertAgentToggle();
-       }
-     }).fail(function(err) {
-       console.error('Error toggling GECX embed:', err);
-       revertAgentToggle();
-     });
+    wp.apiFetch({
+      path: '/wp/v2/settings',
+      method: 'POST',
+      data: {
+        gecx_agent_enabled: isChecked ? 1 : 0,
+      },
+    }).catch(function(err) {
+      console.error('Error toggling GECX embed:', err);
+      revertAgentToggle();
+    });
   });
 
   // Toggle PDP Suggested Prompts
   $(document).on('change', '#gecx_pdp_prompts_enabled', function() {
     const $checkbox = $(this);
     const isChecked = $checkbox.is(':checked');
-    const isEnabled = isChecked ? '1' : '0';
 
     function revertPdpToggle() {
       $checkbox.prop('checked', !isChecked);
       showNotice('error', gecx_admin_params.errorTogglePrompts);
     }
 
-    $.post(ajaxurl, {
-       action: 'gecx_toggle_pdp_prompts',
-       enabled: isEnabled,
-       nonce: saveNonce
-     }).done(function(res) {
-       if (!res || !res.success) {
-         revertPdpToggle();
-       }
-     }).fail(function(err) {
-       console.error('Error saving PDP prompts toggle state:', err);
-       revertPdpToggle();
-     });
+    wp.apiFetch({
+      path: '/wp/v2/settings',
+      method: 'POST',
+      data: {
+        gecx_pdp_prompts_enabled: isChecked ? 1 : 0,
+      },
+    }).catch(function(err) {
+      console.error('Error saving PDP prompts toggle state:', err);
+      revertPdpToggle();
+    });
   });
 
   // Toggle the placement-specific rows on placement change
@@ -114,25 +107,27 @@ $(function() {
     const label = $('#gecx_button_label').val() || '';
     const shortLabel = $('#gecx_button_short_label').val() || '';
     const enableShimmer =
-        $('#gecx_button_enable_shimmer').is(':checked') ? '1' : '0';
+        $('#gecx_button_enable_shimmer').is(':checked') ? 1 : 0;
     const navMenuTarget = $('#gecx_nav_menu_target').val() || '';
 
     const $savedIndicator = $('#gecx-button-config-saved');
-    $.post(ajaxurl, {
-       action: 'gecx_save_button_config',
-       placement: placement,
-       floating_position: floatingPos,
-       display_style: displayStyle,
-       label: label,
-       short_label: shortLabel,
-       enable_shimmer: enableShimmer,
-       nav_menu_target: navMenuTarget,
-       nonce: saveNonce
-     }).done(function() {
+    wp.apiFetch({
+      path: '/wp/v2/settings',
+      method: 'POST',
+      data: {
+        gecx_button_placement: placement,
+        gecx_floating_position: floatingPos,
+        gecx_button_display_style: displayStyle,
+        gecx_button_label: label,
+        gecx_button_short_label: shortLabel,
+        gecx_button_enable_shimmer: enableShimmer,
+        gecx_nav_menu_target: navMenuTarget,
+      },
+    }).then(function() {
       if ($savedIndicator.length) {
         $savedIndicator.stop(true, true).fadeIn(200).delay(1500).fadeOut(400);
       }
-    }).fail(function(err) {
+    }).catch(function(err) {
       console.error('Error saving launcher button config:', err);
     });
   }
@@ -151,14 +146,16 @@ $(function() {
       });
   function showNotice(type, message) {
     const $container = $('#gecx-admin-notices');
-    const noticeHtml =
-        '<div class="notice notice-' + (type || 'error') +
-        ' is-dismissible" style="margin-top:15px;"><p>' +
-        $('<div>').text(message).html() + '</p></div>';
+    const noticeEl = document.createElement('div');
+    noticeEl.className = 'notice notice-' + (type || 'error') + ' is-dismissible';
+    noticeEl.style.marginTop = '15px';
+    const pEl = document.createElement('p');
+    pEl.textContent = message;
+    noticeEl.appendChild(pEl);
     if ($container.length) {
-      $container.html(noticeHtml);
+      $container[0].replaceChildren(noticeEl);
     } else {
-      $('.wrap > h1').after(noticeHtml);
+      $('.wrap > h1').after(noticeEl);
     }
   }
   // Disconnect Agent Button
@@ -169,24 +166,25 @@ $(function() {
     }
     const $btn = $(this);
     $btn.prop('disabled', true).text(gecx_admin_params.disconnecting);
-    $.post(ajaxurl, {action: 'gecx_unlink_agent', nonce: saveNonce})
-        .done(function(res) {
+    wp.apiFetch({
+      path: '/gecx/v1/unlink-agent',
+      method: 'POST',
+    })
+        .then(function(res) {
           if (res && res.success) {
             window.location.href =
                 window.location.pathname + '?page=gemini-enterprise-for-cx';
           } else {
-            const errorMsg = (res && res.data && res.data.message) ?
-                res.data.message :
+            const errorMsg = (res && res.message) ?
+                res.message :
                 gecx_admin_params.errorDisconnect;
             showNotice('error', errorMsg);
             $btn.prop('disabled', false).text(gecx_admin_params.disconnectLabel);
           }
         })
-        .fail(function(jqXHR) {
-          const errorMsg = (jqXHR && jqXHR.responseJSON &&
-                            jqXHR.responseJSON.data &&
-                            jqXHR.responseJSON.data.message) ?
-              jqXHR.responseJSON.data.message :
+        .catch(function(err) {
+          const errorMsg = (err && err.message) ?
+              err.message :
               gecx_admin_params.errorDisconnectAjax;
           showNotice('error', errorMsg);
           $btn.prop('disabled', false).text(gecx_admin_params.disconnectLabel);
@@ -196,11 +194,14 @@ $(function() {
   // Dismiss activation notice
   $(document).on(
       'click', '.gecx-activation-notice .notice-dismiss', function() {
-        $.post(ajaxurl, {
-           action: 'gecx_dismiss_notice',
-           nonce: gecx_admin_params.dismiss_nonce
-         }).fail(function(jqXHR, textStatus, errorThrown) {
-          console.error('Error dismissing GECX notice:', errorThrown);
+        wp.apiFetch({
+          path: '/wp/v2/settings',
+          method: 'POST',
+          data: {
+            gecx_dismiss_activation_notice: true,
+          },
+        }).catch(function(err) {
+          console.error('Error dismissing GECX notice:', err);
         });
       });
 });

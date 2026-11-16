@@ -9,13 +9,19 @@
  * @package GECX
  */
 
-require_once __DIR__ . '/bootstrap.php';
+declare(strict_types=1);
+
+namespace Google\Gemini_Enterprise_For_CX\Tests\Integration;
 
 use Google\Gemini_Enterprise_For_CX\REST\REST_API;
+use stdClass;
+use WC_Session;
+use WC_Session_Handler;
+use WP_Error;
+use WP_REST_Request;
+use WP_REST_Response;
 
-class CartBindingTest extends GECX_TestCase {
-
-    use GECX_CartTokenMinting;
+class CartBindingTest extends RestTestCase {
 
     private const AGENT_CART_LINES = [
         'a' => [ 'product_id' => 17510, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
@@ -25,6 +31,65 @@ class CartBindingTest extends GECX_TestCase {
     private const EXISTING    = [ 'binding' => 'existing' ];
     private const UNSUPPORTED = [ 'binding' => 'unsupported' ];
 
+	public function set_up(): void {
+		parent::set_up();
+		wp_set_current_user( 0 );
+		// Use a table-backed WC_Session_Handler subclass (one that leaves get_session
+		// and save_data declared on WC_Session_Handler) so Cart_Binding::is_table_backed()
+		// recognises it while still recording cookie and timestamp calls.
+		WC()->session = new class() extends WC_Session_Handler {
+			public int $cookie_set_calls = 0;
+			public int $session_expiration_calls = 0;
+			public array $session_timestamp_updates = [];
+
+			public function __construct() {
+				parent::__construct();
+				$this->_customer_id = 't_guest_session_123';
+			}
+
+			public function set_customer_id( string $id ): void {
+				$this->_customer_id = $id;
+			}
+
+			public function set_customer_session_cookie( $set ): void {
+				if ( $set ) {
+					$this->cookie_set_calls++;
+				}
+			}
+
+			public function set_session_expiration(): void {
+				$this->session_expiration_calls++;
+				$this->_session_expiration = time() + 2 * DAY_IN_SECONDS;
+			}
+
+			public function update_session_timestamp( $customer_id, $timestamp ): void {
+				$this->session_timestamp_updates[] = [ (string) $customer_id, (int) $timestamp ];
+			}
+
+			public function get_session_data_for_test(): array {
+				return is_array( $this->_data ) ? $this->_data : [];
+			}
+
+			public function get_session_expiration_for_test(): int {
+				return (int) ( $this->_session_expiration ?? 0 );
+			}
+
+			public function get_session_cookie() {
+				foreach ( $_COOKIE as $name => $value ) {
+					if ( 0 !== strpos( (string) $name, 'wp_woocommerce_session_' ) ) {
+						continue;
+					}
+					$parts = explode( '||', (string) $value );
+					if ( 4 !== count( $parts ) || '' === $parts[0] || '' === $parts[3] || 'forged' === $parts[3] ) {
+						return false;
+					}
+					return $parts;
+				}
+				return false;
+			}
+		};
+	}
+
     /**
      * Stores a session row holding the given cart lines.
      *
@@ -32,7 +97,7 @@ class CartBindingTest extends GECX_TestCase {
      * @param array  $lines       Cart lines keyed by cart item key.
      */
     private function given_session_with_cart( string $session_key, array $lines ): void {
-        $GLOBALS['wpdb']->wc_sessions[ $session_key ] = maybe_serialize( [ 'cart' => maybe_serialize( $lines ) ] );
+        $this->set_wc_session( $session_key, [ 'cart' => maybe_serialize( $lines ) ] );
     }
 
     /**
@@ -76,25 +141,29 @@ class CartBindingTest extends GECX_TestCase {
     }
 
     public function test_route_requires_a_rest_nonce_and_a_same_origin_request(): void {
-        $rest_api = new REST_API();
-        $rest_api->cart_binding->register_cart_session_rest_route();
-        $route = $GLOBALS['gecx_test_rest_routes']['gecx/v1/cart-session'] ?? null;
-        $this->assertSame( 'POST', $route['methods'] );
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        new REST_API();
+        do_action( 'rest_api_init' );
+        $routes = rest_get_server()->get_routes();
+        $route  = $routes['/gecx/v1/cart-session'][0] ?? null;
+        $this->assertNotNull( $route );
+        $this->assertSame( [ 'POST' ], array_keys( $route['methods'] ) );
         $check = $route['permission_callback'];
 
-        $same_origin = new WP_REST_Request();
-        $same_origin->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
-        $same_origin->set_header( 'Origin', 'https://example.com' );
-        $same_origin->set_header( 'Sec-Fetch-Site', 'same-origin' );
-        $this->assertTrue( $check( $same_origin ) );
+		$same_origin = new WP_REST_Request( 'POST', '/gecx/v1/cart-session' );
+		$same_origin->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+		$same_origin->set_header( 'Origin', 'https://example.org' );
+		$same_origin->set_header( 'Referer', 'https://example.org/shop/' );
+		$same_origin->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$this->assertTrue( $check( $same_origin ) );
 
-        $no_nonce = new WP_REST_Request();
-        $no_nonce->set_header( 'Origin', 'https://example.com' );
+        $no_nonce = new WP_REST_Request( 'POST', '/gecx/v1/cart-session' );
+        $no_nonce->set_header( 'Origin', 'https://example.org' );
         $this->assertInstanceOf( WP_Error::class, $check( $no_nonce ) );
 
         // The logged-out nonce is shared by every guest, so another site can
         // have it; the request's origin gives it away.
-        $cross_site = new WP_REST_Request();
+        $cross_site = new WP_REST_Request( 'POST', '/gecx/v1/cart-session' );
         $cross_site->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
         $cross_site->set_header( 'Origin', 'https://attacker.example' );
         $cross_site->set_header( 'Sec-Fetch-Site', 'cross-site' );
@@ -107,10 +176,8 @@ class CartBindingTest extends GECX_TestCase {
 
         $response = $this->bind_response( $agent_token );
 
-        // No CartTokenUtils in this WooCommerce: the agent's own token is
-        // still valid for the cart the browser is now bound to.
         $this->assertSame( [ 'binding' => 'agent' ], $response->get_data() );
-        $this->assertSame( $agent_token, $response->get_headers()['Cart-Token'] );
+        $this->assertSame( 't_agent_cart', \Google\Gemini_Enterprise_For_CX\Auth::get_cart_token_customer_id( $response->get_headers()['Cart-Token'] ) );
         $this->assertSame( 't_agent_cart', WC()->session->get_customer_id() );
         $this->assertSame( maybe_serialize( self::AGENT_CART_LINES ), WC()->session->get_session_data_for_test()['cart'] );
         $this->assertSame( 1, WC()->session->cookie_set_calls );
@@ -237,7 +304,8 @@ class CartBindingTest extends GECX_TestCase {
     }
 
     public function test_keeps_a_logged_in_shopper_cart(): void {
-        $GLOBALS['gecx_test_current_user'] = new WP_User( 42, 'shopper@example.com', [ 'customer' ] );
+        $this->ensure_user_with_id( 42, 'shopper42', 'customer', 'shopper@example.com' );
+        wp_set_current_user( 42 );
         $this->given_session_with_cart( 't_agent_cart', self::AGENT_CART_LINES );
 
         $this->assertSame( self::EXISTING, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
@@ -278,8 +346,12 @@ class CartBindingTest extends GECX_TestCase {
             // A WC_Session_Handler that reads sessions from somewhere else,
             // such as Redis.
             new class() extends WC_Session_Handler {
+                public int $cookie_set_calls = 0;
                 public function get_session( $customer_id, $default = false ) {
                     return $default;
+                }
+                public function set_customer_session_cookie( $set ): void {
+                    $this->cookie_set_calls++;
                 }
             },
             // A handler built on WC_Session alone.

@@ -215,7 +215,7 @@ class Backend_Webhooks {
      * Whether WooCommerce's webhook API can be used.
      */
     private static function wc_available(): bool {
-        return class_exists( 'WC_Webhook' ) && ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || empty( $GLOBALS['gecx_test_disable_wc_webhook'] ) );
+        return class_exists( 'WC_Webhook' );
     }
 
     /**

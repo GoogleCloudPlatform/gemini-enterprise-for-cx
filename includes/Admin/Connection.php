@@ -87,10 +87,7 @@ class Connection {
         if ( ! $transient_valid && ! $option_valid ) {
             set_transient( 'gecx_admin_notice_error', __( 'Security validation failed: invalid or expired session state. Please try linking again.', 'gemini-enterprise-for-cx' ), 60 );
             wp_safe_redirect( admin_url( 'admin.php?page=gemini-enterprise-for-cx' ) );
-            if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
-                exit;
-            }
-            return;
+            exit;
         }
         delete_transient( 'gecx_oauth_state_' . $state );
         if ( isset( $states[ $state ] ) ) {
@@ -121,9 +118,7 @@ class Connection {
         // read, because this request cannot be authenticated -- the state that
         // got us here travelled off-site inside return_url.
         wp_safe_redirect( admin_url( 'admin.php?page=gemini-enterprise-for-cx&connected=1' ) );
-        if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
-            exit;
-        }
+        exit;
     }
 
     /**
@@ -201,10 +196,7 @@ class Connection {
      */
     public function handle_connect_agent_redirect(): void {
         if ( ! current_user_can( 'manage_options' ) ) {
-            if ( function_exists( 'wp_die' ) ) {
-                wp_die( esc_html__( 'Unauthorized.', 'gemini-enterprise-for-cx' ), 403 );
-            }
-            return;
+            wp_die( esc_html__( 'Unauthorized.', 'gemini-enterprise-for-cx' ), 403 );
         }
 
         $nonce = isset( $_POST['gecx_connect_nonce'] )
@@ -217,10 +209,7 @@ class Connection {
                 60
             );
             wp_safe_redirect( admin_url( 'admin.php?page=gemini-enterprise-for-cx' ) );
-            if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
-                exit;
-            }
-            return;
+            exit;
         }
 
         if ( ! Admin::is_standard_rest_api_enabled() ) {
@@ -230,16 +219,11 @@ class Connection {
                 60
             );
             wp_safe_redirect( admin_url( 'admin.php?page=gemini-enterprise-for-cx' ) );
-            if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
-                exit;
-            }
-            return;
+            exit;
         }
 
-        if ( function_exists( 'nocache_headers' ) ) {
-            nocache_headers();
-        }
-        if ( ! function_exists( 'headers_sent' ) || ! headers_sent() ) {
+        nocache_headers();
+        if ( ! headers_sent() ) {
             header( 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0' );
             header( 'Referrer-Policy: no-referrer' );
         }
@@ -252,15 +236,10 @@ class Connection {
                 60
             );
             wp_safe_redirect( admin_url( 'admin.php?page=gemini-enterprise-for-cx' ) );
-            if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
-                exit;
-            }
-            return;
+            exit;
         }
         // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect -- Redirecting to the external Google Cloud Console URL on an allowlisted host (Auth::get_console_base_url()).
         wp_redirect( $connect_url, 302 );
-        if ( ! defined( 'GECX_PHPUNIT_RUNNING' ) || ! GECX_PHPUNIT_RUNNING ) {
-            exit;
-        }
+        exit;
     }
 }
