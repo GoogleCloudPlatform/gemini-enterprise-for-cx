@@ -1069,4 +1069,61 @@ class AdminTest extends RestTestCase {
         $this->assertSame( 'gemini-enterprise-for-cx', wp_scripts()->registered['gecx-admin-js']->textdomain );
         $this->assertSame( '', wp_scripts()->registered['gecx-admin-js']->translations_path );
     }
+
+    public function test_render_settings_page_shows_firewall_allowlist_banner_during_onboarding_only(): void {
+        wp_set_current_user( 1 );
+        delete_option( 'gecx_agent_name' );
+        delete_option( Admin::AUTH_COMPLETE_OPTION );
+
+        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
+
+        // 1. Step 1 (Authorize Store): banner is rendered collapsed above the Authorize step.
+        ob_start();
+        $admin->settings_page->render_settings_page();
+        $step1_html    = (string) ob_get_clean();
+        $step1_decoded = html_entity_decode( $step1_html, ENT_QUOTES, 'UTF-8' );
+
+        $this->assertStringContainsString( 'id="gecx-firewall-banner"', $step1_html );
+        $this->assertMatchesRegularExpression( '/<details\s+id="gecx-firewall-banner"\s+class="notice notice-warning inline gecx-firewall-banner"\s*>/', $step1_html );
+        $this->assertDoesNotMatchRegularExpression( '/<details[^>]*id="gecx-firewall-banner"[^>]*\bopen\b/i', $step1_html );
+        $this->assertStringContainsString( "Using Cloudflare, Wordfence, or another firewall? Your store's bot protection may block the connection.", $step1_decoded );
+        $this->assertStringContainsString( 'Show allowlist steps', $step1_decoded );
+        $this->assertStringContainsString( 'Hide allowlist steps', $step1_decoded );
+        $this->assertStringContainsString( "To connect your store, your firewall needs to allow requests from Google to your store's WooCommerce REST API. Before you click Authorize Store, add an allow rule for:", $step1_decoded );
+        $this->assertStringContainsString( 'User-Agent contains:', $step1_decoded );
+        $this->assertStringContainsString( '<code>Google</code>', $step1_html );
+        $this->assertStringContainsString( '<code>/wp-json/gecx/v1/*</code>', $step1_html );
+        $this->assertStringContainsString( '<code>/wp-json/wc/v3/*</code>', $step1_html );
+        $this->assertStringContainsString( '<code>/wp-json/wc/store/v1/*</code>', $step1_html );
+        $this->assertStringContainsString( '<code>AS15169</code>', $step1_html );
+        $this->assertStringContainsString( 'Cloudflare: Security → WAF → Custom rules → create a rule matching the paths above and the Google ASN with action Skip (all remaining custom rules, rate limiting rules, managed rules, and Super Bot Fight Mode). Example expression:', $step1_decoded );
+        $this->assertStringContainsString( 'ip.src.asnum eq 15169', $step1_decoded );
+        $this->assertStringContainsString( "Cloudflare Bot Fight Mode (free plan) can't be skipped by custom rules.", $step1_decoded );
+        $this->assertStringContainsString( 'Wordfence: Firewall → Allowlisted URLs → add each path above.', $step1_decoded );
+        $this->assertStringContainsString( 'If you see "An error occurred in the request" after approving access, your firewall blocked the connection. Add the rule above and click Authorize Store again.', $step1_decoded );
+        $this->assertStringContainsString( "Don't manage your firewall? Send these steps to your website administrator or hosting provider.", $step1_decoded );
+        $this->assertLessThan(
+            strpos( $step1_html, 'Step 1: Authorize WooCommerce API' ),
+            strpos( $step1_html, 'id="gecx-firewall-banner"' )
+        );
+
+        // 2. Step 2 (Connect with Google Cloud): banner is not shown once Step 1 is complete.
+        update_option( Admin::AUTH_COMPLETE_OPTION, 1 );
+        update_option( 'gecx_sync_last_attempt', time() . ':' . GECX_VERSION );
+
+        ob_start();
+        $admin->settings_page->render_settings_page();
+        $step2_html = (string) ob_get_clean();
+
+        $this->assertStringNotContainsString( 'id="gecx-firewall-banner"', $step2_html );
+
+        // 3. Connected store: onboarding banner is hidden.
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+
+        ob_start();
+        $admin->settings_page->render_settings_page();
+        $connected_html = (string) ob_get_clean();
+
+        $this->assertStringNotContainsString( 'id="gecx-firewall-banner"', $connected_html );
+    }
 }

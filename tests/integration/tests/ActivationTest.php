@@ -27,6 +27,7 @@ class ActivationTest extends TestCase {
 
 		$expected = [
 			'/gecx/v1/session',
+			'/gecx/v1/cart-session',
 			'/gecx/v1/refresh-token',
 			'/gecx/v1/auth-context',
 			'/gecx/v1/webhooks/order-created',
@@ -43,8 +44,9 @@ class ActivationTest extends TestCase {
 	 * Asserts auth-context refuses an unattributable request.
 	 */
 	public function test_auth_context_refuses_unattributable_request(): void {
-		$request = new \WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
-		$server  = rest_get_server();
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$request  = new \WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$server   = rest_get_server();
 		$response = $server->dispatch( $request );
 
 		$this->assertSame( 403, $response->get_status() );
@@ -54,6 +56,7 @@ class ActivationTest extends TestCase {
 	 * Asserts auth-context serves a same-origin request.
 	 */
 	public function test_auth_context_serves_same_origin_request(): void {
+		$_SERVER['REQUEST_METHOD'] = 'POST';
 		$request = new \WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
 		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
 		$request->set_header( 'Referer', home_url( '/shop/' ) );

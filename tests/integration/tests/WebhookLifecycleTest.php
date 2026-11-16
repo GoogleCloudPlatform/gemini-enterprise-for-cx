@@ -233,6 +233,7 @@ class WebhookLifecycleTest extends RestTestCase {
 
     public function test_deactivation_pauses_webhook(): void {
         $webhook_id = $this->create_gecx_webhook( 'active' );
+        set_transient( 'woocommerce_webhook_ids_status_active', [ $webhook_id ] );
 
         Admin::deactivate_plugin();
 
@@ -568,9 +569,44 @@ class WebhookLifecycleTest extends RestTestCase {
 
         // Numeric project number (canonical resource name format) succeeds
         $order3 = wc_create_order();
-        $order3->update_meta_data( '_gecx_session_id', 'projects/123456789012/locations/global/commerceSessions/sess-123' );
+        $order3->update_meta_data( '_gecx_session_id', 'projects/123/locations/global/commerceSessions/sess-123' );
         $order3->save();
         $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, $order3->get_id() ) );
+    }
+
+    /**
+     * A session in a project other than the linked agent's is delivered and
+     * logged, not suppressed: the backend refuses to attribute it, holds
+     * against a store that signs its own payloads, and counts the drop.
+     */
+    public function test_delivery_logged_for_session_in_another_project(): void {
+        $webhook_id = $this->create_gecx_webhook();
+        $webhook    = new WC_Webhook( $webhook_id );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 1 );
+
+        $foreign = wc_create_order();
+        $foreign->update_meta_data( '_gecx_session_id', 'projects/987654321/locations/global/commerceSessions/sess-123' );
+        $foreign->save();
+        $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, $foreign->get_id() ) );
+        $this->assertCount( 1, $this->logs );
+        $this->assertSame( 'warning', $this->logs[0]['level'] );
+        $this->assertStringContainsString( 'Order ' . $foreign->get_id(), $this->logs[0]['message'] );
+        $this->assertStringContainsString( 'project 987654321', $this->logs[0]['message'] );
+
+        // A project number that merely starts with the linked one is another project.
+        $prefixed = wc_create_order();
+        $prefixed->update_meta_data( '_gecx_session_id', 'projects/1234/locations/global/omnichannelSessions/sess-123' );
+        $prefixed->save();
+        $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, $prefixed->get_id() ) );
+        $this->assertCount( 2, $this->logs );
+        $this->assertStringContainsString( 'project 1234,', $this->logs[1]['message'] );
+
+        $own = wc_create_order();
+        $own->update_meta_data( '_gecx_session_id', 'projects/123/locations/global/omnichannelSessions/sess-123' );
+        $own->save();
+        $this->assertTrue( $this->rest_api->order_webhook->gate_order_webhook_delivery( true, $webhook, $own->get_id() ) );
+        $this->assertCount( 2, $this->logs );
     }
 
     public function test_delete_order_webhook_clears_transients_on_direct_sql(): void {

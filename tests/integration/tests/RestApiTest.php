@@ -14,6 +14,8 @@ declare(strict_types=1);
 namespace Google\Gemini_Enterprise_For_CX\Tests\Integration;
 
 use Google\Gemini_Enterprise_For_CX\Auth;
+use Google\Gemini_Enterprise_For_CX\REST\Auth_Context;
+use Google\Gemini_Enterprise_For_CX\REST\Cart_Session;
 use Google\Gemini_Enterprise_For_CX\REST\Order_Webhook;
 use Google\Gemini_Enterprise_For_CX\REST\REST_API;
 use Google\Gemini_Enterprise_For_CX\REST\Session_Attribution;
@@ -266,6 +268,57 @@ class RestApiTest extends RestTestCase {
         $this->assertTrue( $perm instanceof WP_Error );
         $this->assertEquals( 'rest_forbidden', $perm->get_error_code() );
         $this->assertEquals( 403, $perm->get_error_data()['status'] );
+    }
+
+    public function test_session_route_is_guarded_by_the_same_origin_permission_check(): void {
+        new REST_API();
+        do_action( 'rest_api_init' );
+
+        $routes = rest_get_server()->get_routes();
+        $route  = $routes['/gecx/v1/session'][0] ?? [];
+        $this->assertSame( 'check_save_session_permissions', $route['permission_callback'][1] ?? null );
+    }
+
+	public function test_save_session_permissions_accept_a_nonce_sent_from_the_store(): void {
+		$request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+		$request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request->set_header( 'Origin', 'https://example.org' );
+		$request->set_header( 'Referer', 'https://example.org/shop/' );
+
+		$this->assertTrue( Session_Attribution::check_save_session_permissions( $request ) );
+	}
+
+    /**
+     * Every uncookied guest holds the same logged-out nonce, and WordPress
+     * answers credentialed CORS preflights from any origin. A valid nonce
+     * from a sibling subdomain must still be refused, or that page could set
+     * the gecx_session_id cookie in a shopper's browser and have the
+     * shopper's orders attributed to a session of its choosing.
+     */
+    public function test_save_session_permissions_refuse_a_valid_nonce_sent_from_a_sibling_host(): void {
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+        $request->set_header( 'Sec-Fetch-Site', 'same-site' );
+        $request->set_header( 'Origin', 'https://evil.example.org' );
+
+        $perm = Session_Attribution::check_save_session_permissions( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
+    }
+
+    public function test_save_session_permissions_refuse_a_request_from_the_store_without_a_valid_nonce(): void {
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_header( 'X-WP-Nonce', 'invalid_nonce' );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $request->set_header( 'Origin', 'https://example.org' );
+
+        $perm = Session_Attribution::check_save_session_permissions( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 'rest_forbidden', $perm->get_error_code() );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
     }
 
     public function test_secret_route_check_admin_permissions_success(): void {
@@ -563,6 +616,164 @@ class RestApiTest extends RestTestCase {
         $res_plain = $rest_api->session_attribution->save_session_handler( $request_plain );
         $this->assertTrue( $res_plain instanceof WP_REST_Response );
         $this->assertEquals( 200, $res_plain->get_status() );
+    }
+
+    /**
+     * Once the store is linked, the widget names its sessions in the linked
+     * agent's project. A session ID naming any other project is stored and
+     * logged, not refused: the backend refuses to attribute an order to it.
+     *
+     * @dataProvider session_ids_outside_the_linked_project_cases
+     */
+    public function test_save_session_handler_logs_a_session_outside_the_linked_project( string $session_id, string $logged ): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-456' );
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', $session_id );
+
+        $res = ( new REST_API() )->session_attribution->save_session_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( $session_id, $_COOKIE['gecx_session_id'] ?? null );
+        $this->assertCount( 1, $this->logs );
+        $this->assertSame( 'warning', $this->logs[0]['level'] );
+        $this->assertStringContainsString( 'names ' . $logged . ',', $this->logs[0]['message'] );
+    }
+
+    /**
+     * The backend attributes an order only to a session in the linked
+     * project. Replacing one the browser already has bound with an ID outside
+     * it would silently cost the shopper's next order its attribution.
+     *
+     * @dataProvider session_ids_outside_the_linked_project_cases
+     */
+    public function test_save_session_handler_keeps_a_bound_session_in_the_linked_project( string $session_id, string $logged ): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-456' );
+        $bound = 'projects/123/locations/global/commerceSessions/sess-own';
+        WC()->session->set( 'gecx_session_id', $bound );
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', $session_id );
+
+        $res = ( new REST_API() )->session_attribution->save_session_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( $bound, WC()->session->get( 'gecx_session_id' ) );
+        $this->assertNotSame( $session_id, $_COOKIE['gecx_session_id'] ?? null );
+        $this->assertCount( 1, $this->logs );
+        $this->assertSame( 'warning', $this->logs[0]['level'] );
+        $this->assertStringContainsString( 'names ' . $logged . ',', $this->logs[0]['message'] );
+        $this->assertStringContainsString( 'keeping the session already bound', $this->logs[0]['message'] );
+    }
+
+    /**
+     * An uncookied guest who chatted before touching the cart has their
+     * session only in the gecx_session_id cookie.
+     */
+    public function test_save_session_handler_keeps_a_cookie_bound_session_in_the_linked_project(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-456' );
+        $bound                      = 'projects/123/locations/global/commerceSessions/sess-own';
+        $_COOKIE['gecx_session_id'] = $bound;
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', 'sess-bare-abc123' );
+
+        $res = ( new REST_API() )->session_attribution->save_session_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( $bound, $_COOKIE['gecx_session_id'] );
+        $this->assertSame( $bound, WC()->session->get( 'gecx_session_id' ) );
+    }
+
+    /**
+     * A bound session the backend would not attribute anyway is no reason to
+     * refuse the new one.
+     */
+    public function test_save_session_handler_replaces_a_bound_session_outside_the_linked_project(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-456' );
+        WC()->session->set( 'gecx_session_id', 'sess-bare-old' );
+        $session_id = 'projects/987654321/locations/global/commerceSessions/sess-foreign';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', $session_id );
+
+        $res = ( new REST_API() )->session_attribution->save_session_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( $session_id, WC()->session->get( 'gecx_session_id' ) );
+        $this->assertSame( $session_id, $_COOKIE['gecx_session_id'] ?? null );
+        $this->assertStringContainsString( 'storing it for the backend to decide', $this->logs[0]['message'] );
+    }
+
+    public function test_save_session_handler_replaces_a_bound_session_with_one_in_the_linked_project(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-456' );
+        WC()->session->set( 'gecx_session_id', 'projects/123/locations/global/commerceSessions/sess-old' );
+        $session_id = 'projects/123/locations/global/commerceSessions/sess-new';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', $session_id );
+
+        $res = ( new REST_API() )->session_attribution->save_session_handler( $request );
+
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( $session_id, WC()->session->get( 'gecx_session_id' ) );
+        $this->assertSame( [], $this->logs );
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public function session_ids_outside_the_linked_project_cases(): array {
+        return [
+            'another project'               => [ 'projects/987654321/locations/global/commerceSessions/sess-foreign', 'project 987654321' ],
+            'a project sharing the prefix'  => [ 'projects/1234/locations/global/omnichannelSessions/sess-foreign', 'project 1234' ],
+            'a bare session ID, no project' => [ 'sess-bare-abc123', 'no project' ],
+        ];
+    }
+
+    public function test_save_session_handler_accepts_a_session_in_the_linked_project(): void {
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-456' );
+        $session_id = 'projects/123/locations/global/omnichannelSessions/sess-own';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', $session_id );
+
+        $res = ( new REST_API() )->session_attribution->save_session_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertSame( $session_id, $_COOKIE['gecx_session_id'] ?? null );
+        $this->assertSame( [], $this->logs );
+    }
+
+    public function test_linked_project_follows_the_active_agent_name_filter(): void {
+        // The widget takes its project number from the filtered agent name,
+        // so the session IDs it sends are checked against the same value.
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-456' );
+        add_filter(
+            'gecx_active_agent_name',
+            static function () {
+                return 'projects/777/locations/global/agents/agent-override';
+            }
+        );
+
+        $this->assertTrue( Session_Attribution::is_in_linked_project( 'projects/777/locations/global/commerceSessions/sess' ) );
+        $this->assertFalse( Session_Attribution::is_in_linked_project( 'projects/123/locations/global/commerceSessions/sess' ) );
+    }
+
+    public function test_every_session_passes_the_project_check_when_the_agent_name_carries_no_project(): void {
+        $session_id = 'projects/987654321/locations/global/commerceSessions/sess';
+
+        // Not linked.
+        $this->assertTrue( Session_Attribution::is_in_linked_project( $session_id ) );
+
+        // Linked under a name with no project number to compare against.
+        update_option( 'gecx_agent_name', 'agents/agent-456' );
+        $this->assertTrue( Session_Attribution::is_in_linked_project( $session_id ) );
     }
 
     public function test_ensure_order_webhook_success_creates_and_updates_webhook(): void {
@@ -871,61 +1082,67 @@ class RestApiTest extends RestTestCase {
         $this->assertTrue( $rest_api->console->enable_wc_auth_for_custom_endpoints( false, $request ) );
     }
 
-    public function test_refresh_token_handler_success(): void {
-        $user_id = $this->factory()->user->create(
-            [
-                'user_email' => 'customer@example.com',
-                'role'       => 'customer',
-            ]
-        );
-        wp_set_current_user( $user_id );
+	public function test_refresh_token_handler_success(): void {
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$user_id                   = $this->factory()->user->create(
+			[
+				'user_email' => 'customer@example.com',
+				'role'       => 'customer',
+			]
+		);
+		wp_set_current_user( $user_id );
 
-        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
-        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
-        $request->set_header( 'Origin', 'http://example.org' );
-        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+		$request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+		$request->set_header( 'Origin', 'http://example.org' );
+		$request->set_header( 'Referer', 'http://example.org/shop/' );
+		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
 
-        $response = rest_get_server()->dispatch( $request );
-        $this->assertInstanceOf( WP_REST_Response::class, $response );
-        $this->assertSame( 200, $response->get_status() );
-        $data = $response->get_data();
-        $this->assertTrue( $data['success'] );
-        $this->assertFalse( empty( $data['customer_jwt'] ) );
-        $pub_key = Auth::get_public_key();
-        $this->assertTrue( $this->verify_rs256_jwt( $data['customer_jwt'], $pub_key ) );
-    }
+		$response = rest_get_server()->dispatch( $request );
+		$this->assertInstanceOf( WP_REST_Response::class, $response );
+		$this->assertSame( 200, $response->get_status() );
+		$data = $response->get_data();
+		$this->assertTrue( $data['success'] );
+		$this->assertFalse( empty( $data['customer_jwt'] ) );
+		$pub_key = Auth::get_public_key();
+		$this->assertTrue( $this->verify_rs256_jwt( $data['customer_jwt'], $pub_key ) );
+	}
 
-    public function test_refresh_token_handler_logged_out_returns_guest_jwt(): void {
-        wp_set_current_user( 0 );
+	public function test_refresh_token_handler_logged_out_returns_guest_jwt(): void {
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		wp_set_current_user( 0 );
 
-        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
-        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
-        $request->set_header( 'Origin', 'http://example.org' );
-        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+		$request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+		$request->set_header( 'Origin', 'http://example.org' );
+		$request->set_header( 'Referer', 'http://example.org/shop/' );
+		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
 
-        $response = rest_get_server()->dispatch( $request );
-        $this->assertInstanceOf( WP_REST_Response::class, $response );
-        $this->assertSame( 200, $response->get_status() );
-        $data = $response->get_data();
-        $this->assertTrue( $data['success'] );
-        $this->assertFalse( empty( $data['customer_jwt'] ) );
-        $pub_key = Auth::get_public_key();
-        $this->assertTrue( $this->verify_rs256_jwt( $data['customer_jwt'], $pub_key ) );
-        $payload = $this->decode_jwt_payload( $data['customer_jwt'] );
-        $this->assertEquals( 0, $payload['user_id'] );
-    }
+		$response = rest_get_server()->dispatch( $request );
+		$this->assertInstanceOf( WP_REST_Response::class, $response );
+		$this->assertSame( 200, $response->get_status() );
+		$data = $response->get_data();
+		$this->assertTrue( $data['success'] );
+		$this->assertFalse( empty( $data['customer_jwt'] ) );
+		$pub_key = Auth::get_public_key();
+		$this->assertTrue( $this->verify_rs256_jwt( $data['customer_jwt'], $pub_key ) );
+		$payload = $this->decode_jwt_payload( $data['customer_jwt'] );
+		$this->assertEquals( 0, $payload['user_id'] );
+	}
 
-    public function test_refresh_token_handler_no_secret_returns_500(): void {
-        wp_set_current_user( 0 );
-        delete_option( 'gecx_api_secret' );
-        delete_option( 'gecx_keypair' );
-        add_filter( 'salt', '__return_empty_string' );
+	public function test_refresh_token_handler_no_secret_returns_500(): void {
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		wp_set_current_user( 0 );
+		delete_option( 'gecx_api_secret' );
+		delete_option( 'gecx_keypair' );
+		add_filter( 'salt', '__return_empty_string' );
 
-        try {
-            $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
-            $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
-            $request->set_header( 'Origin', 'http://example.org' );
-            $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		try {
+			$request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+			$request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+			$request->set_header( 'Origin', 'http://example.org' );
+			$request->set_header( 'Referer', 'http://example.org/shop/' );
+			$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
 
             $response = rest_get_server()->dispatch( $request );
             $this->assertErrorResponse( 'jwt_generation_failed', $response, 500 );
@@ -1148,7 +1365,7 @@ class RestApiTest extends RestTestCase {
         $rest_api = new REST_API();
         $request  = new WP_REST_Request();
         $request->set_route( '/wc/store/v1/cart' );
-        $request->set_header( 'Cart-Token', 'a.cart.token' );
+        $this->send_cart_token( $request, 'a.cart.token' );
         $response = new WP_REST_Response( [ 'items_count' => 0 ] );
 
         $result = $rest_api->cart_session->sync_cart_session_after_dispatch( $response, null, $request );
@@ -1412,161 +1629,302 @@ class RestApiTest extends RestTestCase {
         $this->assertTrue( (bool) wp_verify_nonce( $data['nonce'], 'wp_rest' ) );
     }
 
-    public function test_auth_context_permissions_enforces_same_origin_and_rejects_cross_site(): void {
-        $rest_api = new REST_API();
+	public function test_auth_context_permissions_enforces_same_origin_and_rejects_cross_site(): void {
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$rest_api                  = new REST_API();
 
-        // Same-origin request succeeds.
-        $same_origin_req = new WP_REST_Request();
-        $same_origin_req->set_header( 'Origin', 'https://example.org' );
-        $same_origin_req->set_header( 'Sec-Fetch-Site', 'same-origin' );
-        $same_origin_req->set_header( 'Referer', 'https://example.org/shop/' );
-        $this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $same_origin_req ) );
+		// Same-origin request succeeds.
+		$same_origin_req = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$same_origin_req->set_header( 'Origin', 'https://example.org' );
+		$same_origin_req->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$same_origin_req->set_header( 'Referer', 'https://example.org/shop/' );
+		$this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $same_origin_req ) );
 
-        // Cross-site Fetch Metadata is rejected.
-        $cross_site_req = new WP_REST_Request();
-        $cross_site_req->set_header( 'Sec-Fetch-Site', 'cross-site' );
-        $perm = $rest_api->auth_context->check_auth_context_permissions( $cross_site_req );
-        $this->assertInstanceOf( WP_Error::class, $perm );
-        $this->assertSame( 403, $perm->get_error_data()['status'] );
+		// Cross-site Fetch Metadata is rejected.
+		$cross_site_req = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$cross_site_req->set_header( 'Sec-Fetch-Site', 'cross-site' );
+		$perm = $rest_api->auth_context->check_auth_context_permissions( $cross_site_req );
+		$this->assertInstanceOf( WP_Error::class, $perm );
+		$this->assertSame( 403, $perm->get_error_data()['status'] );
 
-        // Cross-origin Origin header is rejected.
-        $cross_origin_req = new WP_REST_Request();
-        $cross_origin_req->set_header( 'Origin', 'https://evil.example.net' );
-        $perm = $rest_api->auth_context->check_auth_context_permissions( $cross_origin_req );
-        $this->assertInstanceOf( WP_Error::class, $perm );
-        $this->assertSame( 403, $perm->get_error_data()['status'] );
+		// Cross-origin Origin header is rejected.
+		$cross_origin_req = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$cross_origin_req->set_header( 'Origin', 'https://evil.example.net' );
+		$perm = $rest_api->auth_context->check_auth_context_permissions( $cross_origin_req );
+		$this->assertInstanceOf( WP_Error::class, $perm );
+		$this->assertSame( 403, $perm->get_error_data()['status'] );
 
-        // Cross-origin Referer header (without Origin) is rejected.
-        $cross_referer_req = new WP_REST_Request();
-        $cross_referer_req->set_header( 'Referer', 'https://evil.example.net/attack.html' );
-        $perm = $rest_api->auth_context->check_auth_context_permissions( $cross_referer_req );
-        $this->assertInstanceOf( WP_Error::class, $perm );
-        $this->assertSame( 403, $perm->get_error_data()['status'] );
-    }
+		// Cross-origin Referer header (without Origin) is rejected.
+		$cross_referer_req = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$cross_referer_req->set_header( 'Referer', 'https://evil.example.net/attack.html' );
+		$perm = $rest_api->auth_context->check_auth_context_permissions( $cross_referer_req );
+		$this->assertInstanceOf( WP_Error::class, $perm );
+		$this->assertSame( 403, $perm->get_error_data()['status'] );
+	}
 
-    public function test_auth_context_permissions_rejects_a_request_carrying_no_origin_signal(): void {
-        // No Sec-Fetch-Site, no Origin, no Referer: a cross-origin <script src>
-        // under Referrer-Policy: no-referrer looks exactly like this, as does a
-        // non-browser client replaying a stolen cookie.
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
+	public function test_auth_context_permissions_rejects_a_request_carrying_no_origin_signal(): void {
+		// No Sec-Fetch-Site, no Origin, no Referer: a cross-origin <script src>
+		// under Referrer-Policy: no-referrer looks exactly like this, as does a
+		// non-browser client replaying a stolen cookie.
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$rest_api                  = new REST_API();
+		$request                   = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
 
-        $perm = $rest_api->auth_context->check_auth_context_permissions( $request );
+		$perm = $rest_api->auth_context->check_auth_context_permissions( $request );
 
-        $this->assertInstanceOf( WP_Error::class, $perm );
-        $this->assertSame( 403, $perm->get_error_data()['status'] );
-    }
+		$this->assertInstanceOf( WP_Error::class, $perm );
+		$this->assertSame( 403, $perm->get_error_data()['status'] );
+	}
 
-    public function test_auth_context_permissions_rejects_sec_fetch_site_none(): void {
-        // "none" is what a browser sends for a user-initiated load with no
-        // initiator document, which a POST-only route cannot receive from a
-        // browser at all. What is left is a client setting the header itself,
-        // so it is refused even when the Origin looks right.
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
-        $request->set_header( 'Sec-Fetch-Site', 'none' );
-        $request->set_header( 'Origin', 'https://example.org' );
+	public function test_auth_context_permissions_rejects_sec_fetch_site_none(): void {
+		// "none" is what a browser sends for a user-initiated load with no
+		// initiator document, which a POST-only route cannot receive from a
+		// browser at all. What is left is a client setting the header itself,
+		// so it is refused even when the Origin looks right.
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$rest_api                  = new REST_API();
+		$request                   = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$request->set_header( 'Sec-Fetch-Site', 'none' );
+		$request->set_header( 'Origin', 'https://example.org' );
 
-        $perm = $rest_api->auth_context->check_auth_context_permissions( $request );
+		$perm = $rest_api->auth_context->check_auth_context_permissions( $request );
 
-        $this->assertInstanceOf( WP_Error::class, $perm );
-        $this->assertSame( 403, $perm->get_error_data()['status'] );
-    }
+		$this->assertInstanceOf( WP_Error::class, $perm );
+		$this->assertSame( 403, $perm->get_error_data()['status'] );
+	}
 
-    public function test_auth_context_permissions_accepts_a_same_origin_referer_without_origin(): void {
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
-        $request->set_header( 'Referer', 'https://example.org/shop/product-1' );
+	public function test_auth_context_permissions_accepts_a_same_origin_referer_without_origin(): void {
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$rest_api                  = new REST_API();
+		$request                   = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$request->set_header( 'Referer', 'https://example.org/shop/product-1' );
 
-        $this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $request ) );
-    }
+		$this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $request ) );
+	}
 
-    public function test_auth_context_permissions_accepts_https_origin_when_home_url_is_http(): void {
-        // Behind a TLS-terminating proxy or flexible SSL, home_url() stays http
-        // while the browser reports an https Origin. Refusing that pairing
-        // would take the widget offline on a healthy store.
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
-        $request->set_header( 'Origin', 'https://example.org' );
+	public function test_auth_context_permissions_accepts_https_origin_when_home_url_is_http(): void {
+		// Behind a TLS-terminating proxy or flexible SSL, home_url() stays http
+		// while the browser reports an https Origin. Refusing that pairing
+		// would take the widget offline on a healthy store.
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$rest_api                  = new REST_API();
+		$request                   = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$request->set_header( 'Origin', 'https://example.org' );
+		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request->set_header( 'Referer', 'https://example.org/shop/' );
+
+		$this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $request ) );
+	}
+
+	/**
+	 * @group ms-excluded
+	 */
+	public function test_auth_context_permissions_accepts_the_site_url_host(): void {
+		// WordPress in a subdirectory of the storefront: home_url() and
+		// site_url() disagree, and requests legitimately arrive from either.
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$home_filter               = static fn() => 'https://shop.example.com';
+		$site_filter               = static fn() => 'https://wp.example.com';
+		add_filter( 'home_url', $home_filter );
+		add_filter( 'site_url', $site_filter );
+
+		try {
+			$rest_api = new REST_API();
+			$request  = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+			$request->set_header( 'Origin', 'https://wp.example.com' );
+
+			$this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $request ) );
+		} finally {
+			remove_filter( 'home_url', $home_filter );
+			remove_filter( 'site_url', $site_filter );
+		}
+	}
+
+	public function test_auth_context_permissions_treats_default_ports_as_equal(): void {
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$rest_api                  = new REST_API();
+		$request                   = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$request->set_header( 'Origin', 'https://example.org:443' );
+		$request->set_header( 'Referer', 'https://example.org:443/shop/' );
+
+		$this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $request ) );
+	}
+
+	public function test_auth_context_permissions_rejects_a_mismatched_explicit_port(): void {
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$rest_api                  = new REST_API();
+		$request                   = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$request->set_header( 'Origin', 'https://example.org:8443' );
+
+		$perm = $rest_api->auth_context->check_auth_context_permissions( $request );
+
+		$this->assertInstanceOf( WP_Error::class, $perm );
+		$this->assertSame( 403, $perm->get_error_data()['status'] );
+	}
+
+	public function test_auth_context_permissions_rejects_a_non_http_origin_scheme(): void {
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$rest_api                  = new REST_API();
+		$request                   = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$request->set_header( 'Origin', 'chrome-extension://example.com' );
+
+		$perm = $rest_api->auth_context->check_auth_context_permissions( $request );
+
+		$this->assertInstanceOf( WP_Error::class, $perm );
+		$this->assertSame( 403, $perm->get_error_data()['status'] );
+	}
+
+	/**
+	 * @group ms-excluded
+	 */
+	public function test_auth_context_allowed_origins_are_filterable(): void {
+		// Escape hatch for a headless front end or a mapped domain that
+		// WordPress itself has no record of.
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		add_filter(
+			'gecx_auth_context_allowed_origins',
+			static function ( $urls ) {
+				$urls[] = 'https://headless.example.net';
+				return $urls;
+			}
+		);
+
+		$rest_api = new REST_API();
+		$request  = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$request->set_header( 'Origin', 'https://headless.example.net' );
+
+		$this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $request ) );
+	}
+
+    /**
+     * Only POST is registered, but WordPress dispatches GET ?_method=POST to
+     * POST handlers. A CDN told to cache everything keys on the method that
+     * crossed the wire, so it would store the response, nonce and customer
+     * JWT included, for the next visitor. A same-origin <img> injected into
+     * any store page would send exactly this request with the shopper's
+     * cookies.
+     */
+    public function test_auth_context_permissions_refuse_a_get_dispatched_as_post(): void {
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
         $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
-        $request->set_header( 'Referer', 'https://example.org/shop/' );
+        $request->set_header( 'Referer', 'https://example.org/product/hoodie/' );
 
-        $this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $request ) );
-    }
-
-    /**
-     * @group ms-excluded
-     */
-    public function test_auth_context_permissions_accepts_the_site_url_host(): void {
-        // WordPress in a subdirectory of the storefront: home_url() and
-        // site_url() disagree, and requests legitimately arrive from either.
-        $home_filter = static fn() => 'https://shop.example.com';
-        $site_filter = static fn() => 'https://wp.example.com';
-        add_filter( 'home_url', $home_filter );
-        add_filter( 'site_url', $site_filter );
-
-        try {
-            $rest_api = new REST_API();
-            $request  = new WP_REST_Request();
-            $request->set_header( 'Origin', 'https://wp.example.com' );
-
-            $this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $request ) );
-        } finally {
-            remove_filter( 'home_url', $home_filter );
-            remove_filter( 'site_url', $site_filter );
-        }
-    }
-
-    public function test_auth_context_permissions_treats_default_ports_as_equal(): void {
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
-        $request->set_header( 'Origin', 'https://example.org:443' );
-        $request->set_header( 'Referer', 'https://example.org:443/shop/' );
-
-        $this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $request ) );
-    }
-
-    public function test_auth_context_permissions_rejects_a_mismatched_explicit_port(): void {
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
-        $request->set_header( 'Origin', 'https://example.org:8443' );
-
-        $perm = $rest_api->auth_context->check_auth_context_permissions( $request );
+        $perm = ( new REST_API() )->auth_context->check_auth_context_permissions( $request );
 
         $this->assertInstanceOf( WP_Error::class, $perm );
-        $this->assertSame( 403, $perm->get_error_data()['status'] );
+        $this->assertSame( 'rest_method_not_allowed', $perm->get_error_code() );
+        $this->assertSame( 405, $perm->get_error_data()['status'] );
     }
 
-    public function test_auth_context_permissions_rejects_a_non_http_origin_scheme(): void {
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
-        $request->set_header( 'Origin', 'chrome-extension://example.com' );
+	public function test_auth_context_permissions_accept_a_post_that_arrived_as_post(): void {
+		$_SERVER['REQUEST_METHOD'] = 'POST';
 
-        $perm = $rest_api->auth_context->check_auth_context_permissions( $request );
+		$request = new WP_REST_Request( 'POST', '/gecx/v1/auth-context' );
+		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request->set_header( 'Origin', 'https://example.org' );
+		$request->set_header( 'Referer', 'https://example.org/shop/' );
+
+		$this->assertTrue( true === ( new REST_API() )->auth_context->check_auth_context_permissions( $request ) );
+	}
+
+	public function test_refresh_token_permissions_accept_a_same_origin_post_with_a_nonce(): void {
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+
+		$request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+		$request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request->set_header( 'Origin', 'https://example.org' );
+		$request->set_header( 'Referer', 'https://example.org/shop/' );
+
+		$this->assertTrue( true === ( new REST_API() )->auth_context->check_refresh_token_permissions( $request ) );
+	}
+
+    public function test_refresh_token_permissions_still_require_a_nonce(): void {
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $request->set_header( 'Origin', 'https://example.org' );
+
+        $perm = ( new REST_API() )->auth_context->check_refresh_token_permissions( $request );
 
         $this->assertInstanceOf( WP_Error::class, $perm );
         $this->assertSame( 403, $perm->get_error_data()['status'] );
     }
 
     /**
-     * @group ms-excluded
+     * The route hands out the same customer JWT as auth-context. A nonce does
+     * not say where a request came from: logged-out shoppers share one, and
+     * WordPress answers credentialed CORS preflights from any origin.
      */
-    public function test_auth_context_allowed_origins_are_filterable(): void {
-        // Escape hatch for a headless front end or a mapped domain that
-        // WordPress itself has no record of.
-        add_filter(
-            'gecx_auth_context_allowed_origins',
-            static function ( $urls ) {
-                $urls[] = 'https://headless.example.net';
-                return $urls;
-            }
-        );
+    public function test_refresh_token_permissions_refuse_a_request_from_another_origin(): void {
+        $_SERVER['REQUEST_METHOD'] = 'POST';
 
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request();
-        $request->set_header( 'Origin', 'https://headless.example.net' );
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+        $request->set_header( 'Sec-Fetch-Site', 'same-site' );
+        $request->set_header( 'Origin', 'https://evil.example.org' );
 
-        $this->assertTrue( true === $rest_api->auth_context->check_auth_context_permissions( $request ) );
+        $perm = ( new REST_API() )->auth_context->check_refresh_token_permissions( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
+    }
+
+    /**
+     * WordPress dispatches GET ?_method=POST to the POST handler, and a CDN
+     * told to cache everything would store that response, JWT included.
+     */
+    public function test_refresh_token_permissions_refuse_a_get_dispatched_as_post(): void {
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $request->set_header( 'Origin', 'https://example.org' );
+
+        $perm = ( new REST_API() )->auth_context->check_refresh_token_permissions( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 'rest_method_not_allowed', $perm->get_error_code() );
+        $this->assertSame( 405, $perm->get_error_data()['status'] );
+    }
+
+    public function test_refresh_token_response_is_not_cacheable(): void {
+        $this->ensure_user_with_id( 42, 'customer42', 'customer', 'customer@example.com' );
+        wp_set_current_user( 42 );
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/refresh-token' );
+        $request->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
+
+        $response = ( new REST_API() )->auth_context->refresh_token_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $response );
+        $headers = $response->get_headers();
+        $this->assertStringContainsString( 'no-store', $headers['Cache-Control'] );
+        $this->assertStringContainsString( 'private', $headers['Cache-Control'] );
+        $this->assertSame( 'Cookie, Origin', $headers['Vary'] );
+    }
+
+    /**
+     * The headers of a batch sub-request are fields of the batch body, chosen
+     * by whoever sent it. The headers of the HTTP request the browser made,
+     * in $_SERVER, are the ones that decide.
+     */
+    public function test_verify_request_origin_reads_provenance_headers_from_the_wire_first(): void {
+        $_SERVER['HTTP_SEC_FETCH_SITE'] = 'same-site';
+        $_SERVER['HTTP_ORIGIN']         = 'https://evil.example.org';
+
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+        $request->set_header( 'Origin', 'https://example.org' );
+
+        $perm = Auth_Context::verify_request_origin( $request );
+
+        $this->assertInstanceOf( WP_Error::class, $perm );
+        $this->assertSame( 403, $perm->get_error_data()['status'] );
     }
 
     public function test_auth_context_handler_returns_guest_jwt_for_unauthenticated_user(): void {
@@ -1682,21 +2040,27 @@ class RestApiTest extends RestTestCase {
         $this->assertSame( 0, (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}woocommerce_sessions" ) );
     }
 
-    public function test_sync_cart_session_sets_cookie_and_persists_session_when_browser_adds_item_to_cart(): void {
-        WC()->cart                   = new WC_Cart_Mock();
-        WC()->cart->cart_for_session = [ 'abc123' => [ 'product_id' => 42, 'quantity' => 2 ] ];
+    /**
+     * WooCommerce sets the session cookie on a guest's own first cart change
+     * itself, from woocommerce_add_to_cart. A second one set here would be
+     * the one the browser keeps.
+     */
+	public function test_sync_cart_session_leaves_the_session_cookie_to_woocommerce_when_browser_adds_item_to_cart(): void {
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'abc123' => [ 'product_id' => 42, 'quantity' => 2 ] ];
+		$this->cookies               = [];
 
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
-        $rest_api->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items_count' => 2 ], 200 ), null, $request );
+		$rest_api = new REST_API();
+		$request  = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
+		$rest_api->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items_count' => 2 ], 200 ), null, $request );
 
-        $this->assertSame( 1, WC()->session->cookie_set_calls );
-        $this->assertTrue( WC()->session->cookie_set );
-        $this->assertSame( 1, WC()->cart->persistent_cart_updates );
-        $stored = $this->get_wc_session( 't_guest_session_123' );
-        $this->assertNotNull( $stored );
-        $this->assertSame( WC()->cart->cart_for_session, $stored['cart'] );
-    }
+		$this->assertSame( 0, WC()->session->cookie_set_calls );
+		$this->assertSame( [], $this->cookies );
+		$this->assertSame( 1, WC()->cart->persistent_cart_updates );
+		$stored = $this->get_wc_session( 't_guest_session_123' );
+		$this->assertNotNull( $stored );
+		$this->assertSame( WC()->cart->cart_for_session, $stored['cart'] );
+	}
 
     public function test_sync_cart_session_syncs_cart_token_mutation_without_forcing_browser_cookie(): void {
         WC()->cart                   = new WC_Cart_Mock();
@@ -1704,7 +2068,7 @@ class RestApiTest extends RestTestCase {
 
         $rest_api = new REST_API();
         $request  = new WP_REST_Request( 'POST', '/wc/store/v1/batch' );
-        $request->set_header( 'Cart-Token', 'agent.cart.token' );
+        $this->send_cart_token( $request, 'agent.cart.token' );
         $request->set_param(
             'requests',
             [
@@ -1867,159 +2231,410 @@ class RestApiTest extends RestTestCase {
         $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-expired', $stored['gecx_session_id'] );
     }
 
-    public function test_sync_cart_session_bridges_cart_token_to_cookie_on_get_cart_with_items(): void {
-        global $wpdb;
-        WC()->cart                   = new WC_Cart_Mock();
-        WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 2 ] ];
+	/**
+	 * The bridged cookie is WooCommerce's own: a WC_Session_Handler pointed
+	 * at the Cart-Token's session signs and sets it, as only WooCommerce
+	 * knows the signature the installed version accepts. Nothing is built by
+	 * hand.
+	 */
+	public function test_sync_cart_session_bridges_cart_token_to_cookie_on_get_cart_with_items(): void {
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 2 ] ];
 
-        $token = $this->generate_jwt( 't_guest_shopper_999' );
+		$token = $this->generate_jwt( 't_guest_shopper_999' );
 
-        $rest_api    = new REST_API();
-        $request     = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
-        $request->set_header( 'Cart-Token', $token );
+		// storefront.js reading the cart from one of the store's own pages.
+		$rest_api = new REST_API();
+		$request  = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+		$this->send_cart_token( $request, $token );
+		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request->set_header( 'Referer', 'https://example.org/product/hoodie/' );
 
-        $cookie_name = 'wp_woocommerce_session_' . COOKIEHASH;
-        unset( $_COOKIE[ $cookie_name ] );
+		$cookie_name = 'wp_woocommerce_session_' . COOKIEHASH;
+		unset( $_COOKIE[ $cookie_name ] );
 
-        $rest_api->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+		$rest_api->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
 
-        $this->assertArrayHasKey( $cookie_name, $_COOKIE );
-        $cookie_val = $_COOKIE[ $cookie_name ];
-        $this->assertStringStartsWith( 't_guest_shopper_999||', $cookie_val );
-        $this->assertNotNull( $this->get_wc_session( 't_guest_shopper_999' ) );
-    }
+		// Not the request's own session handler, which names another session.
+		$this->assertSame( 0, WC()->session->cookie_set_calls );
+		$this->assertArrayHasKey( $cookie_name, $this->cookies );
+		$_COOKIE[ $cookie_name ] = $this->cookies[ $cookie_name ]['value'];
+		$verified_cookie         = ( new WC_Session_Handler() )->get_session_cookie();
+		$this->assertIsArray( $verified_cookie );
+		$this->assertSame( 't_guest_shopper_999', $verified_cookie[0] );
+		$this->assertLessThan( (int) $verified_cookie[1], time() );
+		$this->assertNotNull( $this->get_wc_session( 't_guest_shopper_999' ) );
+	}
 
-    public function test_sync_cart_session_does_not_set_cookie_on_empty_cart_read(): void {
-        WC()->cart                   = new WC_Cart_Mock();
-        WC()->cart->cart_for_session = [];
+	public function test_sync_cart_session_bridges_through_the_browser_session_handler_when_it_already_names_the_session(): void {
+		WC()->session->set_customer_id( 't_guest_shopper_999' );
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 2 ] ];
 
-        $token = $this->generate_jwt( 't_guest_empty' );
+		$request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+		$this->send_cart_token( $request, $this->generate_jwt( 't_guest_shopper_999' ) );
+		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request->set_header( 'Referer', 'https://example.org/product/hoodie/' );
+		( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
 
-        $rest_api    = new REST_API();
-        $request     = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
-        $request->set_header( 'Cart-Token', $token );
+		$this->assertSame( 1, WC()->session->cookie_set_calls );
+		$this->assertSame( 1, WC()->session->session_expiration_calls );
+		$this->assertLessThan( WC()->session->get_session_expiration_for_test(), time() );
+	}
 
-        $cookie_name = 'wp_woocommerce_session_' . COOKIEHASH;
-        unset( $_COOKIE[ $cookie_name ] );
+	/**
+	 * A Cart-Token is a bearer credential that WooCommerce serves to any
+	 * origin, so presenting one says nothing about whose browser is asking.
+	 * A page on a sibling subdomain holding a token for its own guest session
+	 * must not get that session planted in a shopper's cookies, where it could
+	 * read back the cart and checkout address the shopper goes on to enter.
+	 *
+	 * @dataProvider cart_token_reads_from_outside_the_store_cases
+	 *
+	 * @param array<string, string> $headers Provenance headers the request carries.
+	 */
+	public function test_sync_cart_session_does_not_bridge_a_cart_token_read_from_outside_the_store( array $headers ): void {
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 2 ] ];
 
-        $rest_api->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+		$cookie_name = 'wp_woocommerce_session_' . COOKIEHASH;
+		unset( $_COOKIE[ $cookie_name ] );
 
-        $this->assertArrayNotHasKey( $cookie_name, $_COOKIE );
-    }
+		$request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+		$this->send_cart_token( $request, $this->generate_jwt( 't_planted_session_777' ) );
+		foreach ( $headers as $name => $value ) {
+			$request->set_header( $name, $value );
+		}
+		$this->cookies = [];
 
-    public function test_sync_cart_session_does_not_bridge_a_numeric_cart_token_user_id_to_a_cookie(): void {
-        // A Cart-Token minted while the shopper was logged in carries a numeric
-        // user_id and stays valid after logout. Writing it as a session cookie for a
-        // logged-out browser makes WC_Session_Handler::is_session_cookie_valid() fail,
-        // which destroys that user's session row and empties their saved cart.
-        WC()->cart                   = new WC_Cart_Mock();
-        WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 2 ] ];
+		( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
 
-        $token = $this->generate_jwt( '5' );
+		$this->assertArrayNotHasKey( $cookie_name, $_COOKIE );
+		$this->assertSame( 0, WC()->session->cookie_set_calls );
+		$this->assertSame( [], $this->cookies );
+	}
 
-        $rest_api    = new REST_API();
-        $request     = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
-        $request->set_header( 'Cart-Token', $token );
+	/**
+	 * @return array<string, array{0: array<string, string>}>
+	 */
+	public function cart_token_reads_from_outside_the_store_cases(): array {
+		return [
+			'sibling subdomain'               => [ [ 'Sec-Fetch-Site' => 'same-site', 'Origin' => 'https://evil.example.org', 'Referer' => 'https://evil.example.org/' ] ],
+			'sibling subdomain, Origin only'  => [ [ 'Origin' => 'https://evil.example.org' ] ],
+			'sibling subdomain, Referer only' => [ [ 'Referer' => 'https://evil.example.org/landing' ] ],
+			'cross-site'                      => [ [ 'Sec-Fetch-Site' => 'cross-site', 'Origin' => 'https://attacker.test' ] ],
+			'no provenance headers'           => [ [] ],
+		];
+	}
 
-        $cookie_name = 'wp_woocommerce_session_' . COOKIEHASH;
-        unset( $_COOKIE[ $cookie_name ] );
+	/**
+	 * Refusing the bridge is not enough on its own. The sync also carries the
+	 * browser's gecx_session_id cookie into whichever session the Cart-Token
+	 * selects, so from a sibling host it would hand a shopper's chat session
+	 * to a cart that page holds the token for, and the orders placed from that
+	 * cart would be delivered into the shopper's session.
+	 *
+	 * @dataProvider cart_token_requests_from_a_sibling_host_cases
+	 *
+	 * @param string $method HTTP method.
+	 * @param string $route  Store API route.
+	 */
+	public function test_sync_cart_session_does_not_carry_the_browser_session_id_into_a_cart_token_session_from_outside_the_store( string $method, string $route ): void {
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 1 ] ];
+		$_COOKIE['gecx_session_id']  = 'projects/123/locations/global/commerceSessions/shopper-sess';
 
-        $rest_api->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+		$request = new WP_REST_Request( $method, $route );
+		$this->send_cart_token( $request, $this->generate_jwt( 't_sibling_cart_777' ) );
+		$request->set_header( 'Sec-Fetch-Site', 'same-site' );
+		$request->set_header( 'Origin', 'https://evil.example.org' );
 
-        $this->assertArrayNotHasKey( $cookie_name, $_COOKIE );
-    }
+		( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
 
-    public function test_is_mutating_store_api_cart_request_returns_false_when_batch_requests_missing(): void {
-        $rest_api = new REST_API();
-        $request  = new WP_REST_Request( 'POST', '/wc/store/v1/batch' );
+		$row = $this->get_wc_session( 't_sibling_cart_777' );
+		$this->assertIsArray( $row );
+		$this->assertArrayNotHasKey( 'gecx_session_id', $row );
+		$this->assertNotSame( 'projects/123/locations/global/commerceSessions/shopper-sess', WC()->session->get( 'gecx_session_id' ) );
+	}
 
-        $ref = new ReflectionMethod( $rest_api->cart_session, 'is_mutating_store_api_cart_request' );
-        if ( PHP_VERSION_ID < 80100 ) {
-            $ref->setAccessible( true );
-        }
+	/**
+	 * @return array<string, array{0: string, 1: string}>
+	 */
+	public function cart_token_requests_from_a_sibling_host_cases(): array {
+		return [
+			'cart read'     => [ 'GET', '/wc/store/v1/cart' ],
+			'cart mutation' => [ 'POST', '/wc/store/v1/cart/add-item' ],
+		];
+	}
 
-        $this->assertFalse( $ref->invoke( $rest_api->cart_session, $request ) );
+	/**
+	 * A batch sub-request's headers are fields of the batch body, so a sibling
+	 * host can claim same-origin in them. WordPress runs rest_post_dispatch
+	 * once per sub-request, and only the provenance of the HTTP request itself
+	 * may decide whether the browser's gecx_session_id is carried into the
+	 * session the Cart-Token selects; see Auth_Context::read_request_header().
+	 */
+	public function test_sync_cart_session_ignores_provenance_claimed_by_a_batch_sub_request(): void {
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 1 ] ];
+		$_COOKIE['gecx_session_id']  = 'projects/123/locations/global/commerceSessions/shopper-sess';
 
-        $request->set_param( 'requests', 'invalid' );
-        $this->assertFalse( $ref->invoke( $rest_api->cart_session, $request ) );
+		// The outer POST /wc/store/v1/batch, as the browser sent it from a
+		// sibling host, carrying the sibling's Cart-Token.
+		$_SERVER['HTTP_CART_TOKEN']     = $this->generate_jwt( 't_sibling_cart_888' );
+		$_SERVER['HTTP_SEC_FETCH_SITE'] = 'same-site';
+		$_SERVER['HTTP_ORIGIN']         = 'https://evil.example.org';
 
-        $request->set_param( 'requests', [ [ 'path' => '/wc/store/v1/products', 'method' => 'GET' ] ] );
-        $this->assertFalse( $ref->invoke( $rest_api->cart_session, $request ) );
+		// One of its sub-requests, claiming to come from the store.
+		$request = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
+		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request->set_header( 'Origin', 'https://example.org' );
 
-        $request->set_param( 'requests', [ [ 'path' => '/wc/store/v1/cart/add-item', 'method' => 'POST' ] ] );
-        $this->assertTrue( $ref->invoke( $rest_api->cart_session, $request ) );
-    }
+		( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
 
-    public function test_attach_session_to_order_metadata_falls_back_to_database(): void {
-        global $wpdb;
-        $order = new WC_Order();
+		$row = $this->get_wc_session( 't_sibling_cart_888' );
+		$this->assertIsArray( $row );
+		$this->assertArrayNotHasKey( 'gecx_session_id', $row );
+	}
 
-        WC()->session              = new WC_Session_Mock();
-        WC()->session->customer_id = 't_order_shopper_111';
+	/**
+	 * WooCommerce chooses a request's session by the Cart-Token on the HTTP
+	 * request and ignores one a batch sub-request names in its own headers.
+	 * The sync has to ignore it too. Otherwise it writes the cart and chat
+	 * session of the session actually loaded, here the shopper's, into the
+	 * row the sub-request names, where the sibling host that sent it can read
+	 * the cart back and have its orders delivered into the shopper's session.
+	 */
+	public function test_sync_cart_session_ignores_a_cart_token_named_only_by_a_batch_sub_request(): void {
+		// Loaded from the shopper's cookie: the outer batch request carries no Cart-Token.
+		$cookie_name             = 'wp_woocommerce_session_' . COOKIEHASH;
+		$_COOKIE[ $cookie_name ] = 't_shopper_cookie_111||9999999999||9999999999||hash';
+		WC()->session->set_customer_id( 't_shopper_cookie_111' );
+		WC()->session->set( 'gecx_session_id', 'projects/123/locations/global/commerceSessions/shopper-sess' );
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'shopper_item' => [ 'product_id' => 77, 'quantity' => 3 ] ];
 
-        $this->set_wc_session( 't_order_shopper_111', [
-            'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sess-order-1',
-        ] );
+		$request = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
+		$request->set_header( 'Cart-Token', $this->generate_jwt( 't_sibling_cart_888' ) );
 
-        $rest_api = new REST_API();
-        $rest_api->session_attribution->attach_session_to_order_metadata( $order, [] );
+		( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
 
-        $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-order-1', $order->get_meta( '_gecx_session_id' ) );
-    }
+		$this->assertNull( $this->get_wc_session( 't_sibling_cart_888' ) );
+	}
 
-    public function test_attach_session_to_order_metadata_store_api_falls_back_to_cart_token(): void {
-        $order = new WC_Order();
+	public function test_sync_cart_session_carries_the_browser_session_id_into_a_cart_token_session_read_from_the_store(): void {
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 1 ] ];
+		$_COOKIE['gecx_session_id']  = 'projects/123/locations/global/commerceSessions/shopper-sess';
 
-        WC()->session              = new WC_Session_Handler();
-        WC()->session->customer_id = '';
+		// storefront.js reading the agent's cart from one of the store's own pages.
+		$request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+		$this->send_cart_token( $request, $this->generate_jwt( 't_agent_cart_555' ) );
+		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request->set_header( 'Referer', 'https://example.org/product/hoodie/' );
 
-        $token = $this->generate_jwt( 't_blocks_checkout_222' );
-        $this->set_wc_session( 't_blocks_checkout_222', [
-            'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sess-blocks-2',
-        ] );
+		( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
 
-        $request = new WP_REST_Request( 'POST', '/wc/store/v1/checkout' );
-        $request->set_header( 'Cart-Token', $token );
+		$row = $this->get_wc_session( 't_agent_cart_555' );
+		$this->assertIsArray( $row );
+		$this->assertSame( 'projects/123/locations/global/commerceSessions/shopper-sess', $row['gecx_session_id'] ?? null );
+	}
 
-        $rest_api = new REST_API();
-        $rest_api->session_attribution->attach_session_to_order_metadata_store_api( $order, $request );
+	public function test_sync_cart_session_does_not_set_cookie_on_empty_cart_read(): void {
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [];
 
-        $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-blocks-2', $order->get_meta( '_gecx_session_id' ) );
-    }
+		$token = $this->generate_jwt( 't_guest_empty' );
 
-    public function test_attach_session_to_order_metadata_store_api_reads_cart_token_from_server_headers(): void {
-        $order = new WC_Order();
+		$rest_api = new REST_API();
+		$request  = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+		$this->send_cart_token( $request, $token );
 
-        WC()->session              = new WC_Session_Handler();
-        WC()->session->customer_id = '';
+		$cookie_name = 'wp_woocommerce_session_' . COOKIEHASH;
+		unset( $_COOKIE[ $cookie_name ] );
 
-        // WooCommerce Blocks dispatches checkout internally, so the Cart-Token
-        // only survives on $_SERVER. Sanitizing it must leave the base64url
-        // segments and the dots intact or the HMAC check fails.
-        $token                      = $this->generate_jwt( 't_blocks_checkout_333' );
-        $_SERVER['HTTP_CART_TOKEN'] = $token;
-        $this->set_wc_session( 't_blocks_checkout_333', [
-            'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sess-blocks-3',
-        ] );
+		$rest_api->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
 
-        $rest_api = new REST_API();
-        $rest_api->session_attribution->attach_session_to_order_metadata_store_api( $order, new WP_REST_Request( 'POST', '/wc/store/v1/checkout' ) );
-        $this->assertSame( 'projects/123/locations/global/commerceSessions/sess-blocks-3', $order->get_meta( '_gecx_session_id' ) );
+		$this->assertArrayNotHasKey( $cookie_name, $_COOKIE );
+	}
 
-        // A header carrying characters a JWT cannot contain resolves nothing.
-        $junk_order                 = new WC_Order();
-        $_SERVER['HTTP_CART_TOKEN'] = '<script>alert(1)</script>';
-        $rest_api->session_attribution->attach_session_to_order_metadata_store_api( $junk_order, new WP_REST_Request( 'POST', '/wc/store/v1/checkout' ) );
-        $this->assertSame( '', (string) $junk_order->get_meta( '_gecx_session_id' ) );
+	public function test_sync_cart_session_does_not_bridge_a_numeric_cart_token_user_id_to_a_cookie(): void {
+		// A Cart-Token minted while the shopper was logged in carries a numeric
+		// user_id and stays valid after logout. Writing it as a session cookie for a
+		// logged-out browser makes WC_Session_Handler::is_session_cookie_valid() fail,
+		// which destroys that user's session row and empties their saved cart.
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 2 ] ];
 
-        unset( $_SERVER['HTTP_CART_TOKEN'] );
-    }
+		$token = $this->generate_jwt( '5' );
+
+		$rest_api = new REST_API();
+		$request  = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+		$this->send_cart_token( $request, $token );
+
+		$cookie_name = 'wp_woocommerce_session_' . COOKIEHASH;
+		unset( $_COOKIE[ $cookie_name ] );
+
+		$rest_api->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+		$this->assertArrayNotHasKey( $cookie_name, $_COOKIE );
+	}
+
+	public function test_is_mutating_store_api_cart_request_returns_false_when_batch_requests_missing(): void {
+		$rest_api = new REST_API();
+		$request  = new WP_REST_Request( 'POST', '/wc/store/v1/batch' );
+
+		$ref = new ReflectionMethod( $rest_api->cart_session, 'is_mutating_store_api_cart_request' );
+		if ( PHP_VERSION_ID < 80100 ) {
+			$ref->setAccessible( true );
+		}
+
+		$this->assertFalse( $ref->invoke( $rest_api->cart_session, $request ) );
+
+		$request->set_param( 'requests', 'invalid' );
+		$this->assertFalse( $ref->invoke( $rest_api->cart_session, $request ) );
+
+		$request->set_param( 'requests', [ [ 'path' => '/wc/store/v1/products', 'method' => 'GET' ] ] );
+		$this->assertFalse( $ref->invoke( $rest_api->cart_session, $request ) );
+
+		$request->set_param( 'requests', [ [ 'path' => '/wc/store/v1/cart/add-item', 'method' => 'POST' ] ] );
+		$this->assertTrue( $ref->invoke( $rest_api->cart_session, $request ) );
+	}
+
+	public function test_attach_session_to_order_metadata_falls_back_to_database(): void {
+		$order = new WC_Order();
+
+		WC()->session = new WC_Session_Mock();
+		WC()->session->set_customer_id( 't_order_shopper_111' );
+
+		$this->set_wc_session( 't_order_shopper_111', [
+			'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sess-order-1',
+		] );
+
+		$rest_api = new REST_API();
+		$rest_api->session_attribution->attach_session_to_order_metadata( $order, [] );
+
+		$this->assertSame( 'projects/123/locations/global/commerceSessions/sess-order-1', $order->get_meta( '_gecx_session_id' ) );
+	}
+
+	public function test_attach_session_to_order_metadata_store_api_falls_back_to_cart_token(): void {
+		$order = new WC_Order();
+
+		WC()->session = new WC_Session_Mock();
+		WC()->session->set_customer_id( '' );
+
+		$token = $this->generate_jwt( 't_blocks_checkout_222' );
+		$this->set_wc_session( 't_blocks_checkout_222', [
+			'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sess-blocks-2',
+		] );
+
+		$request = new WP_REST_Request( 'POST', '/wc/store/v1/checkout' );
+		$this->send_cart_token( $request, $token );
+
+		$rest_api = new REST_API();
+		$rest_api->session_attribution->attach_session_to_order_metadata_store_api( $order, $request );
+
+		$this->assertSame( 'projects/123/locations/global/commerceSessions/sess-blocks-2', $order->get_meta( '_gecx_session_id' ) );
+	}
+
+	public function test_attach_session_to_order_metadata_store_api_reads_cart_token_from_server_headers(): void {
+		$order = new WC_Order();
+
+		WC()->session = new WC_Session_Mock();
+		WC()->session->set_customer_id( '' );
+
+		// WooCommerce Blocks dispatches checkout internally, so the Cart-Token
+		// only survives on $_SERVER. Sanitizing it must leave the base64url
+		// segments and the dots intact or the HMAC check fails.
+		$token                      = $this->generate_jwt( 't_blocks_checkout_333' );
+		$_SERVER['HTTP_CART_TOKEN'] = $token;
+		$this->set_wc_session( 't_blocks_checkout_333', [
+			'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sess-blocks-3',
+		] );
+
+		$rest_api = new REST_API();
+		$rest_api->session_attribution->attach_session_to_order_metadata_store_api( $order, new WP_REST_Request( 'POST', '/wc/store/v1/checkout' ) );
+		$this->assertSame( 'projects/123/locations/global/commerceSessions/sess-blocks-3', $order->get_meta( '_gecx_session_id' ) );
+
+		// A header carrying characters a JWT cannot contain resolves nothing.
+		$junk_order                 = new WC_Order();
+		$_SERVER['HTTP_CART_TOKEN'] = '<script>alert(1)</script>';
+		$rest_api->session_attribution->attach_session_to_order_metadata_store_api( $junk_order, new WP_REST_Request( 'POST', '/wc/store/v1/checkout' ) );
+		$this->assertSame( '', (string) $junk_order->get_meta( '_gecx_session_id' ) );
+
+		unset( $_SERVER['HTTP_CART_TOKEN'] );
+	}
+
+	/**
+	 * A checkout carrying a Cart-Token places the order from the session of
+	 * whoever holds the token. From a sibling host, the browser's
+	 * gecx_session_id cookie would attribute that order to the shopper's chat
+	 * session, and it would be delivered there.
+	 */
+	public function test_attach_session_to_order_metadata_store_api_ignores_the_browser_session_cookie_on_a_cart_token_checkout_from_outside_the_store(): void {
+		$order = new WC_Order();
+
+		WC()->session = new WC_Session_Mock();
+		WC()->session->set_customer_id( 't_sibling_cart_777' );
+		$_COOKIE['gecx_session_id'] = 'projects/123/locations/global/commerceSessions/shopper-sess';
+
+		$request = new WP_REST_Request( 'POST', '/wc/store/v1/checkout' );
+		$this->send_cart_token( $request, $this->generate_jwt( 't_sibling_cart_777' ) );
+		$request->set_header( 'Sec-Fetch-Site', 'same-site' );
+		$request->set_header( 'Origin', 'https://evil.example.org' );
+
+		( new REST_API() )->session_attribution->attach_session_to_order_metadata_store_api( $order, $request );
+
+		$this->assertSame( '', (string) $order->get_meta( '_gecx_session_id' ) );
+	}
+
+	/**
+	 * Checkout can be batched. A Cart-Token named only in a sub-request's own
+	 * headers did not choose the session the order is placed from, so the
+	 * gecx_session_id stored against it must not be attributed to the order.
+	 */
+	public function test_attach_session_to_order_metadata_store_api_ignores_a_cart_token_named_only_by_a_batch_sub_request(): void {
+		$order = new WC_Order();
+
+		// Loaded from the shopper's cookie; the shopper has not chatted.
+		WC()->session = new WC_Session_Mock();
+		WC()->session->set_customer_id( 't_shopper_cookie_111' );
+
+		$this->set_wc_session( 't_sibling_cart_888', [
+			'gecx_session_id' => 'projects/123/locations/global/commerceSessions/sibling-sess',
+		] );
+
+		$request = new WP_REST_Request( 'POST', '/wc/store/v1/checkout' );
+		$request->set_header( 'Cart-Token', $this->generate_jwt( 't_sibling_cart_888' ) );
+
+		( new REST_API() )->session_attribution->attach_session_to_order_metadata_store_api( $order, $request );
+
+		$this->assertSame( '', (string) $order->get_meta( '_gecx_session_id' ) );
+	}
+
+	public function test_attach_session_to_order_metadata_store_api_uses_the_browser_session_cookie_on_a_cart_token_checkout_from_the_store(): void {
+		$order = new WC_Order();
+
+		WC()->session = new WC_Session_Mock();
+		WC()->session->set_customer_id( 't_agent_cart_555' );
+		$_COOKIE['gecx_session_id'] = 'projects/123/locations/global/commerceSessions/shopper-sess';
+
+		$request = new WP_REST_Request( 'POST', '/wc/store/v1/checkout' );
+		$this->send_cart_token( $request, $this->generate_jwt( 't_agent_cart_555' ) );
+		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request->set_header( 'Origin', 'https://example.org' );
+		$request->set_header( 'Referer', 'https://example.org/checkout/' );
+
+		( new REST_API() )->session_attribution->attach_session_to_order_metadata_store_api( $order, $request );
+
+		$this->assertSame( 'projects/123/locations/global/commerceSessions/shopper-sess', $order->get_meta( '_gecx_session_id' ) );
+	}
 
     public function test_sync_cart_session_persists_to_wc_sessions_table_and_wc_session_handler(): void {
         $token    = $this->generate_jwt( 't_guest_session_abc' );
         $rest_api = new REST_API();
         $request  = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
-        $request->set_header( 'Cart-Token', $token );
+        $this->send_cart_token( $request, $token );
 
         WC()->session->set_customer_id( 't_guest_session_abc' );
         WC()->cart->session_cart = [
@@ -2060,7 +2675,7 @@ class RestApiTest extends RestTestCase {
         $this->assertSame( 0, WC()->session->save_data_calls );
 
         $post_request = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
-        $post_request->set_header( 'Cart-Token', $token );
+        $this->send_cart_token( $post_request, $token );
         $err_response = new WP_REST_Response( [ 'code' => 'invalid_stock' ], 400 );
 
         $rest_api->cart_session->sync_cart_session_after_dispatch( $err_response, null, $post_request );
@@ -2157,6 +2772,9 @@ class RestApiTest extends RestTestCase {
             $this->markTestSkipped( 'Multisite only.' );
         }
 
+        // The requests below are dispatched as POST, so they arrive as one.
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+
         $other_user = $this->factory()->user->create();
         $site_a     = (int) self::factory()->blog->create( [ 'path' => '/site-a/' ] );
         $site_b     = (int) self::factory()->blog->create( [ 'path' => '/site-b/' ] );
@@ -2201,6 +2819,9 @@ class RestApiTest extends RestTestCase {
         if ( ! is_multisite() ) {
             $this->markTestSkipped( 'Multisite only.' );
         }
+
+        // The requests below are dispatched as POST, so they arrive as one.
+        $_SERVER['REQUEST_METHOD'] = 'POST';
 
         Auth::get_or_generate_keypair();
         $rest_api = new REST_API();
@@ -2263,7 +2884,9 @@ class RestApiTest extends RestTestCase {
         $this->assertTrue( Session_Attribution::is_valid_session_id( $omnichannel_session, true ) );
 
         update_option( 'gecx_webhook_id', 901 );
-        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/a1' );
+        // Linked to an agent in the session's own project; see
+        // WebhookLifecycleTest::test_delivery_suppressed_for_session_in_another_project().
+        update_option( 'gecx_agent_name', 'projects/123456789/locations/global/agents/a1' );
         update_option( 'gecx_agent_enabled', 1 );
 
         $order    = wc_create_order();
@@ -2288,15 +2911,32 @@ class RestApiTest extends RestTestCase {
     }
 
     /**
+     * Sends a Cart-Token the way the browser and the agent do: as a header of
+     * the HTTP request, which is where WooCommerce reads it to choose the
+     * session, and so also in the WP_REST_Request copy WordPress builds.
+     *
+     * @param WP_REST_Request $request Request to send it with.
+     * @param string          $token   Cart-Token.
+     */
+    private function send_cart_token( WP_REST_Request $request, string $token ): void {
+        $request->set_header( 'Cart-Token', $token );
+        $_SERVER['HTTP_CART_TOKEN'] = $token;
+    }
+
+    /**
      * Runs the post-dispatch sync for a Store API cart request and returns
      * the woocommerce_items_in_cart and woocommerce_cart_hash cookies it set.
      *
+     * @param array<string, string> $headers Further request headers.
      * @return array<string, mixed>
      */
-    private function cart_cookies_set_by( string $method, string $route, string $cart_token = '' ): array {
+    private function cart_cookies_set_by( string $method, string $route, string $cart_token = '', array $headers = [] ): array {
         $request = new WP_REST_Request( $method, $route );
         if ( '' !== $cart_token ) {
-            $request->set_header( 'Cart-Token', $cart_token );
+            $this->send_cart_token( $request, $cart_token );
+        }
+        foreach ( $headers as $name => $value ) {
+            $request->set_header( $name, $value );
         }
         $this->cookies = [];
         ( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items_count' => 1 ] ), null, $request );
@@ -2358,23 +2998,116 @@ class RestApiTest extends RestTestCase {
         $this->assertSame( '1', $cookies['woocommerce_items_in_cart']['value'] );
     }
 
-    public function test_cart_token_read_for_another_session_leaves_the_browser_cookies_alone(): void {
-        WC()->cart                              = new WC_Cart_Mock();
-        WC()->cart->cart_for_session            = [ 'item' => [ 'quantity' => 1 ] ];
-        $_COOKIE['wp_woocommerce_session_test'] = 't_guest_session_123||12345||12345||hash';
+	/**
+	 * Creates a session mock that mirrors StoreApi\SessionHandler (extends WC_Session
+	 * directly without get_session_cookie or set_customer_session_cookie).
+	 *
+	 * @param string $customer_id Customer ID.
+	 */
+	private function create_store_api_session_mock( string $customer_id ): \WC_Session {
+		return new class( $customer_id ) extends \WC_Session {
+			public function __construct( string $customer_id ) {
+				$this->_customer_id = $customer_id;
+			}
+			public function save_data(): void {}
+		};
+	}
 
-        $this->assertSame(
-            [],
-            $this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart', $this->generate_jwt( 't_someone_else_999' ) )
-        );
-    }
+	/**
+	 * Sets a WooCommerce-signed session cookie in $_COOKIE for the given customer ID.
+	 *
+	 * @param string $customer_id Customer ID.
+	 */
+	private function set_signed_wc_session_cookie( string $customer_id ): void {
+		$cookie_name = 'wp_woocommerce_session_' . COOKIEHASH;
+		unset( $_COOKIE[ $cookie_name ] );
+		$handler  = new WC_Session_Handler();
+		$point_at = \Closure::bind(
+			function ( string $guest_key ): void {
+				$this->_customer_id = $guest_key;
+			},
+			$handler,
+			WC_Session_Handler::class
+		);
+		$point_at( $customer_id );
+		$handler->set_session_expiration();
+		$handler->set_customer_session_cookie( true );
+		if ( isset( $this->cookies[ $cookie_name ]['value'] ) ) {
+			$_COOKIE[ $cookie_name ] = $this->cookies[ $cookie_name ]['value'];
+		}
+	}
 
-    public function test_cart_token_read_that_bridges_a_guest_session_also_sets_the_cart_cookies(): void {
-        WC()->cart                   = new WC_Cart_Mock();
-        WC()->cart->cart_for_session = [ 'item' => [ 'quantity' => 1 ] ];
+	/**
+	 * WooCommerce runs a Store API request carrying a valid Cart-Token on
+	 * StoreApi\SessionHandler, which cannot verify the browser's cookie. A
+	 * browser bound to the agent's session reads its cart with both, and
+	 * still gets its cart cookies.
+	 */
+	public function test_cart_token_read_on_the_store_api_session_handler_refreshes_the_cookies_of_the_browser_that_owns_the_session(): void {
+		WC()->session                = $this->create_store_api_session_mock( 't_bound_guest' );
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'item' => [ 'quantity' => 1 ] ];
+		$this->set_signed_wc_session_cookie( 't_bound_guest' );
 
-        $cookies = $this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart', $this->generate_jwt( 't_agent_shopper_888' ) );
+		$cookies = $this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart', $this->generate_jwt( 't_bound_guest' ) );
 
-        $this->assertSame( '1', $cookies['woocommerce_items_in_cart']['value'] );
-    }
+		$this->assertSame( '1', $cookies['woocommerce_items_in_cart']['value'] );
+		$this->assertSame( WC()->cart->get_cart_hash(), $cookies['woocommerce_cart_hash']['value'] );
+	}
+
+	public function test_cart_token_read_on_the_store_api_session_handler_leaves_the_cookies_of_another_browser_alone(): void {
+		WC()->session                = $this->create_store_api_session_mock( 't_bound_guest' );
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'item' => [ 'quantity' => 1 ] ];
+		$this->set_signed_wc_session_cookie( 't_someone_else' );
+
+		$this->assertSame(
+			[],
+			$this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart', $this->generate_jwt( 't_bound_guest' ) )
+		);
+	}
+
+	/**
+	 * The plugin never checks a session cookie's signature itself. Without
+	 * get_session_cookie() on WC()->session, it asks a WC_Session_Handler,
+	 * and takes whatever WooCommerce accepts or rejects.
+	 */
+	public function test_verifies_the_session_cookie_through_woocommerce_when_the_session_handler_cannot(): void {
+		WC()->session = $this->create_store_api_session_mock( 't_bound_guest' );
+		$cookie_name  = 'wp_woocommerce_session_' . COOKIEHASH;
+
+		$this->set_signed_wc_session_cookie( 't_bound_guest' );
+		$this->assertSame( 't_bound_guest', Cart_Session::get_verified_session_cookie_customer_id() );
+
+		$_COOKIE[ $cookie_name ] = 't_bound_guest||12345||12345||forged';
+		$this->assertSame( '', Cart_Session::get_verified_session_cookie_customer_id() );
+
+		unset( $_COOKIE[ $cookie_name ] );
+		$this->assertSame( '', Cart_Session::get_verified_session_cookie_customer_id() );
+	}
+
+	public function test_cart_token_read_for_another_session_leaves_the_browser_cookies_alone(): void {
+		WC()->cart                              = new WC_Cart_Mock();
+		WC()->cart->cart_for_session            = [ 'item' => [ 'quantity' => 1 ] ];
+		$_COOKIE['wp_woocommerce_session_test'] = 't_guest_session_123||12345||12345||hash';
+
+		$this->assertSame(
+			[],
+			$this->cart_cookies_set_by( 'GET', '/wc/store/v1/cart', $this->generate_jwt( 't_someone_else_999' ) )
+		);
+	}
+
+	public function test_cart_token_read_that_bridges_a_guest_session_also_sets_the_cart_cookies(): void {
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'item' => [ 'quantity' => 1 ] ];
+
+		$cookies = $this->cart_cookies_set_by(
+			'GET',
+			'/wc/store/v1/cart',
+			$this->generate_jwt( 't_agent_shopper_888' ),
+			[ 'Sec-Fetch-Site' => 'same-origin', 'Referer' => 'https://example.org/cart/' ]
+		);
+
+		$this->assertSame( '1', $cookies['woocommerce_items_in_cart']['value'] );
+	}
 }

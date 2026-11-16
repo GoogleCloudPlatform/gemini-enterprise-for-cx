@@ -9,19 +9,19 @@
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Plugin Name: Gemini Enterprise for CX
+ * Plugin Name: Gemini Enterprise for CX - AI Shopping Assistant & Chatbot for WooCommerce
  * Description: Drive sales with an AI agent that's already an expert on your brand and products. Go live instantly on your WooCommerce storefront.
  * Requires Plugins: woocommerce
  * Requires at least: 6.2
  * Requires PHP:     7.4
- * Version:          1.1.0
+ * Version:          1.2.2
  * Author:           Google LLC
  * Author URI:       https://cloud.google.com/gemini
  * License:          GPLv3
  * License URI:      https://www.gnu.org/licenses/gpl-3.0.html
  * Text Domain:      gemini-enterprise-for-cx
  * WC requires at least: 7.1
- * WC tested up to: 11.2
+ * WC tested up to: 11.3
  */
 
 declare(strict_types=1);
@@ -31,7 +31,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 if ( ! defined( 'GECX_VERSION' ) ) {
-    define( 'GECX_VERSION', '1.1.0' );
+    define( 'GECX_VERSION', '1.2.2' );
 }
 
 
@@ -71,6 +71,7 @@ function gecx_init_components(): void {
     new Google\Gemini_Enterprise_For_CX\REST\REST_API();
     new Google\Gemini_Enterprise_For_CX\Admin( __FILE__ );
     new Google\Gemini_Enterprise_For_CX\Storefront( __FILE__ );
+    new Google\Gemini_Enterprise_For_CX\Page_Cache();
 }
 add_action( 'plugins_loaded', 'gecx_init_components' );
 

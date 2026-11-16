@@ -34,15 +34,21 @@ jobs:
             wc-version: '7.1.0'
           - wp-version: '7.1'
             wc-version: '9.9.0'
+          # WooCommerce 10.0 to 11.0 sign the session cookie with
+          # wp_fast_hash() wherever WordPress 6.8+ provides it, and reject
+          # any other signature, so a cookie only they can verify is tested
+          # here as well.
           - wp-version: '7.1'
-            wc-version: '11.2.0'
+            wc-version: '11.0.0'
+          - wp-version: '7.1'
+            wc-version: '11.3.0'
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up PHP
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '7.4'
           coverage: none
@@ -51,7 +57,7 @@ jobs:
         run: composer dump-autoload -o
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: npm

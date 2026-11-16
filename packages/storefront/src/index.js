@@ -109,6 +109,25 @@ function gecxCartRestUrl() {
 }
 
 /**
+ * The Store API cart endpoint under a URL no other request uses.
+ *
+ * A page cache such as Batcache can answer a GET that carries no cookies from
+ * a copy it cached by URL, whatever Cart-Token the request sends. The cart
+ * read after an agent cart change would then not bind a browser without a
+ * WooCommerce session to the agent's cart, and the cart it loads into the
+ * page could be another shopper's. The Store API ignores the extra query
+ * parameter, as it does the one the agent adds to its own cart reads.
+ * @return {string}
+ */
+function gecxUncachedCartRestUrl() {
+  const url = gecxCartRestUrl();
+  // Plain permalinks put the route in the query: ?rest_route=/wc/store/...
+  const separator = url.indexOf('?') === -1 ? '?' : '&';
+  return url + separator + '_nocache=' + Date.now().toString(36) +
+      Math.random().toString(36).slice(2, 8);
+}
+
+/**
  * The GECX session REST endpoint for this store.
  * @return {string}
  */
@@ -121,6 +140,40 @@ function gecxSessionRestUrl() {
     return config.authContextUrl.replace(/\/auth-context(\b|\/|$)/, '/session$1');
   }
   return '/wp-json/gecx/v1/session';
+}
+
+/**
+ * The GECX cart session REST endpoint for this store.
+ * @return {string}
+ */
+function gecxCartSessionRestUrl() {
+  const config = gecxGetStorefrontConfig();
+  if (config && config.cartSessionUrl) {
+    return config.cartSessionUrl;
+  }
+  return gecxSessionRestUrl().replace(/\/session(\b|\/|$)/, '/cart-session$1');
+}
+
+/**
+ * The GECX auth-context REST endpoint for this store, or '' when the page
+ * config names none.
+ * @return {string}
+ */
+function gecxAuthContextRestUrl() {
+  const config = gecxGetStorefrontConfig();
+  return (config && config.authContextUrl) ? config.authContextUrl : '';
+}
+
+/**
+ * The GECX refresh-token REST endpoint for this store, derived from the
+ * auth-context URL, or '' when the page config names none.
+ * @return {string}
+ */
+function gecxRefreshTokenRestUrl() {
+  const authContextUrl = gecxAuthContextRestUrl();
+  return authContextUrl ?
+      authContextUrl.replace(/\/auth-context(\b|\/|$)/, '/refresh-token$1') :
+      '';
 }
 
 /**
@@ -217,12 +270,36 @@ function gecxIsTargetEndpoint(candidateUrl, configuredUrl, fallbackPathRegex) {
 if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
   const originalFetch = window.fetch;
   window.fetch = function(input, init) {
-    const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
-    // Fast path: avoid URL parsing on requests that cannot be the session endpoint.
-    if (gecxLatestCartToken &&
-        url &&
-        (url.indexOf('session') !== -1 || url.indexOf('gecx') !== -1) &&
-        gecxIsTargetEndpoint(url, gecxSessionRestUrl(), /\/gecx\/v1\/session(\b|$)/)) {
+    let url = '';
+    if (typeof input === 'string') {
+      url = input;
+    } else if (typeof URL !== 'undefined' && input instanceof URL) {
+      url = input.href;
+    } else if (input && input.url) {
+      url = input.url;
+    }
+    // Fast path: avoid URL parsing on requests that cannot be a GECX endpoint.
+    const mayBeGecxRequest = url !== '' &&
+        (url.indexOf('session') !== -1 || url.indexOf('gecx') !== -1);
+    const isSessionRequest = mayBeGecxRequest &&
+        gecxIsTargetEndpoint(url, gecxSessionRestUrl(), /\/gecx\/v1\/session(\b|$)/);
+    const isAuthContextRequest = mayBeGecxRequest && !isSessionRequest &&
+        gecxIsTargetEndpoint(url, gecxAuthContextRestUrl(), /\/gecx\/v1\/auth-context(\b|$)/);
+    const isRefreshTokenRequest = mayBeGecxRequest && !isSessionRequest && !isAuthContextRequest &&
+        gecxIsTargetEndpoint(url, gecxRefreshTokenRestUrl(), /\/gecx\/v1\/refresh-token(\b|$)/);
+    // The server accepts the widget's session annotation, auth-context and
+    // refresh-token requests only from the store's own pages, and on a
+    // subdirectory multisite it tells this site's pages from a sibling's by
+    // the Referer path. The widget sets no referrer policy on some of them, so
+    // a site-wide Referrer-Policy such as no-referrer would strip that path.
+    // Send them as storefront.js sends its own cart and auth-context requests,
+    // unless the caller chose a policy itself.
+    if ((isSessionRequest || isAuthContextRequest || isRefreshTokenRequest) &&
+        !(init && init.referrerPolicy) &&
+        !(input && typeof input === 'object' && input.referrerPolicy)) {
+      init = Object.assign({}, init, {referrerPolicy: 'same-origin'});
+    }
+    if (gecxLatestCartToken && isSessionRequest) {
       init = Object.assign({}, init);
       if (typeof Headers !== 'undefined') {
         const headers = new Headers(init.headers || {});
@@ -254,6 +331,7 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
               '';
           if (gecxIsValidCartTokenFormat(token)) {
             gecxLatestCartToken = token;
+            gecxOnCartTokenObserved();
           }
         }
       } catch (err) {
@@ -345,39 +423,292 @@ function gecxRefreshCartOrCheckoutSurface(hasBlockStore) {
 }
 
 /**
- * Re-binds the active GECX session ID from localStorage to the WooCommerce
- * session once a cart mutation establishes a persistent session.
+ * The /cart-session route's answer for each cart session asked about on this
+ * page view, keyed by gecxCartTokenSession(): in flight, or settled with
+ * 'agent' or 'existing', which hold for the rest of the page view. Any other
+ * answer, and a failure, is dropped so that the next chat open or agent
+ * change asks again.
+ * @type {!Object<string, !Promise<string>>}
  */
-function gecxRebindSessionOnCartUpdate() {
-  let sessionId = '';
-  try {
-    sessionId = (window.localStorage && window.localStorage.getItem('gecx_session_id')) || '';
-  } catch (err) {
-    return;
-  }
-  if (!sessionId) {
-    return;
-  }
-  const sessionUrl = gecxSessionRestUrl();
+const gecxCartSessionBindings = Object.create(null);
 
-  gecxResolveRestNonce()
+/** @type {boolean} Whether the route said this store's sessions cannot be bound. */
+let gecxCartSessionBindingUnsupported = false;
+
+/** @type {boolean} Whether a chat-open bind is waiting for the agent's cart token. */
+let gecxCartSessionBindPending = false;
+
+/** @type {boolean} Whether the chat was open at the last visibility check. */
+let gecxChatWasOpen = false;
+
+/**
+ * The claims in a Cart-Token's payload, or null when they cannot be read.
+ *
+ * Not verified, which only the server can do. They are only used to skip a
+ * remembered token that has expired and to tell which cart session a token
+ * is for.
+ * @param {string} token
+ * @return {?Object}
+ */
+function gecxCartTokenClaims(token) {
+  if (!gecxIsValidCartTokenFormat(token) || typeof atob !== 'function') {
+    return null;
+  }
+  try {
+    const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const claims = JSON.parse(atob(payload + '==='.slice((payload.length + 3) % 4)));
+    return (claims && typeof claims === 'object') ? claims : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * The cart session a Cart-Token is for: its user_id claim, or the token
+ * itself when that cannot be read.
+ *
+ * The route mints a new token for the agent's cart when it binds the browser
+ * to it, so two tokens can be for the same cart session.
+ * @param {string} token
+ * @return {string}
+ */
+function gecxCartTokenSession(token) {
+  const claims = gecxCartTokenClaims(token);
+  const session = claims ? claims.user_id : null;
+  if ((typeof session === 'string' || typeof session === 'number') && session !== '') {
+    return 'session:' + session;
+  }
+  return 'token:' + token;
+}
+
+/**
+ * Whether a Cart-Token's exp claim has passed.
+ * @param {string} token
+ * @return {boolean}
+ */
+function gecxIsExpiredCartToken(token) {
+  const claims = gecxCartTokenClaims(token);
+  return !!claims && typeof claims.exp === 'number' && claims.exp * 1000 <= Date.now();
+}
+
+/**
+ * The cart token the chat widget resumed for the current chat session, from
+ * localStorage, or ''.
+ *
+ * On a later page view the widget puts the agent back on the cart it last
+ * synced for the chat session (gecx_session_cart) without reading it from the
+ * Store API, so that token never passes through this script's fetch
+ * interceptor. The cart the widget does read on such a page view is a new,
+ * empty one for a browser without a WooCommerce session.
+ *
+ * A token whose exp has passed is skipped: the route cannot bind it, and it
+ * would otherwise take the place of a fresh one for the whole page view.
+ * @return {string}
+ */
+function gecxResumedAgentCartToken() {
+  try {
+    const sessionId = window.localStorage.getItem('gecx_session_id');
+    const remembered = JSON.parse(window.localStorage.getItem('gecx_session_cart') || 'null');
+    if (sessionId && remembered && remembered.sessionId === sessionId &&
+        gecxIsValidCartTokenFormat(remembered.cartId) &&
+        !gecxIsExpiredCartToken(remembered.cartId)) {
+      return remembered.cartId;
+    }
+  } catch (err) {
+    // Unavailable or malformed storage: fall back to the observed token.
+  }
+  return '';
+}
+
+/**
+ * Whether the chat panel is open, by the gecx-chat-open class the widget puts
+ * on document.body from its own visibility state.
+ *
+ * The chat-messenger element is not a reliable signal here: it can be in the
+ * page without its messenger-hidden class while the widget is still starting,
+ * and binding then would set a session cookie for a visitor who never opened
+ * the chat.
+ * @return {boolean}
+ */
+function gecxIsChatOpen() {
+  return !!document.body && document.body.classList.contains('gecx-chat-open');
+}
+
+/**
+ * Puts the browser on the agent's cart when the chat opens.
+ *
+ * A guest who has not added anything to their cart has no WooCommerce session
+ * cookie, so the agent can hold a cart the browser is not bound to, most often
+ * one the widget resumed from an earlier page view. The /cart-session route
+ * binds the browser to that cart once it holds something and the browser's
+ * own cart is empty. Done when the chat opens, not on page load: once a
+ * session cookie is set, full-page caches stop serving that visitor cached
+ * pages.
+ *
+ * Uses the cart token the widget resumed, or else the one its cart read
+ * revealed, waiting for that read if needed. When the browser is put on the
+ * agent's cart, reads that cart and brings the page's cart surfaces up to
+ * date, as after an agent change. When there is nothing to bind yet, the next
+ * chat open tries again.
+ */
+function gecxBindCartSession() {
+  if (gecxCartSessionBindingUnsupported) {
+    return;
+  }
+  const agentToken = gecxResumedAgentCartToken() || gecxLatestCartToken;
+  if (!agentToken) {
+    gecxCartSessionBindPending = true;
+    return;
+  }
+  gecxCartSessionBindPending = false;
+  if (gecxCartSessionBindings[gecxCartTokenSession(agentToken)]) {
+    // Already asked, or being asked, about this cart session.
+    return;
+  }
+
+  gecxRequestCartSessionBinding(agentToken)
+      .then(function(binding) {
+        if (binding === 'agent') {
+          // The shopper only opened the chat, so nothing may open a drawer
+          // over it.
+          gecxRefreshCartSurfaces(agentToken, null, null, Promise.resolve(), false);
+        }
+      }, function(err) {
+        gecxReportError('cart session binding', err);
+      });
+}
+
+/**
+ * Puts the browser on the agent's cart after the agent changed it.
+ *
+ * The cart read that follows an agent change binds a browser without a
+ * WooCommerce session cookie, but not one that has a session of its own,
+ * however empty: WooCommerce starts one for a visitor who opens the cart or
+ * checkout page, and for one whose browser merely prefetches it. Whatever the
+ * agent added then stays in a cart the shopper never sees. The /cart-session
+ * route binds a browser whose own cart is empty, cookie or not, and leaves one
+ * whose cart holds items to the chat widget, which adopts it after copying the
+ * agent's lines into it.
+ *
+ * Asks once per cart session: an 'agent' or 'existing' answer holds for the
+ * rest of the page view, so later changes to the same cart are read without
+ * waiting for the route. Takes over a chat-open bind that is waiting for the
+ * agent's cart token. Never rejects, so the cart is read whatever happens
+ * here.
+ * @param {string} agentToken Cart-Token of the cart the agent changed, or ''.
+ * @return {!Promise<void>}
+ */
+function gecxBindCartSessionAfterAgentChange(agentToken) {
+  if (!agentToken || gecxCartSessionBindingUnsupported) {
+    return Promise.resolve();
+  }
+  gecxCartSessionBindPending = false;
+  return gecxRequestCartSessionBinding(agentToken)
+      .then(function() {}, function(err) {
+        gecxReportError('cart session binding', err);
+      });
+}
+
+/**
+ * Asks the /cart-session route to put the browser on the agent's cart, and
+ * announces each answer with a gecx:cart-session-bound event on
+ * document.body.
+ *
+ * Returns the request already made for the same cart session while it is in
+ * flight or once it answered 'agent' or 'existing'. With 'agent' the route
+ * sends a token for the agent's cart in a Cart-Token response header, never
+ * in the body: tools that record response bodies, such as session replay,
+ * would keep a copy. 'unsupported' stops all binding for the page view.
+ * @param {string} agentToken Cart-Token of the agent's cart.
+ * @return {!Promise<string>} The route's answer: 'agent', 'existing',
+ *     'deferred' or 'unsupported'.
+ */
+function gecxRequestCartSessionBinding(agentToken) {
+  const session = gecxCartTokenSession(agentToken);
+  if (gecxCartSessionBindings[session]) {
+    return gecxCartSessionBindings[session];
+  }
+  const request = gecxResolveRestNonce()
       .then(function(nonce) {
         if (!nonce) {
-          return;
+          throw new Error('no REST nonce');
         }
-        return fetch(sessionUrl, {
+        return fetch(gecxCartSessionRestUrl(), {
           method: 'POST',
           credentials: 'include',
+          referrerPolicy: 'same-origin',
           headers: {
             'Content-Type': 'application/json',
             'X-WP-Nonce': nonce
           },
-          body: JSON.stringify({session_id: sessionId})
+          body: JSON.stringify({cart_token: agentToken})
         });
       })
-      .catch(function(err) {
-        gecxReportError('session rebind', err);
+      .then(function(res) {
+        if (res.status === 401 || res.status === 403) {
+          // Most likely a stale nonce; fetch a fresh one next time.
+          gecxRestNoncePromise = null;
+        }
+        if (!res.ok) {
+          throw new Error('cart-session responded ' + res.status);
+        }
+        const cartToken = (res.headers && typeof res.headers.get === 'function') ?
+            (res.headers.get('Cart-Token') || '') :
+            '';
+        return res.json().then(function(data) {
+          const binding = (data && typeof data.binding === 'string') ? data.binding : '';
+          if (binding === 'agent' && gecxIsValidCartTokenFormat(cartToken)) {
+            gecxLatestCartToken = cartToken;
+          }
+          if (binding === 'unsupported') {
+            gecxCartSessionBindingUnsupported = true;
+          }
+          gecxDispatchBodyEvent('gecx:cart-session-bound', {binding: binding});
+          return binding;
+        });
       });
+
+  const forget = function() {
+    if (gecxCartSessionBindings[session] === request) {
+      delete gecxCartSessionBindings[session];
+    }
+  };
+  gecxCartSessionBindings[session] = request;
+  request.then(function(binding) {
+    if (binding !== 'agent' && binding !== 'existing') {
+      forget();
+    }
+  }, forget);
+  return request;
+}
+
+/** Runs a chat-open bind that was waiting for the agent's cart token. */
+function gecxOnCartTokenObserved() {
+  if (gecxCartSessionBindPending && gecxChatWasOpen) {
+    gecxBindCartSession();
+  }
+}
+
+/**
+ * Binds the cart when the chat goes from closed to open.
+ *
+ * Only on that change: the body class mutations that also call this fire for
+ * every class a theme or the widget toggles while the chat stays open, and a
+ * bind that answered 'deferred' or failed is meant to be retried on the next
+ * open, not on each of them.
+ * @param {?Event=} e chat-messenger-visibility-changed, whose detail.hidden
+ *     is the widget's own visibility state, or nothing for a body class change.
+ */
+function gecxHandleChatVisibilityForCart(e) {
+  const detail = e && e.detail;
+  const isOpen = (detail && typeof detail.hidden === 'boolean') ? !detail.hidden : gecxIsChatOpen();
+  const opened = isOpen && !gecxChatWasOpen;
+  gecxChatWasOpen = isOpen;
+  if (opened) {
+    gecxBindCartSession();
+  } else if (!isOpen) {
+    gecxCartSessionBindPending = false;
+  }
 }
 
 /**
@@ -417,8 +748,7 @@ function gecxResolveRestNonce() {
     return gecxRestNoncePromise;
   }
 
-  const config = gecxGetStorefrontConfig();
-  const url = (config && config.authContextUrl) ? config.authContextUrl : '';
+  const url = gecxAuthContextRestUrl();
   if (!url) {
     gecxRestNoncePromise = Promise.resolve('');
     return gecxRestNoncePromise;
@@ -575,6 +905,11 @@ function gecxClassifyCartChange(previous, current) {
  * woocommerce_cart_hash cookies after the agent changed the cart from
  * elsewhere. A 401 or 403 usually means the nonce went stale during a long
  * chat, so a fresh one is fetched and the request retried once.
+ *
+ * The server bridges a Cart-Token cart into the browser's session cookie only
+ * for a request it can tell came from the store's own pages, so the full
+ * Referer is sent whatever Referrer-Policy the page declares, as it is for the
+ * auth-context request.
  * @param {string} cartToken Cart-Token supplied by the widget, or ''.
  * @return {!Promise<!Object>}
  */
@@ -596,10 +931,11 @@ function gecxFetchCart(cartToken) {
           if (nonce) {
             headers['X-WP-Nonce'] = nonce;
           }
-          return fetch(gecxCartRestUrl(), {
+          return fetch(gecxUncachedCartRestUrl(), {
             method: 'GET',
             headers: headers,
-            credentials: 'include'
+            credentials: 'include',
+            referrerPolicy: 'same-origin'
           });
         })
         .then(function(res) {
@@ -701,22 +1037,27 @@ function gecxDispatchBodyEvent(name, detail) {
  * real add-to-cart click passes, none of which exist here. When they are
  * sent, the native events are not: the block mini-cart translates the jQuery
  * events into the native ones itself, and sending both would refresh twice.
+ *
+ * Added items are announced as a removal too when they may not open a drawer
+ * or side cart.
  * @param {string} change 'added', 'removed' or 'updated'.
  * @param {boolean} preserveCartData Whether the data store already holds the new cart.
  * @param {?Object} cart
  * @param {?number} itemsCount
  * @param {?number} previousItemsCount
+ * @param {boolean} allowOpen Whether added items may open a drawer or side cart.
  */
-function gecxAnnounceCartChange(change, preserveCartData, cart, itemsCount, previousItemsCount) {
+function gecxAnnounceCartChange(change, preserveCartData, cart, itemsCount, previousItemsCount, allowOpen) {
   const settings = gecxCartRefreshConfig();
   const sendLegacy = settings.legacyEvents && window.jQuery &&
       window.jQuery(document.body).trigger;
+  const announceAdded = allowOpen && change === 'added';
 
   if (sendLegacy) {
-    window.jQuery(document.body).trigger(change === 'added' ? 'added_to_cart' : 'removed_from_cart');
+    window.jQuery(document.body).trigger(announceAdded ? 'added_to_cart' : 'removed_from_cart');
   } else if (settings.nativeEvents) {
     gecxDispatchBodyEvent(
-        change === 'added' ? 'wc-blocks_added_to_cart' : 'wc-blocks_removed_from_cart',
+        announceAdded ? 'wc-blocks_added_to_cart' : 'wc-blocks_removed_from_cart',
         {preserveCartData: preserveCartData});
   }
 
@@ -760,8 +1101,28 @@ function handleCartUpdate(e) {
       Number(detail.totalQuantity) :
       null;
 
-  gecxRebindSessionOnCartUpdate();
+  // Read once the binding has settled, so that the cart read, the surfaces
+  // refreshed from it and the gecx:cart-updated event all describe the cart
+  // the browser ends up on.
+  const bound = gecxBindCartSessionAfterAgentChange(cartId);
+  gecxRefreshCartSurfaces(cartId, directCart, eventCount, bound, true);
+}
 
+/**
+ * Reads the cart the browser is on, brings every cart surface on the page up
+ * to date with it, and announces the change.
+ *
+ * The Blocks cart data store is marked stale at once, and given the cart the
+ * widget sent, if any. The cart is read once `ready` settles.
+ * @param {string} cartToken Cart-Token to read the cart with, or ''.
+ * @param {?Object} directCart Cart the chat widget sent, or null.
+ * @param {?number} eventCount Items count the chat widget sent, or null.
+ * @param {!Promise<void>} ready Settles, never rejecting, when the cart can
+ *     be read.
+ * @param {boolean} allowOpen Whether added items may open a drawer or side
+ *     cart.
+ */
+function gecxRefreshCartSurfaces(cartToken, directCart, eventCount, ready, allowOpen) {
   const store = gecxGetCartDataStore();
   const previousCount = gecxPreviousItemsCount(store);
 
@@ -809,23 +1170,27 @@ function handleCartUpdate(e) {
       gecxUpdateCartBadges(count);
     }
     // Classic headers and mini-carts render from cart fragments. Refreshed
-    // only now, after the cart read: for a shopper who had no WooCommerce
-    // session cookie, that read is what hands the agent's cart session to
-    // the browser, and fragments requested before it describe an empty
-    // cart. A no-op on pages without wc-cart-fragments.
+    // only now, after the binding and the cart read: for a shopper whose
+    // browser was not on the agent's cart, those are what hand the agent's
+    // cart session to the browser, and fragments requested before them
+    // describe an empty cart. A no-op on pages without wc-cart-fragments.
     if (window.jQuery && window.jQuery(document.body).trigger) {
       window.jQuery(document.body).trigger('wc_fragment_refresh');
     }
     gecxRefreshCartOrCheckoutSurface(storeUpdated);
     gecxAnnounceCartChange(
         gecxClassifyCartChange(previousCount, count), storeUpdated, cart || directCart,
-        count, previousCount);
+        count, previousCount, allowOpen);
   };
 
-  gecxFetchCart(cartId).then(finish, function(err) {
-    gecxReportError('cart refresh', err);
-    finish(null);
-  });
+  ready
+      .then(function() {
+        return gecxFetchCart(cartToken);
+      })
+      .then(finish, function(err) {
+        gecxReportError('cart refresh', err);
+        finish(null);
+      });
 }
 
 // Helper to check if an element is visible in the viewport layout.
@@ -845,9 +1210,12 @@ function isElementVisible(el) {
  * inside the viewport horizontally. The last condition rules out off-canvas
  * drawers parked beside the viewport with a transform.
  * @param {?Element} el
+ * @param {boolean=} ignoreOwnVisibility Judge visibility by the parent, so an
+ *     element that hides itself (a launcher the widget has not revealed yet)
+ *     still counts when the page around it is visible.
  * @return {boolean}
  */
-function gecxIsOnScreen(el) {
+function gecxIsOnScreen(el, ignoreOwnVisibility) {
   if (!el || typeof el.getClientRects !== 'function' ||
       typeof window.getComputedStyle !== 'function') {
     return false;
@@ -857,7 +1225,12 @@ function gecxIsOnScreen(el) {
     return false;
   }
   const style = window.getComputedStyle(el);
-  if (style.display === 'none' || style.visibility === 'hidden') {
+  if (style.display === 'none') {
+    return false;
+  }
+  const visibilityStyle = ignoreOwnVisibility && el.parentElement ?
+      window.getComputedStyle(el.parentElement) : style;
+  if (visibilityStyle.visibility === 'hidden') {
     return false;
   }
   const viewportWidth = window.innerWidth ||
@@ -911,6 +1284,19 @@ function gecxIsHiddenByWidget(button) {
 }
 
 /**
+ * Whether the widget has not revealed this launcher yet. Until it knows the
+ * agent is enabled, every launcher is laid out but hidden (visibility: hidden,
+ * opacity: 0), and they are all revealed together by the `visible` class. The
+ * persistent entry point manages its own visibility and is never held back.
+ * @param {!Element} button
+ * @return {boolean}
+ */
+function gecxIsAwaitingReveal(button) {
+  return !button.classList.contains('visible') &&
+      button.getAttribute('entry-type') !== 'persistent';
+}
+
+/**
  * Calls fn for each element matching a selector, skipping invalid selectors.
  * @param {string} selector
  * @param {function(!Element)} fn
@@ -940,14 +1326,18 @@ const GECX_FOOTER_SELECTOR =
 const GECX_MOBILE_TOGGLE_SELECTORS = [
   // Block themes (FSE)
   '.wp-block-navigation__responsive-container-open',
-  // Accessible toggles
+  // Accessible toggles inside semantic or builder headers
   'header button[aria-label*="menu" i]',
   'header button[aria-controls*="nav" i]',
   'header button[aria-controls*="menu" i]',
   'header a[aria-label*="menu" i]',
   'header [role="button"][aria-label*="menu" i]',
+  '[data-elementor-type="header"] button[aria-label*="menu" i]',
+  '.elementor-location-header button[aria-label*="menu" i]',
+  '[data-elementor-type="header"] [role="button"][aria-label*="menu" i]',
+  '.elementor-location-header [role="button"][aria-label*="menu" i]',
   // Frameworks and popular themes (Bootstrap, Astra, GeneratePress,
-  // Storefront, Kadence, Neve, Elementor, Divi)
+  // Storefront, Kadence, Neve, Elementor, Max Mega Menu, Divi)
   '.navbar-toggle',
   '.navbar-toggler',
   '.off-canvas-toggle',
@@ -955,6 +1345,8 @@ const GECX_MOBILE_TOGGLE_SELECTORS = [
   '.menu-toggle-open',
   '.mobile-menu-toggle',
   '.elementor-menu-toggle',
+  '.mega-menu-toggle .mega-toggle-animated',
+  '.mega-menu-toggle button',
   '#et_mobile_nav_menu',
   '[data-toggle="offcanvas"]',
   // Flatsome
@@ -994,7 +1386,9 @@ function findMobileHeaderAnchor() {
     const cartSelectors = [
       'header .wc-block-mini-cart',
       'header .header-cart',
-      'header .cart-contents'
+      'header .cart-contents',
+      '[data-elementor-type="header"] .elementor-menu-cart__toggle_button',
+      '.elementor-location-header .elementor-menu-cart__toggle_button'
     ];
     for (let i = 0; i < cartSelectors.length; i++) {
       let found = null;
@@ -1092,6 +1486,42 @@ function gecxRemoveFooterNavItems() {
 }
 
 /**
+ * Selectors for top-level navigation menu lists inside semantic and page
+ * builder headers (including Elementor Theme Builder and Max Mega Menu).
+ * @const {string}
+ */
+const GECX_HEADER_MENU_LIST_SELECTORS =
+    'header nav ul, [data-elementor-type="header"] nav ul, .elementor-location-header nav ul, ' +
+    'nav.main-navigation ul, nav.primary-navigation ul, nav.elementor-nav-menu--main ul, #site-navigation ul, ' +
+    'header .wp-block-navigation__container, [data-elementor-type="header"] .wp-block-navigation__container, .elementor-location-header .wp-block-navigation__container, ' +
+    'header .nav-menu, [data-elementor-type="header"] .nav-menu, .elementor-location-header .nav-menu, ' +
+    'header ul.menu, [data-elementor-type="header"] ul.menu, .elementor-location-header ul.menu, ' +
+    '.mega-menu-wrap > ul.mega-menu, ul.max-mega-menu';
+
+/**
+ * Selectors for header columns that may be too narrow to hold both a mobile
+ * hamburger toggle and an inline launcher pill.
+ * @const {string}
+ */
+const GECX_MOBILE_HEADER_COLUMN_SELECTORS =
+    '.elementor-column, .e-con, [class*="col-"]';
+
+/**
+ * Selectors for full-width header sections or containers that can hold a
+ * centered launcher row when a narrow column cannot fit it inline.
+ * @const {string}
+ */
+const GECX_MOBILE_HEADER_ROW_CONTAINER_SELECTORS =
+    '.elementor-top-section, .e-con-full, header, [data-elementor-type="header"], .elementor-location-header, .site-header, #masthead, [role="banner"]';
+
+/**
+ * Maximum column width (as a fraction of the viewport width) considered a
+ * narrow multi-column mobile header cell.
+ * @const {number}
+ */
+const GECX_NARROW_HEADER_COLUMN_MAX_VIEWPORT_RATIO = 0.5;
+
+/**
  * The header menu list most likely to be the main navigation: a top-level
  * list, on screen if possible, with the most items. The first match in
  * document order is often a top bar, account or language menu instead.
@@ -1101,9 +1531,9 @@ function gecxFindHeaderMenuList() {
   let best = null;
   let bestScore = -1;
   gecxEach(
-      'header nav ul, nav.main-navigation ul, nav.primary-navigation ul, #site-navigation ul, header .wp-block-navigation__container, header .nav-menu, header ul.menu',
+      GECX_HEADER_MENU_LIST_SELECTORS,
       function(list) {
-        if (list.closest('.sub-menu, .children, .dropdown-menu') ||
+        if (list.closest('.sub-menu, .children, .dropdown-menu, .mega-sub-menu, .elementor-nav-menu--dropdown') ||
             (list.parentElement && list.parentElement.closest('li')) ||
             list.closest(GECX_FOOTER_SELECTOR)) {
           return;
@@ -1144,6 +1574,36 @@ function initNavPlacement() {
 }
 
 /**
+ * Header section or container that can hold a full-width centered launcher row
+ * when the mobile hamburger sits inside a column too narrow for both.
+ * @param {!Element} anchor
+ * @return {?Element}
+ */
+function gecxFindMobileHeaderRowContainer(anchor) {
+  if (typeof anchor.closest !== 'function') {
+    return null;
+  }
+  const col = anchor.closest(GECX_MOBILE_HEADER_COLUMN_SELECTORS);
+  if (!col || typeof col.getBoundingClientRect !== 'function' ||
+      typeof anchor.getBoundingClientRect !== 'function') {
+    return null;
+  }
+  const viewportWidth = window.innerWidth || 0;
+  const colRect = col.getBoundingClientRect();
+  if (colRect.width <= 0 || !viewportWidth ||
+      colRect.width >= viewportWidth * GECX_NARROW_HEADER_COLUMN_MAX_VIEWPORT_RATIO) {
+    return null;
+  }
+  // A column narrower than the toggle plus a collapsed pill (~56px) cannot fit
+  // both side by side without overflowing into adjacent header columns.
+  const anchorRect = anchor.getBoundingClientRect();
+  if (colRect.width - anchorRect.width >= 56) {
+    return null;
+  }
+  return anchor.closest(GECX_MOBILE_HEADER_ROW_CONTAINER_SELECTORS);
+}
+
+/**
  * Shows the launcher beside the theme's hamburger while it is visible, and
  * in the menu otherwise.
  *
@@ -1167,10 +1627,37 @@ function initMobileHeaderPlacement() {
       mobileButton = gecxCreateLauncherContainer('div', 'gecx-mobile-header-button');
     }
     if (mobileButton) {
-      if (mobileButton.nextSibling !== anchor) {
-        anchor.parentNode.insertBefore(mobileButton, anchor);
-      }
       mobileButton.style.removeProperty('display');
+      let rowContainer = gecxFindMobileHeaderRowContainer(anchor);
+      if (!rowContainer) {
+        mobileButton.classList.remove('gecx-mobile-header-button--row');
+        if (mobileButton.nextSibling !== anchor) {
+          anchor.parentNode.insertBefore(mobileButton, anchor);
+        }
+        // If the rendered button still overflows a narrow column, move it to
+        // its own centered row in the header.
+        const col = typeof anchor.closest === 'function' ?
+            anchor.closest(GECX_MOBILE_HEADER_COLUMN_SELECTORS) : null;
+        if (col && typeof col.getBoundingClientRect === 'function' &&
+            typeof mobileButton.getBoundingClientRect === 'function') {
+          const colRect = col.getBoundingClientRect();
+          const btnRect = mobileButton.getBoundingClientRect();
+          const anchorRect = anchor.getBoundingClientRect();
+          if (colRect.width > 0 &&
+              colRect.width < (window.innerWidth || 0) * GECX_NARROW_HEADER_COLUMN_MAX_VIEWPORT_RATIO &&
+              btnRect.width > 0 &&
+              (Math.max(btnRect.right, anchorRect.right) > colRect.right + 4 ||
+               Math.min(btnRect.left, anchorRect.left) < colRect.left - 4)) {
+            rowContainer = anchor.closest(GECX_MOBILE_HEADER_ROW_CONTAINER_SELECTORS);
+          }
+        }
+      }
+      if (rowContainer) {
+        mobileButton.classList.add('gecx-mobile-header-button--row');
+        if (mobileButton.parentNode !== rowContainer) {
+          rowContainer.appendChild(mobileButton);
+        }
+      }
     }
     // The in-menu copies would only duplicate it inside the opened drawer.
     for (let i = 0; i < navItems.length; i++) {
@@ -1201,6 +1688,10 @@ function gecxEnsureVisibleLauncher() {
   if (!cfg || !cfg.isWidgetEnabled || cfg.placement !== 'nav_menu' || !document.body) {
     return;
   }
+  if (gecxIsChatOpen()) {
+    gecxChatWasOpenForLauncher = true;
+    return;
+  }
   let fallback = document.querySelector('.gecx-launcher-fallback');
   let visible = false;
   let hiddenByWidget = false;
@@ -1210,7 +1701,10 @@ function gecxEnsureVisibleLauncher() {
     }
     if (gecxIsHiddenByWidget(button)) {
       hiddenByWidget = true;
-    } else if (!visible && gecxIsOnScreen(button)) {
+    } else if (!visible && gecxIsOnScreen(button, gecxIsAwaitingReveal(button))) {
+      // A launcher in place but not yet revealed counts: it is revealed with
+      // the fallback, which would otherwise flash beside it until the next
+      // placement pass hides the fallback again.
       visible = true;
     }
   });
@@ -1223,6 +1717,19 @@ function gecxEnsureVisibleLauncher() {
       fallback.style.display = 'none';
     }
     return;
+  }
+  // While a slide-in close transition is still padding the body, a header
+  // launcher can stay temporarily clipped; skip injecting or unhiding a
+  // fallback until body padding clears or the bounded deadline expires.
+  if (gecxChatCloseSettledAt > 0) {
+    const remainingPadding = (typeof window.getComputedStyle === 'function') ?
+        (parseFloat(window.getComputedStyle(document.body).paddingRight) || 0) :
+        0;
+    if (remainingPadding === 0 || Date.now() >= gecxChatCloseSettledAt) {
+      gecxChatCloseSettledAt = 0;
+    } else {
+      return;
+    }
   }
   if (!fallback) {
     fallback = gecxCreateLauncherContainer(
@@ -1368,6 +1875,24 @@ const GECX_BOTTOM_BAR_SELECTORS =
     '.storefront-handheld-footer-bar, .ast-sticky-add-to-cart, .sticky-add-to-cart, [class*="sticky-add-to-cart"], .wd-toolbar, .elementor-sticky--active';
 
 /**
+ * Fixed third-party corner widgets (chat bubbles, SMS launchers, store badges)
+ * that sit at the bottom edge of the viewport and would otherwise cover a
+ * bottom-corner floating or fallback launcher. The Google Merchant Center
+ * store widget mounts its wrapper at 0x0 and sizes it once its iframe loads.
+ * Its wrapper is a direct child of <body>, which the offset pass scans anyway;
+ * it is listed so it is still found if a theme or optimizer re-parents it.
+ * @const {string}
+ */
+const GECX_CORNER_WIDGET_SELECTORS =
+    '#podium-bubble, #podium-website-widget [style*="fixed"], #intercom-container, .intercom-lightweight-app-launcher, #tidio-chat, #tidio-chat-iframe, .crisp-client, #hubspot-messages-iframe-container, #gorgias-chat-container, #launcher, #chat-widget-container, #google-merchantwidget-iframe-wrapper';
+
+/**
+ * Every known bar and corner widget the offset pass checks by selector.
+ * @const {string}
+ */
+const GECX_FIXED_CANDIDATE_SELECTORS = GECX_BOTTOM_BAR_SELECTORS + ', ' + GECX_CORNER_WIDGET_SELECTORS;
+
+/**
  * Whether an element is ours or the chat widget's.
  * @param {!Element} el
  * @return {boolean}
@@ -1382,8 +1907,105 @@ function gecxIsOwnElement(el) {
 }
 
 /**
+ * Quiet time before the floating offset is re-measured, and the longest a
+ * pending re-measure may be put off by further changes.
+ * @const {number}
+ */
+const GECX_FLOATING_OFFSET_DEBOUNCE_MS = 100;
+/** @const {number} */
+const GECX_FLOATING_OFFSET_MAX_WAIT_MS = 300;
+
+/** @type {?number} */
+let gecxFloatingOffsetTimer = null;
+/** @type {number} When the oldest pending re-measure was requested, or 0. */
+let gecxFloatingOffsetPendingSince = 0;
+
+function gecxRunFloatingOffset() {
+  gecxFloatingOffsetTimer = null;
+  gecxFloatingOffsetPendingSince = 0;
+  updateFloatingOffset();
+}
+
+/**
+ * Re-measures the floating offset shortly, coalescing bursts of changes.
+ * Only the offset is recomputed, not the whole placement pass. A page that
+ * changes a watched element or a child of <body> more often than the quiet
+ * time (a ticker, a confetti overlay, a header animating on scroll) would
+ * otherwise put the re-measure off for as long as it keeps changing, so it
+ * runs at the latest GECX_FLOATING_OFFSET_MAX_WAIT_MS after the first request.
+ */
+function gecxScheduleFloatingOffset() {
+  const now = Date.now();
+  if (!gecxFloatingOffsetPendingSince) {
+    gecxFloatingOffsetPendingSince = now;
+  }
+  clearTimeout(gecxFloatingOffsetTimer);
+  const untilMaxWait = gecxFloatingOffsetPendingSince + GECX_FLOATING_OFFSET_MAX_WAIT_MS - now;
+  gecxFloatingOffsetTimer = setTimeout(gecxRunFloatingOffset,
+      Math.max(0, Math.min(GECX_FLOATING_OFFSET_DEBOUNCE_MS, untilMaxWait)));
+}
+
+// observe() on an element already observed re-delivers an initial
+// notification, which would re-run the measurement forever. Watched elements
+// are remembered here so each is observed once.
+/** @type {?WeakSet<!Element>} */
+const gecxWatchedFixedElements = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+
+/**
+ * Whether fixed elements can be watched for size changes. Without it, the
+ * content observer's attribute and removal checks are the only re-measure
+ * triggers.
+ * @const {boolean}
+ */
+const gecxCanWatchSize = typeof ResizeObserver !== 'undefined' && !!gecxWatchedFixedElements;
+
+/** @type {?ResizeObserver} */
+let gecxFixedResizeObserver = null;
+
+/**
+ * Re-measures the floating offset when a fixed element changes size.
+ *
+ * Third-party widgets often mount empty and size themselves after their
+ * iframe loads. Adding them triggers a placement pass while they are still
+ * 0x0, and the later resize can come from a class or stylesheet the content
+ * observer never sees. Without this, a widget like the Merchant Center store
+ * widget covers the launcher until the window resizes.
+ * @param {!Element} el
+ */
+function gecxWatchFixedElementSize(el) {
+  if (!gecxWatchedFixedElements || gecxWatchedFixedElements.has(el)) {
+    return;
+  }
+  // Recorded even without ResizeObserver, so contentObserver still treats a
+  // nested or re-parented widget's attribute changes as worth a re-measure.
+  gecxWatchedFixedElements.add(el);
+  if (!gecxCanWatchSize) {
+    return;
+  }
+  if (!gecxFixedResizeObserver) {
+    gecxFixedResizeObserver = new ResizeObserver(function(entries) {
+      // Let go of removed elements so pages that swap content don't keep
+      // them alive. One that is attached again is watched again.
+      for (let i = 0; i < entries.length; i++) {
+        const target = entries[i].target;
+        if (!target.isConnected) {
+          gecxFixedResizeObserver.unobserve(target);
+          gecxWatchedFixedElements.delete(target);
+        }
+      }
+      gecxScheduleFloatingOffset();
+    });
+  }
+  // The first notification arrives for every newly watched element, so each
+  // costs one extra, idempotent re-measure.
+  gecxFixedResizeObserver.observe(el);
+}
+
+/**
  * Lifts floating launchers above bars the theme fixes to the bottom of the
- * viewport: handheld footer bars, sticky add-to-cart bars, mobile toolbars.
+ * viewport (handheld footer bars, sticky add-to-cart bars, mobile toolbars)
+ * and fixed third-party corner widgets (such as Podium or Intercom) occupying
+ * the same bottom corner.
  *
  * Sets --gecx-floating-offset on the root element, which the floating
  * positions add to their bottom offset along with the device's safe area.
@@ -1399,27 +2021,68 @@ function updateFloatingOffset() {
   if (!viewportHeight || !viewportWidth) {
     return;
   }
+  let hasCornerLauncher = false;
+  let cornerLeft = 0;
+  let cornerRight = 0;
+  gecxEach(
+      '.gecx-floating-button-container--bottom-right, .gecx-floating-button-container--bottom-left, .gecx-launcher-fallback',
+      function(launcher) {
+        if (hasCornerLauncher || window.getComputedStyle(launcher).display === 'none') {
+          return;
+        }
+        hasCornerLauncher = true;
+        const isLeft = launcher.classList.contains('gecx-floating-button-container--bottom-left') ||
+            (launcher.classList.contains('gecx-launcher-fallback') && document.body.classList.contains('rtl'));
+        cornerLeft = isLeft ? 0 : Math.max(0, viewportWidth - 200);
+        cornerRight = isLeft ? Math.min(viewportWidth, 200) : viewportWidth;
+        if (typeof launcher.getBoundingClientRect === 'function') {
+          const r = launcher.getBoundingClientRect();
+          if (r.width > 0) {
+            cornerLeft = Math.min(cornerLeft, r.left);
+            cornerRight = Math.max(cornerRight, r.right);
+          }
+        }
+      });
+
   let offset = 0;
   const consider = function(el) {
     if (gecxIsOwnElement(el) || typeof el.getBoundingClientRect !== 'function') {
       return;
     }
     const style = window.getComputedStyle(el);
-    if (style.position !== 'fixed' || style.display === 'none' || style.visibility === 'hidden') {
+    if (style.position !== 'fixed') {
+      return;
+    }
+    // Watched before the size checks: a widget that mounts at 0x0 or hidden
+    // and grows later (the Merchant Center store widget) must be measured
+    // again once it has a size.
+    gecxWatchFixedElementSize(el);
+    if (style.display === 'none' || style.visibility === 'hidden') {
       return;
     }
     const rect = el.getBoundingClientRect();
+    // A bar narrowed while the chat panel pushes the page aside
+    // (gecxShiftFixedElementsForChat) still counts as full width.
     if (rect.height > 0 && rect.height < viewportHeight * 0.4 &&
-        rect.width > viewportWidth * 0.5 && rect.bottom >= viewportHeight - 2 &&
+        (rect.width > viewportWidth * 0.5 || el.classList.contains('gecx-shifted-for-chat')) &&
+        rect.bottom >= viewportHeight - 2 &&
         rect.top > viewportHeight * 0.5) {
+      offset = Math.max(offset, Math.ceil(viewportHeight - rect.top));
+    } else if (hasCornerLauncher && rect.height > 0 && rect.height <= 140 &&
+        rect.width > 0 && rect.width <= 260 &&
+        rect.bottom >= viewportHeight - 32 && rect.top >= viewportHeight - 160 &&
+        rect.left < cornerRight && rect.right > cornerLeft) {
       offset = Math.max(offset, Math.ceil(viewportHeight - rect.top));
     }
   };
   const children = document.body.children || [];
   for (let i = 0; i < children.length; i++) {
     consider(children[i]);
+    if (children[i].firstElementChild) {
+      consider(children[i].firstElementChild);
+    }
   }
-  gecxEach(GECX_BOTTOM_BAR_SELECTORS, consider);
+  gecxEach(GECX_FIXED_CANDIDATE_SELECTORS, consider);
 
   if (offset > 0) {
     document.documentElement.style.setProperty('--gecx-floating-offset', offset + 'px');
@@ -1490,13 +2153,39 @@ function gecxShiftFixedElementsForChat(pushWidth) {
   }
 }
 
+/** @const {number} Max ms to wait for body padding close transition before re-evaluating fallback. */
+const GECX_CHAT_CLOSE_SETTLE_MS = 450;
+
 /** @type {?number} Pending re-measure once the panel's padding transition ends. */
 let gecxCenteringFollowUp = null;
+
+/**
+ * Visibility events already handled, so one bubbling event reaching both
+ * document and window runs updateFloatingWidgetCentering() once.
+ * @type {?WeakSet<!Event>}
+ */
+const gecxHandledCenteringEvents = (typeof WeakSet === 'function') ? new WeakSet() : null;
+
+/** @type {boolean} Whether body.gecx-chat-open was active before the latest close check. */
+let gecxChatWasOpenForLauncher = gecxIsChatOpen();
+
+/** @type {number} Deadline timestamp (ms) ending close-transition fallback suppression. */
+let gecxChatCloseSettledAt = 0;
+
+/** @type {?number} Bounded timer to re-evaluate fallback once close transition settles. */
+let gecxLauncherCloseSettleTimer = null;
 
 // Keep floating button centered relative to remaining page content when chat panel opens.
 function updateFloatingWidgetCentering(isFollowUp) {
   if (!document.body || !document.documentElement) {
     return;
+  }
+  const eventArg = (isFollowUp && typeof isFollowUp === 'object') ? isFollowUp : null;
+  if (eventArg && gecxHandledCenteringEvents) {
+    if (gecxHandledCenteringEvents.has(eventArg)) {
+      return;
+    }
+    gecxHandledCenteringEvents.add(eventArg);
   }
   // The widget stylesheet animates the body padding over 0.4s, so what is
   // measured now is somewhere mid-transition. Measure again once it is done.
@@ -1507,18 +2196,48 @@ function updateFloatingWidgetCentering(isFollowUp) {
       updateFloatingWidgetCentering(true);
     }, 450);
   }
-  const isChatOpen = document.body.classList.contains('gecx-chat-open') ||
-      !!document.querySelector('chat-messenger:not(.messenger-hidden)');
+  const detail = eventArg && eventArg.detail;
+  const isClosingEvent = !!(detail && typeof detail.hidden === 'boolean' && detail.hidden);
+  const isChatOpen = !isClosingEvent && (document.body.classList.contains('gecx-chat-open') ||
+      !!document.querySelector('chat-messenger:not(.messenger-hidden)'));
+  const bodyPadding = (typeof window.getComputedStyle === 'function') ?
+      (parseFloat(window.getComputedStyle(document.body).paddingRight) || 0) :
+      0;
 
   if (!isChatOpen) {
     document.documentElement.style.removeProperty('--gecx-chat-panel-width');
     gecxShiftFixedElementsForChat(0);
+    if (!gecxIsChatOpen() && gecxChatWasOpenForLauncher) {
+      gecxChatWasOpenForLauncher = false;
+      if (bodyPadding > 0) {
+        if (!gecxChatCloseSettledAt) {
+          gecxChatCloseSettledAt = Date.now() + GECX_CHAT_CLOSE_SETTLE_MS;
+        }
+        if (gecxLauncherCloseSettleTimer === null) {
+          gecxLauncherCloseSettleTimer = setTimeout(function() {
+            gecxLauncherCloseSettleTimer = null;
+            gecxChatCloseSettledAt = 0;
+            if (!gecxIsChatOpen()) {
+              gecxEnsureVisibleLauncher();
+            }
+          }, GECX_CHAT_CLOSE_SETTLE_MS);
+        }
+      } else {
+        clearTimeout(gecxLauncherCloseSettleTimer);
+        gecxLauncherCloseSettleTimer = null;
+        gecxChatCloseSettledAt = 0;
+      }
+      gecxEnsureVisibleLauncher();
+    }
     return;
   }
+  if (gecxIsChatOpen()) {
+    gecxChatWasOpenForLauncher = true;
+    clearTimeout(gecxLauncherCloseSettleTimer);
+    gecxLauncherCloseSettleTimer = null;
+    gecxChatCloseSettledAt = 0;
+  }
 
-  const bodyPadding = (typeof window.getComputedStyle === 'function') ?
-      (parseFloat(window.getComputedStyle(document.body).paddingRight) || 0) :
-      0;
   const chatMessenger = document.querySelector('chat-messenger');
   let panelWidth = 0;
   if (chatMessenger && chatMessenger.offsetWidth) {
@@ -1702,12 +2421,15 @@ document.addEventListener('chat-messenger-update-cart', handleCartUpdate);
 
 window.addEventListener('chat-messenger-visibility-changed', updateFloatingWidgetCentering);
 document.addEventListener('chat-messenger-visibility-changed', updateFloatingWidgetCentering);
+window.addEventListener('chat-messenger-visibility-changed', gecxHandleChatVisibilityForCart);
+document.addEventListener('chat-messenger-visibility-changed', gecxHandleChatVisibilityForCart);
 
 if (typeof MutationObserver !== 'undefined' && document.body) {
   const chatObserver = new MutationObserver(function(mutations) {
     for (let i = 0; i < mutations.length; i++) {
       if (mutations[i].attributeName === 'class') {
         updateFloatingWidgetCentering();
+        gecxHandleChatVisibilityForCart();
         break;
       }
     }
@@ -1726,7 +2448,42 @@ if (typeof MutationObserver !== 'undefined' && document.body) {
           gecxScheduleReinit();
           return;
         }
+        // A widget can be shown, hidden or moved without changing size, which
+        // the ResizeObserver doesn't report. Re-measure when a child of <body>,
+        // a watched fixed element, or a known bar or corner widget changes (one
+        // can become fixed after mount, e.g. a sticky bar on scroll); without
+        // ResizeObserver this also catches widgets sizing themselves through
+        // their style attribute.
+        const target = mutations[i].target;
+        if (!gecxIsOwnElement(target) && (target.parentElement === document.body ||
+            (gecxWatchedFixedElements && gecxWatchedFixedElements.has(target)) ||
+            (typeof target.matches === 'function' &&
+             target.matches(GECX_FIXED_CANDIDATE_SELECTORS)))) {
+          gecxScheduleFloatingOffset();
+        }
         continue;
+      }
+      // A removed widget may not report a size change (no ResizeObserver, or
+      // already 0x0), so re-measure when a watched element or a child of
+      // <body> goes away, and stop watching it. Without ResizeObserver a
+      // widget can also go with an ancestor that is neither, so any removal
+      // re-measures there (debounced; only old browsers take this path).
+      const removed = mutations[i].removedNodes || [];
+      for (let j = 0; j < removed.length; j++) {
+        const node = removed[j];
+        if (node.nodeType !== 1 || gecxIsOwnElement(node)) {
+          continue;
+        }
+        const watched = !!(gecxWatchedFixedElements && gecxWatchedFixedElements.has(node));
+        if (watched) {
+          if (gecxFixedResizeObserver) {
+            gecxFixedResizeObserver.unobserve(node);
+          }
+          gecxWatchedFixedElements.delete(node);
+        }
+        if (watched || mutations[i].target === document.body || !gecxCanWatchSize) {
+          gecxScheduleFloatingOffset();
+        }
       }
       const added = mutations[i].addedNodes || [];
       for (let j = 0; j < added.length; j++) {

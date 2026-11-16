@@ -51,6 +51,13 @@ abstract class TestCase extends PolyfilledTestCase {
 	protected array $cookies = [];
 
 	/**
+	 * Captured WooCommerce logger messages.
+	 *
+	 * @var array<int, array{level: string, message: string}>
+	 */
+	protected array $logs = [];
+
+	/**
 	 * Set up before each test.
 	 */
 	public function set_up(): void {
@@ -61,13 +68,16 @@ abstract class TestCase extends PolyfilledTestCase {
 		$this->http_requests        = [];
 		$this->http_responses       = [];
 		$this->cookies              = [];
+		$this->logs                 = [];
 
 		$this->set_permalink_structure( '/%postname%/' );
+		$_SERVER['REQUEST_METHOD'] = 'GET';
 
 		Auth::reset_cart_token_state();
 		Console_API::reset_wc_auth_state();
 
 		if ( function_exists( 'WC' ) ) {
+			remove_all_actions( 'woocommerce_set_cart_cookies' );
 			WC()->session = new WC_Session_Mock();
 			WC()->cart    = new WC_Cart_Mock();
 		}
@@ -81,6 +91,7 @@ abstract class TestCase extends PolyfilledTestCase {
 
 		add_filter( 'pre_http_request', [ $this, 'mock_http_request_handler' ], 10, 3 );
 		add_filter( 'woocommerce_set_cookie_enabled', [ $this, 'capture_wc_cookies' ], 10, 5 );
+		add_filter( 'woocommerce_logging_class', [ $this, 'get_mock_logger' ] );
 
 		add_filter( 'wp_redirect', [ $this, 'catch_redirect' ], 1, 2 );
 	}
@@ -92,6 +103,7 @@ abstract class TestCase extends PolyfilledTestCase {
 		$this->http_requests  = [];
 		$this->http_responses = [];
 		$this->cookies        = [];
+		$this->logs           = [];
 
 		$this->disable_ajax();
 		Auth::reset_cart_token_state();
@@ -102,6 +114,7 @@ abstract class TestCase extends PolyfilledTestCase {
 		$_POST                          = [];
 		$_REQUEST                       = [];
 		$_COOKIE                        = [];
+		$_SERVER['REQUEST_METHOD']      = 'GET';
 		$GLOBALS['wp_settings_errors'] = [];
 		unset( $_SERVER['HTTP_CART_TOKEN'], $_SERVER['HTTP_AUTHORIZATION'], $_SERVER['HTTP_ORIGIN'], $_SERVER['HTTP_REFERER'], $_SERVER['HTTP_SEC_FETCH_SITE'] );
 
@@ -161,6 +174,27 @@ abstract class TestCase extends PolyfilledTestCase {
 			'secure' => (bool) $secure,
 		];
 		return false;
+	}
+
+	/**
+	 * Returns a mock WooCommerce logger that records log messages into $this->logs.
+	 *
+	 * @return object
+	 */
+	public function get_mock_logger(): object {
+		$logs = &$this->logs;
+		return new class( $logs ) extends \WC_Logger {
+			private array $logs;
+			public function __construct( array &$logs ) {
+				$this->logs = &$logs;
+			}
+			public function log( $level, $message, $context = [] ): void {
+				$this->logs[] = [
+					'level'   => (string) $level,
+					'message' => (string) $message,
+				];
+			}
+		};
 	}
 
 	/**

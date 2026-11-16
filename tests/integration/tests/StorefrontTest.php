@@ -1123,6 +1123,21 @@ function fakeFetch(url, init) {
     const nonce = 'nonce-' + log.fetches.filter(f => f.url.indexOf('auth-context') !== -1).length;
     return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve({ nonce: nonce }) });
   }
+  if (url.indexOf('/gecx/v1/cart-session') !== -1) {
+    log.sequence.push('cart-session');
+    const binding = scenario.binding || 'existing';
+    const token = binding === 'agent' ? (scenario.boundToken || null) : null;
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => String(name).toLowerCase() === 'cart-token' ? token : null },
+      json: () => Promise.resolve({ binding: binding })
+    });
+  }
+  if (url.indexOf('/gecx/v1/session') !== -1) {
+    log.sequence.push('session');
+    return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve({}) });
+  }
   log.sequence.push('cart read');
   const next = cartResponses.shift() || { status: 200, body: {} };
   return Promise.resolve({
@@ -1140,10 +1155,12 @@ const badgeEls = {};
 
 class FakeCustomEvent { constructor(type, init) { this.type = type; this.detail = init && init.detail; } }
 
+const storage = scenario.localStorage || null;
 const window = {
   location: { origin: 'https://example.com', pathname: scenario.pathname || '/', reload: () => { log.reloads++; } },
   innerWidth: 1024,
   addEventListener: on('window'),
+  localStorage: storage ? { getItem: (key) => Object.prototype.hasOwnProperty.call(storage, key) ? storage[key] : null } : undefined,
   gecxStorefrontConfig: Object.assign({
     isWidgetEnabled: true,
     placement: 'floating',
@@ -1342,7 +1359,39 @@ JS;
             ]
         );
 
-        $this->assertSame( $token, $log['fetches'][1]['headers']['Cart-Token'] );
+        $cart_reads = array_values(
+            array_filter(
+                $log['fetches'],
+                static function ( array $fetch ): bool {
+                    return false !== strpos( $fetch['url'], 'wc/store/v1/cart' );
+                }
+            )
+        );
+        $this->assertCount( 1, $cart_reads );
+        $this->assertSame( $token, $cart_reads[0]['headers']['Cart-Token'] );
+    }
+
+    public function test_cart_update_binds_the_cart_session_before_reading_the_cart_without_reposting_the_bare_session_id(): void {
+        $log = $this->run_cart_update_scenario(
+            [
+                'detail'        => [ 'cartId' => 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidF8xIn0.sig' ],
+                'binding'       => 'agent',
+                'boundToken'    => 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidF8xIiwibiI6Mn0.sig',
+                'localStorage'  => [ 'gecx_session_id' => 'chat-session-1' ],
+                'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ] ],
+            ]
+        );
+
+        // The bare ID in localStorage is not re-posted to /gecx/v1/session:
+        // that would overwrite the full resource name in the cookie and
+        // session row with an ID the linked-project check refuses.
+        $this->assertSame( [ 'cart-session', 'cart read' ], $log['sequence'] );
+        $this->assertSame(
+            [ 'gecx:cart-session-bound', 'wc-blocks_added_to_cart', 'gecx:cart-updated' ],
+            self::event_types( $log )
+        );
+        // The token the route sent stays out of the DOM.
+        $this->assertSame( [ 'binding' => 'agent' ], $log['events'][0]['detail'] );
     }
 
     public function test_cart_update_never_reloads_checkout(): void {
@@ -1712,5 +1761,15 @@ JS;
         // The add-to-cart block filter still places them.
         $this->assertStringContainsString( '<gecx-suggested-prompts', $storefront->inject_block_suggested_prompts( '<div class="wp-block-woocommerce-add-to-cart-form"></div>', [] ) );
         $this->set_block_theme( false );
+    }
+
+    public function test_inline_styles_cover_megamenu_drawer_and_mobile_header_row(): void {
+        $storefront = $this->activate_widget();
+        $storefront->enqueue_storefront_assets();
+        $css = $this->get_inline_styles( 'gecx-widget-style' );
+
+        $this->assertStringContainsString( '.mega-menu-open .gecx-nav-menu-item', $css );
+        $this->assertStringContainsString( '.gecx-mobile-header-button.gecx-mobile-header-button--row', $css );
+        $this->assertStringContainsString( 'body.gecx-chat-open .gecx-mobile-header-button--floating', $css );
     }
 }

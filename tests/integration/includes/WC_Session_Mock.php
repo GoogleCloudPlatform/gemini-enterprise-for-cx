@@ -25,14 +25,21 @@ class WC_Session_Mock extends \WC_Session_Handler {
 	public int $cookie_set_calls = 0;
 
 	/**
+	 * Session expiration calls count.
+	 */
+	public int $session_expiration_calls = 0;
+
+	/**
+	 * Session timestamp updates recorded.
+	 *
+	 * @var array<int, array{0: string, 1: int}>
+	 */
+	public array $session_timestamp_updates = [];
+
+	/**
 	 * Save data calls count.
 	 */
 	public int $save_data_calls = 0;
-
-	/**
-	 * Customer ID.
-	 */
-	public string $customer_id = 't_guest_session_123';
 
 	/**
 	 * Whether an active session exists.
@@ -42,7 +49,37 @@ class WC_Session_Mock extends \WC_Session_Handler {
 	/**
 	 * Constructor.
 	 */
-	public function __construct() {}
+	public function __construct() {
+		parent::__construct();
+		$this->_customer_id = 't_guest_session_123';
+	}
+
+	/**
+	 * Magic getter to support direct `$session->customer_id` access in tests.
+	 *
+	 * @param mixed $key Key to get.
+	 * @return mixed
+	 */
+	public function __get( $key ) {
+		if ( 'customer_id' === $key ) {
+			return (string) $this->_customer_id;
+		}
+		return parent::__get( $key );
+	}
+
+	/**
+	 * Magic setter to support direct `$session->customer_id` assignment in tests.
+	 *
+	 * @param mixed $key   Key to set.
+	 * @param mixed $value Value to set.
+	 */
+	public function __set( $key, $value ) {
+		if ( 'customer_id' === $key ) {
+			$this->_customer_id = (string) $value;
+			return;
+		}
+		parent::__set( $key, $value );
+	}
 
 	/**
 	 * Init mock.
@@ -60,6 +97,39 @@ class WC_Session_Mock extends \WC_Session_Handler {
 	}
 
 	/**
+	 * Sets session expiration and records call.
+	 */
+	public function set_session_expiration(): void {
+		$this->session_expiration_calls++;
+		$this->_session_expiring   = time() + DAY_IN_SECONDS;
+		$this->_session_expiration = time() + 2 * DAY_IN_SECONDS;
+	}
+
+	/**
+	 * Records session timestamp update.
+	 *
+	 * @param string $customer_id Customer ID.
+	 * @param int    $timestamp   Timestamp.
+	 */
+	public function update_session_timestamp( $customer_id, $timestamp ): void {
+		$this->session_timestamp_updates[] = [ (string) $customer_id, (int) $timestamp ];
+	}
+
+	/**
+	 * Exposes session data for tests.
+	 */
+	public function get_session_data_for_test(): array {
+		return is_array( $this->_data ) ? $this->_data : [];
+	}
+
+	/**
+	 * Exposes session expiration for tests.
+	 */
+	public function get_session_expiration_for_test(): int {
+		return (int) ( $this->_session_expiration ?? 0 );
+	}
+
+	/**
 	 * Records save data call.
 	 *
 	 * @param string $old_session_key Old session key.
@@ -72,7 +142,7 @@ class WC_Session_Mock extends \WC_Session_Handler {
 	 * Gets customer ID.
 	 */
 	public function get_customer_id(): string {
-		return $this->customer_id;
+		return (string) $this->_customer_id;
 	}
 
 	/**
@@ -81,7 +151,7 @@ class WC_Session_Mock extends \WC_Session_Handler {
 	 * @param mixed $id Customer ID.
 	 */
 	public function set_customer_id( $id ): void {
-		$this->customer_id = (string) $id;
+		$this->_customer_id = (string) $id;
 	}
 
 	/**
@@ -101,7 +171,7 @@ class WC_Session_Mock extends \WC_Session_Handler {
 			foreach ( $_COOKIE as $k => $v ) {
 				if ( 0 === strpos( (string) $k, 'wp_woocommerce_session_' ) ) {
 					$parts = explode( '||', (string) $v );
-					if ( count( $parts) >= 4 ) {
+					if ( count( $parts ) >= 4 ) {
 						if ( 'forged' === $parts[3] ) {
 							return false;
 						}
@@ -110,7 +180,7 @@ class WC_Session_Mock extends \WC_Session_Handler {
 				}
 			}
 		}
-		return [ $this->customer_id, time() + 3600, time() + 1800, 'valid_hash' ];
+		return [ (string) $this->_customer_id, time() + 3600, time() + 1800, 'valid_hash' ];
 	}
 }
 
