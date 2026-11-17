@@ -1727,6 +1727,47 @@ JS;
         remove_filter( 'post_password_required', '__return_false' );
     }
 
+    public function test_product_page_config_carries_the_current_product_id_as_an_int(): void {
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        $this->go_to( get_permalink( $product_id ) );
+
+        $config = $this->localized_storefront_config();
+
+        // Nested: wp_localize_script() would turn a top-level int into a string.
+        $this->assertSame( [ 'id' => $product_id ], $config['currentProduct'] );
+    }
+
+    public function test_current_product_id_does_not_depend_on_pdp_prompts_auto_inject(): void {
+        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
+        $this->go_to( get_permalink( $product_id ) );
+        update_option( 'gecx_pdp_prompts_enabled', 0 );
+
+        $config = $this->localized_storefront_config();
+
+        $this->assertSame( [ 'id' => $product_id ], $config['currentProduct'] );
+        // isPdp keeps driving prompt placement, so it stays tied to the setting.
+        $this->assertArrayNotHasKey( 'isPdp', $config );
+    }
+
+    public function test_current_product_id_is_withheld_off_product_pages_and_for_password_protected_products(): void {
+        $this->assertArrayNotHasKey( 'currentProduct', $this->localized_storefront_config() );
+
+        $page_id = $this->factory()->post->create( [ 'post_type' => 'page' ] );
+        $this->go_to( get_permalink( $page_id ) );
+        $this->assertArrayNotHasKey( 'currentProduct', $this->localized_storefront_config() );
+
+        $product_id = $this->factory()->post->create( [
+            'post_type'     => 'product',
+            'post_password' => 'secret_pass',
+        ] );
+        $this->go_to( get_permalink( $product_id ) );
+        $this->assertArrayNotHasKey( 'currentProduct', $this->localized_storefront_config() );
+
+        add_filter( 'post_password_required', '__return_false' );
+        $this->assertSame( [ 'id' => $product_id ], $this->localized_storefront_config()['currentProduct'] );
+        remove_filter( 'post_password_required', '__return_false' );
+    }
+
     public function test_config_has_no_product_prompts_markup_off_product_pages(): void {
         $this->assertArrayNotHasKey( 'productPrompts', $this->localized_storefront_config()['markup'] );
     }

@@ -526,6 +526,20 @@ class Storefront {
             'cartRefresh'      => self::get_cart_refresh_config(),
         ];
 
+        // Independent of the PDP prompts setting, so features that need the
+        // product (such as the Price history link) work with prompts turned
+        // off. Kept apart from isPdp, which storefront.js reads to decide
+        // whether to place prompts and which also covers pages that merely
+        // embed a product. Nested so the ID stays an int: top-level scalars
+        // are cast to strings by wp_localize_script(). Absent when the page
+        // is not a product page or the product is password protected.
+        if ( is_product() && ! $this->current_product_is_password_protected() ) {
+            $product_id = self::resolve_current_product_id();
+            if ( $product_id > 0 ) {
+                $config['currentProduct'] = [ 'id' => $product_id ];
+            }
+        }
+
         if ( $this->is_pdp_prompts_auto_inject_enabled() ) {
             $is_product_page = is_product();
             // Also true for a page embedding a product with [product_page] or
