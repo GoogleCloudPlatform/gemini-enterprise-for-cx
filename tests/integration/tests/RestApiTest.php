@@ -2136,18 +2136,25 @@ class RestApiTest extends RestTestCase {
             [ '%s', '%s', '%d' ]
         );
 
-        // Sign a real WC_Session_Handler cookie for $guest_key, then reset WC()->session to null
+        // Sign a real WC_Session_Handler cookie for $guest_key across all WooCommerce
+        // versions, then clear captured response cookies and reset WC()->session to null
         // to match a fresh non-Store-API WordPress REST request.
-        $signer     = new WC_Session_Handler();
-        $reflection = new ReflectionMethod( WC_Session_Handler::class, 'hash' );
-        if ( PHP_VERSION_ID < 80100 ) {
-            $reflection->setAccessible( true );
-        }
-        $exp  = time() + 2 * DAY_IN_SECONDS;
-        $hash = $reflection->invoke( $signer, $guest_key . '|' . $exp );
+        $signer   = new WC_Session_Handler();
+        $point_at = \Closure::bind(
+            function ( string $key ): void {
+                $this->_customer_id = $key;
+            },
+            $signer,
+            WC_Session_Handler::class
+        );
+        $point_at( $guest_key );
+        $signer->set_session_expiration();
+        $signer->set_customer_session_cookie( true );
 
-        $_COOKIE[ 'wp_woocommerce_session_' . COOKIEHASH ] = $guest_key . '||' . $exp . '||' . ( $exp - HOUR_IN_SECONDS ) . '||' . $hash;
-        WC()->session                                      = null;
+        $cookie_name             = 'wp_woocommerce_session_' . COOKIEHASH;
+        $_COOKIE[ $cookie_name ] = $this->cookies[ $cookie_name ]['value'];
+        $this->cookies           = [];
+        WC()->session            = null;
 
         $session_id = 'projects/123/locations/global/commerceSessions/sess-logged-in-42';
         $request    = new WP_REST_Request( 'POST', '/gecx/v1/session' );
@@ -2158,6 +2165,7 @@ class RestApiTest extends RestTestCase {
         $this->assertInstanceOf( WP_REST_Response::class, $res );
         $this->assertSame( 200, $res->get_status() );
         $this->assertNull( WC()->session );
+        $this->assertArrayNotHasKey( $cookie_name, $this->cookies );
         $this->assertSame( $session_id, $_COOKIE['gecx_session_id'] ?? null );
 
         $guest_row = $this->get_wc_session( $guest_key );
