@@ -28,7 +28,8 @@ jobs:
     name: Build release archive
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Creates the GitHub release and uploads the archive to it.
+      contents: write # Prepares draft release notes from changelog.txt.
+      id-token: write # Authenticates to OSS Exit Gate via Workload Identity Federation.
     outputs:
       # The commit this job verified and archived. Later jobs that need the
       # source check out this, not the ref, so a tag or branch moved mid-run
@@ -120,20 +121,81 @@ jobs:
           path: build/*.zip
           if-no-files-found: error
 
-      - name: Attach the archive to the GitHub release
+      - name: Prepare draft release notes on GitHub
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          if gh release view "${TAG}" > /dev/null 2>&1; then
-            gh release upload "${TAG}" build/*.zip --clobber
-          else
-            # Use the newest changelog.txt entry as the release notes.
+          if ! gh release view "${TAG}" > /dev/null 2>&1; then
+            # Use the newest changelog.txt entry as the release notes; OSS Exit Gate attaches the archive and publishes.
             awk '/^[0-9]{4}-[0-9]{2}-[0-9]{2} - version /{n++} n==1' changelog.txt > build/notes.md
-            gh release create "${TAG}" build/*.zip --verify-tag --title "${TAG}" --notes-file build/notes.md
+            gh release create "${TAG}" --verify-tag --title "${TAG}" --notes-file build/notes.md --draft
           fi
+
+      - name: Authenticate to Google Cloud (OSS Exit Gate)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: 'projects/305452601764/locations/global/workloadIdentityPools/builders/providers/github'
+
+      - name: Set up Cloud SDK
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Stage release archive to OSS Exit Gate and upload manifest
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          set +e
+          gcloud artifacts versions describe "${TAG}" \
+            --package="gemini-enterprise-for-cx" \
+            --project="oss-exit-gate-prod" \
+            --location="us" \
+            --repository="gemini-enterprise-for-cx--githubreleases" >/dev/null 2>describe.err
+          DESC_RC=$?
+          set -e
+          if [ "$DESC_RC" -eq 0 ]; then
+            gcloud artifacts versions delete "${TAG}" \
+              --package="gemini-enterprise-for-cx" \
+              --project="oss-exit-gate-prod" \
+              --location="us" \
+              --repository="gemini-enterprise-for-cx--githubreleases" \
+              --quiet
+          elif ! grep -Eqi "NOT_FOUND|not.found|404" describe.err; then
+            cat describe.err >&2
+            exit "$DESC_RC"
+          fi
+          gcloud artifacts generic upload \
+            --project="oss-exit-gate-prod" \
+            --location="us" \
+            --repository="gemini-enterprise-for-cx--githubreleases" \
+            --package="gemini-enterprise-for-cx" \
+            --version="${TAG}" \
+            --source="build/gemini-enterprise-for-cx-${VERSION}.zip"
+          cat <<EOF > manifest.json
+          {
+            "publish_all": false,
+            "publishing_groups": [
+              {
+                "packages": [
+                  {
+                    "name": "gemini-enterprise-for-cx",
+                    "version": "${TAG}"
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+          gcloud storage cp manifest.json \
+            "gs://oss-exit-gate-prod-projects-bucket/gemini-enterprise-for-cx/githubreleases/manifests/manifest-${TAG}-${RUN_ID}-${RUN_ATTEMPT}.json"
 
   # Commits the release to the WordPress.org Plugin Directory
   # (https://wordpress.org/plugins/gemini-enterprise-for-cx/): trunk, a
