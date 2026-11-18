@@ -2087,7 +2087,7 @@ class RestApiTest extends RestTestCase {
         $this->assertNotNull( $stored );
     }
 
-    public function test_save_session_handler_does_not_force_cookie_for_uncookied_guest_without_cart(): void {
+    public function test_save_session_handler_does_not_touch_wc_session_cookie_or_save_data(): void {
         WC()->cart = new WC_Cart_Mock();
 
         $rest_api = new REST_API();
@@ -2101,12 +2101,73 @@ class RestApiTest extends RestTestCase {
         $this->assertSame( 0, WC()->session->cookie_set_calls );
         $this->assertSame( 0, WC()->session->save_data_calls );
 
-        // Once the browser already has a WooCommerce session cookie, save_session_handler persists and refreshes it.
+        // Even when the browser already holds a WooCommerce session cookie,
+        // save_session_handler updates only gecx_session_id in SQL and leaves
+        // WC_Session_Handler::set_customer_session_cookie() / save_data() untouched.
         $_COOKIE['wp_woocommerce_session_test'] = 't_guest_session_123||12345||12345||hash';
         $res_with_cookie                        = $rest_api->session_attribution->save_session_handler( $request );
         $this->assertInstanceOf( WP_REST_Response::class, $res_with_cookie );
-        $this->assertSame( 1, WC()->session->cookie_set_calls );
-        $this->assertSame( 1, WC()->session->save_data_calls );
+        $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( 0, WC()->session->save_data_calls );
+    }
+
+    /**
+     * Regression guard: WooCommerce's Interactivity API cart.js
+     * omits X-WP-Nonce, storing a logged-in shopper's cart in a `t_...` guest
+     * session cookie. When /gecx/v1/session runs 250 ms later WITH X-WP-Nonce
+     * while WC()->session is null, it must NOT initialize WC_Session_Handler
+     * (which would migrate and delete `t_...` and rewrite the cookie to the
+     * numeric user ID, causing the next un-nonced cart.js call to destroy_session()).
+     */
+    public function test_save_session_handler_preserves_logged_in_shopper_guest_cart_when_wc_session_is_null(): void {
+        $this->ensure_user_with_id( 42, 'logged_in_shopper', 'customer', 'shopper42@example.com' );
+        wp_set_current_user( 42 );
+
+        global $wpdb;
+        $guest_key  = 't_store_api_guest_cart_abc';
+        $cart_items = [ 'line_1' => [ 'product_id' => 77, 'quantity' => 1 ] ];
+        $wpdb->replace(
+            $wpdb->prefix . 'woocommerce_sessions',
+            [
+                'session_key'    => $guest_key,
+                'session_value'  => maybe_serialize( [ 'cart' => maybe_serialize( $cart_items ) ] ),
+                'session_expiry' => time() + DAY_IN_SECONDS,
+            ],
+            [ '%s', '%s', '%d' ]
+        );
+
+        // Sign a real WC_Session_Handler cookie for $guest_key, then reset WC()->session to null
+        // to match a fresh non-Store-API WordPress REST request.
+        $signer     = new WC_Session_Handler();
+        $reflection = new ReflectionMethod( WC_Session_Handler::class, 'hash' );
+        if ( PHP_VERSION_ID < 80100 ) {
+            $reflection->setAccessible( true );
+        }
+        $exp  = time() + 2 * DAY_IN_SECONDS;
+        $hash = $reflection->invoke( $signer, $guest_key . '|' . $exp );
+
+        $_COOKIE[ 'wp_woocommerce_session_' . COOKIEHASH ] = $guest_key . '||' . $exp . '||' . ( $exp - HOUR_IN_SECONDS ) . '||' . $hash;
+        WC()->session                                      = null;
+
+        $session_id = 'projects/123/locations/global/commerceSessions/sess-logged-in-42';
+        $request    = new WP_REST_Request( 'POST', '/gecx/v1/session' );
+        $request->set_param( 'session_id', $session_id );
+
+        $res = ( new REST_API() )->session_attribution->save_session_handler( $request );
+
+        $this->assertInstanceOf( WP_REST_Response::class, $res );
+        $this->assertSame( 200, $res->get_status() );
+        $this->assertNull( WC()->session );
+        $this->assertSame( $session_id, $_COOKIE['gecx_session_id'] ?? null );
+
+        $guest_row = $this->get_wc_session( $guest_key );
+        $this->assertNotNull( $guest_row );
+        $this->assertSame( maybe_serialize( $cart_items ), $guest_row['cart'] ?? null );
+        $this->assertSame( $session_id, $guest_row['gecx_session_id'] ?? null );
+
+        $user_row = $this->get_wc_session( '42' );
+        $this->assertNotNull( $user_row );
+        $this->assertSame( $session_id, $user_row['gecx_session_id'] ?? null );
     }
 
     public function test_save_session_handler_writes_no_row_for_uncookied_guest(): void {

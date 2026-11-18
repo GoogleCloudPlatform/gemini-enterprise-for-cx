@@ -143,6 +143,22 @@ class Cart_Binding {
      * @return \WP_REST_Response|\WP_Error
      */
     public function bind_cart_session_handler( \WP_REST_Request $request ) {
+        if ( ! function_exists( 'WC' ) ) {
+            return new \WP_Error( 'session_not_initialized', __( 'WooCommerce session not active.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
+        }
+        if ( null !== WC()->session && ( ! is_object( WC()->session ) || ! method_exists( WC()->session, 'set_customer_session_cookie' ) || ! method_exists( WC()->session, 'get_customer_id' ) ) ) {
+            return new \WP_Error( 'session_not_initialized', __( 'WooCommerce session not active.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
+        }
+
+        $user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+        // Return before WC()->initialize_session() for logged-in shoppers:
+        // initializing WC_Session_Handler on a nonced REST request migrates a
+        // Store API `t_...` guest cookie to the numeric user ID, causing the
+        // next un-nonced Store API cart.js call to destroy_session().
+        if ( $user_id > 0 ) {
+            return self::respond( 'existing' );
+        }
+
         $session = self::get_session_handler();
         if ( null === $session ) {
             return new \WP_Error( 'session_not_initialized', __( 'WooCommerce session not active.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
@@ -150,14 +166,13 @@ class Cart_Binding {
 
         $raw_agent_token = trim( (string) $request->get_param( 'cart_token' ) );
         $agent_key       = self::get_guest_cart_key( $raw_agent_token );
-        $user_id         = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
 
         // The browser's own cart is checked whether or not its cookie
         // verifies: a session whose cookie this plugin cannot verify, such as
         // one a custom session handler signs in its own format, may still
         // hold a cart, and binding would orphan it. A new session, or one
         // WooCommerce rejected, is empty anyway.
-        if ( $user_id > 0 || self::browser_cart_has_items( $session ) ) {
+        if ( self::browser_cart_has_items( $session ) ) {
             return self::respond( 'existing' );
         }
         if ( '' !== $agent_key && self::get_browser_guest_key( $session ) === $agent_key ) {

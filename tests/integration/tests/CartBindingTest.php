@@ -312,6 +312,15 @@ class CartBindingTest extends RestTestCase {
         $this->assertSame( 0, WC()->session->cookie_set_calls );
     }
 
+    public function test_logged_in_shopper_does_not_initialize_wc_session_when_null(): void {
+        $this->ensure_user_with_id( 42, 'shopper42', 'customer', 'shopper@example.com' );
+        wp_set_current_user( 42 );
+        WC()->session = null;
+
+        $this->assertSame( self::EXISTING, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
+        $this->assertNull( WC()->session );
+    }
+
     public function test_never_binds_a_browser_to_a_registered_user_session(): void {
         $this->given_session_with_cart( '999', self::AGENT_CART_LINES );
 

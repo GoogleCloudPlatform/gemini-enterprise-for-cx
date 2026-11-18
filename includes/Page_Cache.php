@@ -149,6 +149,20 @@ class Page_Cache {
         if ( isset( $GLOBALS['kinsta_cache'] ) && is_object( $GLOBALS['kinsta_cache'] ) && isset( $GLOBALS['kinsta_cache']->kinsta_cache_purge ) && is_object( $GLOBALS['kinsta_cache']->kinsta_cache_purge ) && method_exists( $GLOBALS['kinsta_cache']->kinsta_cache_purge, 'purge_complete_caches' ) ) {
             $GLOBALS['kinsta_cache']->kinsta_cache_purge->purge_complete_caches();
         }
+        // Batcache (WordPress.com Atomic, VIP, Pressable). Batcache stores
+        // full HTML responses in the persistent object cache rather than on
+        // disk, so flushing its cache group (or the object cache when group
+        // flushing is unsupported) evicts cached storefront pages.
+        if ( ( isset( $GLOBALS['batcache'] ) && is_object( $GLOBALS['batcache'] ) ) || function_exists( 'batcache_cancel' ) ) {
+            $batcache_group = ( isset( $GLOBALS['batcache'] ) && is_object( $GLOBALS['batcache'] ) && isset( $GLOBALS['batcache']->group ) && is_string( $GLOBALS['batcache']->group ) && '' !== $GLOBALS['batcache']->group )
+                ? $GLOBALS['batcache']->group
+                : 'batcache';
+            if ( function_exists( 'wp_cache_supports' ) && wp_cache_supports( 'flush_group' ) && function_exists( 'wp_cache_flush_group' ) ) {
+                wp_cache_flush_group( $batcache_group );
+            } elseif ( function_exists( 'wp_cache_flush' ) ) {
+                wp_cache_flush();
+            }
+        }
 
         // Caches that purge on an action of their own. Firing one that no
         // plugin listens to does nothing.

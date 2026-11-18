@@ -127,5 +127,32 @@ namespace Google\Gemini_Enterprise_For_CX\Tests\Integration {
 			$this->assertContains( 'litespeed_purge_all', $fired );
 			$this->assertSame( Page_Cache::PURGE_ACTION, end( $fired ) );
 		}
+
+		public function test_purge_flushes_batcache_when_present(): void {
+			wp_cache_set( 'cached_home', '<html>cached</html>', 'batcache' );
+			$GLOBALS['batcache'] = (object) [ 'group' => 'batcache' ];
+
+			try {
+				Page_Cache::purge_all();
+				$this->assertFalse( wp_cache_get( 'cached_home', 'batcache' ) );
+			} finally {
+				unset( $GLOBALS['batcache'] );
+			}
+		}
+
+		public function test_plugin_deactivation_purges_page_caches(): void {
+			$purged = 0;
+			$listener = static function () use ( &$purged ): void {
+				$purged++;
+			};
+			add_action( Page_Cache::PURGE_ACTION, $listener );
+
+			try {
+				\Google\Gemini_Enterprise_For_CX\Admin::deactivate_plugin( false );
+				$this->assertSame( 1, $purged );
+			} finally {
+				remove_action( Page_Cache::PURGE_ACTION, $listener );
+			}
+		}
 	}
 }

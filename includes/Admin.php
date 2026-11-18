@@ -153,6 +153,7 @@ class Admin {
                 delete_option( 'gecx_dismiss_activation_notice' );
                 Order_Webhook::reconcile_webhook_on_activation();
                 Backend_Webhooks::resume_webhooks_if_linked();
+                Page_Cache::purge_all();
             }
         );
     }
@@ -175,6 +176,7 @@ class Admin {
                 }
                 Order_Webhook::set_order_webhook_status( 'paused' );
                 Backend_Webhooks::pause_webhooks();
+                Page_Cache::purge_all();
             }
         );
     }

@@ -190,19 +190,19 @@ class Session_Attribution {
         if ( ! self::is_valid_session_id( $session_id ) ) {
             return new \WP_Error( 'invalid_session_id', __( 'Session ID is invalid.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
-        // Force WooCommerce to initialize the frontend session based on client cookies
-        if ( function_exists( 'WC' ) ) {
-            if ( is_null( WC()->session ) ) {
-                include_once WC_ABSPATH . 'includes/wc-cart-functions.php';
-                include_once WC_ABSPATH . 'includes/class-wc-session-handler.php';
-                WC()->session = new \WC_Session_Handler();
-                WC()->session->init();
-            }
-        }
-
-        if ( ! function_exists( 'WC' ) || ! WC()->session ) {
+        if ( ! function_exists( 'WC' ) || ( null !== WC()->session && ( ! is_object( WC()->session ) || ! method_exists( WC()->session, 'set' ) ) ) ) {
             return new \WP_Error( 'session_not_initialized', __( 'WooCommerce session not active.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
         }
+
+        // Do NOT call WC()->initialize_session() or new \WC_Session_Handler()
+        // here when WC()->session is null (as it is on non-Store-API REST
+        // routes). WooCommerce's Interactivity API cart.js omits X-WP-Nonce,
+        // storing a logged-in shopper's cart in a guest `t_...` session cookie,
+        // whereas /gecx/v1/session sends X-WP-Nonce. Booting WC_Session_Handler
+        // on this authenticated request runs migrate_guest_session_to_user_session(),
+        // rewriting `wp_woocommerce_session_*` to the numeric user ID so the
+        // very next un-nonced cart.js call fails is_session_cookie_valid() and
+        // calls destroy_session(), wiping the shopper's cart.
 
         // A session outside the linked agent's project is logged, not refused:
         // the order webhook never delivers a bare ID, and the backend
@@ -235,13 +235,14 @@ class Session_Attribution {
             }
         }
 
-        WC()->session->set( 'gecx_session_id', $session_id );
+        if ( isset( WC()->session ) && is_object( WC()->session ) && method_exists( WC()->session, 'set' ) ) {
+            WC()->session->set( 'gecx_session_id', $session_id );
+        }
 
-        // Persist the session ID in a first-party HttpOnly cookie so an
-        // uncookied guest who chats before adding anything to their cart still
-        // has their GECX session bound when they later check out, without
-        // creating a `wp_woocommerce_session_*` cookie that would invalidate
-        // `wp_rest` or `woocommerce-login-nonce`.
+        // Persist the session ID in a first-party HttpOnly cookie so both
+        // uncookied guests and logged-in shoppers holding a Store API guest
+        // cart cookie carry their GECX session to checkout without touching
+        // WooCommerce's `wp_woocommerce_session_*` cart cookie.
         self::set_session_cookie( $session_id );
 
         // Resolve the WooCommerce session key. A cryptographically verified
@@ -252,7 +253,7 @@ class Session_Attribution {
         $current_user_key = is_user_logged_in()
             ? (string) get_current_user_id()
             : '';
-        $wc_customer_key  = method_exists( WC()->session, 'get_customer_id' )
+        $wc_customer_key  = ( isset( WC()->session ) && is_object( WC()->session ) && method_exists( WC()->session, 'get_customer_id' ) )
             ? (string) WC()->session->get_customer_id()
             : '';
 
@@ -291,35 +292,23 @@ class Session_Attribution {
             $session_key = $current_user_key;
         }
 
+        $cookie_customer_key = Cart_Session::get_verified_session_cookie_customer_id();
+        if ( empty( $session_key ) && '' !== $cookie_customer_key ) {
+            $session_key = $cookie_customer_key;
+        }
+
         if ( empty( $session_key ) && '' !== $wc_customer_key ) {
             $session_key = $wc_customer_key;
         }
 
-        $has_active_session = Cart_Session::has_woocommerce_session_cookie()
-            || is_user_logged_in()
-            || ( method_exists( WC()->session, 'has_session' ) && WC()->session->has_session() )
-            || ( isset( WC()->cart ) && method_exists( WC()->cart, 'is_empty' ) && ! WC()->cart->is_empty() );
-
-        if ( $has_active_session ) {
-            if ( method_exists( WC()->session, 'save_data' ) ) {
-                WC()->session->save_data();
-            }
-            if ( method_exists( WC()->session, 'set_customer_session_cookie' ) ) {
-                WC()->session->set_customer_session_cookie( true );
-            }
-        }
-
         // Persist gecx_session_id directly to the database session table so
-        // order attribution survives across requests, but only for a session
-        // that already exists: one named by the browser's WooCommerce session
-        // cookie (HMAC-verified, and naming this very row), by an HMAC-verified
-        // Cart-Token, or by the logged-in user. An uncookied guest has none of
-        // those, and WC_Session_Handler hands it a freshly generated t_ key on
-        // every request. Writing that key would let anyone holding the shared
-        // logged-out wp_rest nonce insert an unbounded number of rows. Such a
-        // guest's attribution is carried by the gecx_session_id cookie set
-        // above instead.
-        $cookie_customer_key     = Cart_Session::get_verified_session_cookie_customer_id();
+        // order attribution survives across requests, without calling
+        // WC()->session->save_data() or set_customer_session_cookie( true )
+        // (which would overwrite concurrent cart writes or rewrite a logged-in
+        // shopper's `t_...` Store API cookie to a numeric user ID). Only a
+        // session that already belongs to this caller is written: one named by
+        // the browser's verified WooCommerce session cookie, by an
+        // HMAC-verified Cart-Token, or by the logged-in user.
         $may_persist_session_row = ( '' !== $cookie_customer_key && $cookie_customer_key === $session_key )
             || $cart_token_verified
             || '' !== $current_user_key;
@@ -331,48 +320,82 @@ class Session_Attribution {
             || ( class_exists( '\Automattic\WooCommerce\StoreApi\SessionHandler' ) && WC()->session instanceof \Automattic\WooCommerce\StoreApi\SessionHandler );
 
         if ( $may_persist_session_row && ! empty( $session_key ) && $uses_sql_session_handler && isset( $wpdb ) ) {
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Direct query required to sync WooCommerce session data across requests.
-            $existing_session = $wpdb->get_var( $wpdb->prepare(
-                "SELECT session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s",
-                $session_key
-            ) );
+            self::persist_session_id_to_row( $wpdb, $session_key, $session_id, true );
 
-            $session_data = [];
-            if ( ! empty( $existing_session ) ) {
-                $session_data = maybe_unserialize( $existing_session );
-            }
-            if ( ! is_array( $session_data ) ) {
-                $session_data = [];
-            }
-
-            $session_data['gecx_session_id'] = $session_id;
-
-            $serialized_data = maybe_serialize( $session_data );
-            // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
-            $expiry = time() + (int) apply_filters( 'wc_session_expiration', 2 * DAY_IN_SECONDS );
-
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Direct query required to sync WooCommerce session data across requests.
-            $sync_result = $wpdb->query( $wpdb->prepare(
-                "INSERT INTO {$wpdb->prefix}woocommerce_sessions (session_key, session_value, session_expiry)
-                 VALUES (%s, %s, %d)
-                 ON DUPLICATE KEY UPDATE session_value = %s, session_expiry = %d",
-                $session_key, $serialized_data, $expiry, $serialized_data, $expiry
-            ) );
-
-            if ( false !== $sync_result ) {
-                $cache_group = defined( 'WC_SESSION_CACHE_GROUP' )
-                    ? WC_SESSION_CACHE_GROUP
-                    : ( defined( 'WC_Cache_Helper::WC_SESSION_CACHE_GROUP' ) ? \WC_Cache_Helper::WC_SESSION_CACHE_GROUP : 'wc_sessions' );
-
-                $cache_prefix = ( class_exists( 'WC_Cache_Helper' ) && method_exists( 'WC_Cache_Helper', 'get_cache_prefix' ) )
-                    ? \WC_Cache_Helper::get_cache_prefix( $cache_group )
-                    : 'wc_session_';
-
-                wp_cache_delete( $cache_prefix . $session_key, $cache_group );
+            // When a logged-in shopper also holds a verified guest session
+            // cookie minted by WooCommerce's un-nonced Store API cart.js,
+            // annotate that existing guest row in place without migrating or
+            // altering cookies.
+            if ( '' !== $current_user_key && 0 === strpos( $cookie_customer_key, 't_' ) && $cookie_customer_key !== $session_key ) {
+                self::persist_session_id_to_row( $wpdb, $cookie_customer_key, $session_id, false );
             }
         }
 
         return new \WP_REST_Response( [ 'success' => true ], 200 );
+    }
+
+    /**
+     * Writes `gecx_session_id` onto a WooCommerce session row in place without
+     * touching `WC_Session_Handler` cookies or rewriting rows that already hold
+     * the same session ID.
+     *
+     * @param \wpdb  $wpdb                WordPress database instance.
+     * @param string $session_key         Target WooCommerce session key.
+     * @param string $session_id          Validated GECX session ID.
+     * @param bool   $insert_when_missing Whether to insert a new row if none exists yet.
+     */
+    private static function persist_session_id_to_row( $wpdb, string $session_key, string $session_id, bool $insert_when_missing ): void {
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Direct query required to sync WooCommerce session data across requests.
+        $existing_session = $wpdb->get_var( $wpdb->prepare(
+            "SELECT session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s",
+            $session_key
+        ) );
+
+        if ( null === $existing_session && ! $insert_when_missing ) {
+            return;
+        }
+
+        $session_data = [];
+        if ( ! empty( $existing_session ) ) {
+            $session_data = maybe_unserialize( $existing_session );
+        }
+        if ( ! is_array( $session_data ) ) {
+            $session_data = [];
+        }
+
+        if ( null !== $existing_session && isset( $session_data['gecx_session_id'] ) && $session_data['gecx_session_id'] === $session_id ) {
+            return;
+        }
+
+        $session_data['gecx_session_id'] = $session_id;
+
+        $serialized_data = maybe_serialize( $session_data );
+        // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- Using core WooCommerce filter.
+        $expiry = time() + (int) apply_filters( 'wc_session_expiration', 2 * DAY_IN_SECONDS );
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Direct query required to sync WooCommerce session data across requests.
+        $sync_result = $wpdb->query( $wpdb->prepare(
+            "INSERT INTO {$wpdb->prefix}woocommerce_sessions (session_key, session_value, session_expiry)
+             VALUES (%s, %s, %d)
+             ON DUPLICATE KEY UPDATE session_value = %s, session_expiry = %d",
+            $session_key,
+            $serialized_data,
+            $expiry,
+            $serialized_data,
+            $expiry
+        ) );
+
+        if ( false !== $sync_result ) {
+            $cache_group = defined( 'WC_SESSION_CACHE_GROUP' )
+                ? WC_SESSION_CACHE_GROUP
+                : ( defined( 'WC_Cache_Helper::WC_SESSION_CACHE_GROUP' ) ? \WC_Cache_Helper::WC_SESSION_CACHE_GROUP : 'wc_sessions' );
+
+            $cache_prefix = ( class_exists( 'WC_Cache_Helper' ) && method_exists( 'WC_Cache_Helper', 'get_cache_prefix' ) )
+                ? \WC_Cache_Helper::get_cache_prefix( $cache_group )
+                : 'wc_session_';
+
+            wp_cache_delete( $cache_prefix . $session_key, $cache_group );
+        }
     }
 
     /**
@@ -424,42 +447,47 @@ class Session_Attribution {
     public static function get_gecx_session_id_safely( bool $include_cookie = true ) {
         $session_id = '';
         if ( function_exists( 'WC' ) ) {
-            if ( is_null( WC()->session ) ) {
-                include_once WC_ABSPATH . 'includes/wc-cart-functions.php';
-                include_once WC_ABSPATH . 'includes/class-wc-session-handler.php';
-                WC()->session = new \WC_Session_Handler();
-                WC()->session->init();
-            }
-            $session_id = '';
-            if ( isset( WC()->session ) && method_exists( WC()->session, 'get' ) ) {
+            if ( isset( WC()->session ) && is_object( WC()->session ) && method_exists( WC()->session, 'get' ) ) {
                 $session_id = (string) ( WC()->session->get( 'gecx_session_id' ) ?? '' );
             }
             if ( ! empty( $session_id ) ) {
                 return $session_id;
             }
 
-            // Fallback to database lookup if in-memory session does not have it yet.
+            // Fallback to database lookup without initializing WC_Session_Handler
+            // (initializing WC_Session_Handler on a nonced REST request would
+            // migrate a logged-in shopper's Store API guest cart cookie).
             global $wpdb;
-            $session_key = '';
-            if ( isset( WC()->session ) && method_exists( WC()->session, 'get_customer_id' ) ) {
-                $session_key = (string) WC()->session->get_customer_id();
-            }
-            if ( empty( $session_key ) ) {
-                $user_id = get_current_user_id();
-                if ( $user_id > 0 ) {
-                    $session_key = (string) $user_id;
+            $candidate_keys = [];
+            if ( isset( WC()->session ) && is_object( WC()->session ) && method_exists( WC()->session, 'get_customer_id' ) ) {
+                $wc_key = (string) WC()->session->get_customer_id();
+                if ( '' !== $wc_key ) {
+                    $candidate_keys[] = $wc_key;
                 }
             }
-            if ( ! empty( $session_key ) && isset( $wpdb ) ) {
-                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Fallback lookup when session cache missed.
-                $raw = $wpdb->get_var( $wpdb->prepare(
-                    "SELECT session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s",
-                    $session_key
-                ) );
-                if ( ! empty( $raw ) ) {
-                    $data = maybe_unserialize( $raw );
-                    if ( is_array( $data ) && ! empty( $data['gecx_session_id'] ) ) {
-                        return (string) $data['gecx_session_id'];
+            if ( $include_cookie ) {
+                $cookie_key = Cart_Session::get_verified_session_cookie_customer_id();
+                if ( '' !== $cookie_key && ! in_array( $cookie_key, $candidate_keys, true ) ) {
+                    $candidate_keys[] = $cookie_key;
+                }
+            }
+            $user_id = get_current_user_id();
+            if ( $user_id > 0 && ! in_array( (string) $user_id, $candidate_keys, true ) ) {
+                $candidate_keys[] = (string) $user_id;
+            }
+
+            if ( isset( $wpdb ) ) {
+                foreach ( $candidate_keys as $session_key ) {
+                    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Fallback lookup when session cache missed.
+                    $raw = $wpdb->get_var( $wpdb->prepare(
+                        "SELECT session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s",
+                        $session_key
+                    ) );
+                    if ( ! empty( $raw ) ) {
+                        $data = maybe_unserialize( $raw );
+                        if ( is_array( $data ) && ! empty( $data['gecx_session_id'] ) ) {
+                            return (string) $data['gecx_session_id'];
+                        }
                     }
                 }
             }
@@ -469,7 +497,7 @@ class Session_Attribution {
             $cookie_session_id = sanitize_text_field( wp_unslash( $_COOKIE[ self::SESSION_COOKIE_NAME ] ) );
             if ( self::is_valid_session_id( $cookie_session_id ) ) {
                 $session_id = $cookie_session_id;
-                if ( function_exists( 'WC' ) && WC()->session && method_exists( WC()->session, 'set' ) ) {
+                if ( function_exists( 'WC' ) && isset( WC()->session ) && is_object( WC()->session ) && method_exists( WC()->session, 'set' ) ) {
                     WC()->session->set( 'gecx_session_id', $session_id );
                 }
             }
