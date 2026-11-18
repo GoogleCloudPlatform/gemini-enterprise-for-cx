@@ -44,6 +44,13 @@ A guest who has not added anything to their cart has no WooCommerce session cook
 
 An `agent` or `existing` answer holds for the rest of the page view, so the script asks once per cart session and reads later changes to that cart straight away. When the chat opens and the browser is put on the agent's cart, the script reads it and refreshes the page's cart as it does after an agent change, but without the events that open a mini-cart drawer or side cart. After each answer, the script dispatches `gecx:cart-session-bound` on `document.body`, with `binding` in its `detail`.
 
+### Placing the Price history link
+
+On product pages the plugin renders `<gecx-price-history-link product-id="…" chat-widget-selector="gecx-woocommerce-chat-widget">`, a custom element from the chat widget bundle that stays hidden unless the product's price is lower than usual. Classic templates get it on `woocommerce_single_product_summary` at priority 11, just after the price; block templates get it after the Product Price block of the product being viewed. It is placed once per page, only for purchasable products that are not password protected, and only while the storefront widget and the **Show price history link on product pages** setting are on.
+
+* `gecx_render_price_history_link`: whether to place the link for a product (`$render`, `$product_id`). Return false to turn it off, for example to render the element yourself.
+* `gecx_price_history_link_hook` and `gecx_price_history_link_priority`: the classic template action and priority the link is placed on.
+
 ## License
 
 This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.

@@ -29,7 +29,7 @@ $(function() {
   $(document).on('change', '#gecx_agent_enabled', function() {
     const $checkbox = $(this);
     const isChecked = $checkbox.is(':checked');
-    $('#gecx_pdp_prompts_enabled').prop('disabled', !isChecked);
+    $('#gecx_pdp_prompts_enabled, #gecx_price_history_link_enabled').prop('disabled', !isChecked);
     if (typeof gecx_admin_params !== 'undefined') {
       $('#gecx-status-indicator').css('background-color', isChecked ? '#46b450' : '#787c82');
       $('#gecx-status-text').text(isChecked ? gecx_admin_params.statusActive : gecx_admin_params.statusInactive);
@@ -38,7 +38,7 @@ $(function() {
     function revertAgentToggle() {
       const revertedState = !isChecked;
       $checkbox.prop('checked', revertedState);
-      $('#gecx_pdp_prompts_enabled').prop('disabled', !revertedState);
+      $('#gecx_pdp_prompts_enabled, #gecx_price_history_link_enabled').prop('disabled', !revertedState);
       if (typeof gecx_admin_params !== 'undefined') {
         $('#gecx-status-indicator').css('background-color', revertedState ? '#46b450' : '#787c82');
         $('#gecx-status-text').text(revertedState ? gecx_admin_params.statusActive : gecx_admin_params.statusInactive);
@@ -77,6 +77,28 @@ $(function() {
     }).catch(function(err) {
       console.error('Error saving PDP prompts toggle state:', err);
       revertPdpToggle();
+    });
+  });
+
+  // Toggle the Price history link
+  $(document).on('change', '#gecx_price_history_link_enabled', function() {
+    const $checkbox = $(this);
+    const isChecked = $checkbox.is(':checked');
+
+    function revertPriceHistoryToggle() {
+      $checkbox.prop('checked', !isChecked);
+      showNotice('error', gecx_admin_params.errorTogglePriceHistory);
+    }
+
+    wp.apiFetch({
+      path: '/wp/v2/settings',
+      method: 'POST',
+      data: {
+        gecx_price_history_link_enabled: isChecked ? 1 : 0,
+      },
+    }).catch(function(err) {
+      console.error('Error saving price history link toggle state:', err);
+      revertPriceHistoryToggle();
     });
   });
 

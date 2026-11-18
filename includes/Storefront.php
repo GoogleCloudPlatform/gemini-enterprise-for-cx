@@ -46,6 +46,11 @@ class Storefront {
     protected bool $pdp_prompts_injected = false;
 
     /**
+     * Track whether the Price history link has already been placed for the request.
+     */
+    protected bool $price_history_link_injected = false;
+
+    /**
      * Allowed button placements.
      */
     public const ALLOWED_BUTTON_PLACEMENTS = [ 'nav_menu', 'floating', 'manual' ];
@@ -158,6 +163,14 @@ class Storefront {
         // put the prompts between the price and the add-to-cart button.
         add_filter( 'render_block_woocommerce/add-to-cart-form', [ $this, 'inject_block_suggested_prompts' ], 10, 2 );
         add_filter( 'render_block_woocommerce/single-product-details', [ $this, 'inject_block_suggested_prompts' ], 10, 2 );
+
+        // Just after the price, which WooCommerce hooks at priority 10. On
+        // block templates the Product Price block filter places it instead.
+        $price_history_hook     = apply_filters( 'gecx_price_history_link_hook', 'woocommerce_single_product_summary' );
+        $price_history_priority = apply_filters( 'gecx_price_history_link_priority', 11 );
+        add_action( $price_history_hook, [ $this, 'inject_price_history_link' ], $price_history_priority );
+        add_filter( 'render_block_woocommerce/product-price', [ $this, 'inject_block_price_history_link' ], 10, 3 );
+
         add_shortcode( 'gecx_suggested_prompts', [ $this, 'render_suggested_prompts_shortcode' ] );
         add_shortcode( 'gecx_agent_button', [ $this, 'render_agent_button_shortcode' ] );
 
@@ -1103,6 +1116,123 @@ class Storefront {
         $this->pdp_prompts_injected = true;
 
         return $block_content . $prompts_html;
+    }
+
+    /**
+     * Places the Price history link after the price on classic single
+     * product templates, and block themes still using them.
+     *
+     * The link is a custom element from the widget bundle. It asks the widget
+     * whether the product's price is lower than usual and stays hidden,
+     * taking no space, unless it is.
+     */
+    public function inject_price_history_link(): void {
+        // On block templates WooCommerce's compatibility layer fires this
+        // hook from a render_block callback, just before the excerpt block,
+        // which need not be next to the price. The Product Price block
+        // filter places the link there instead.
+        if ( doing_filter( 'render_block' ) ) {
+            return;
+        }
+
+        $html = $this->claim_price_history_link_html();
+        if ( '' !== $html ) {
+            // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- claim_price_history_link_html() escapes its attributes.
+            echo $html;
+        }
+    }
+
+    /**
+     * Places the Price history link after the Product Price block of the
+     * product being viewed (block themes).
+     *
+     * After the block rather than inside its price container, which some
+     * block themes style so that anything else in it is hidden.
+     *
+     * @param string $block_content Rendered block HTML.
+     * @param array  $block         Block data array.
+     * @param mixed  $instance      WP_Block instance.
+     * @return string Modified block HTML.
+     */
+    // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundBeforeLastUsed -- WordPress render_block filter callback signature.
+    public function inject_block_price_history_link( string $block_content, array $block = [], $instance = null ): string {
+        if ( '' === trim( $block_content ) ) {
+            return $block_content;
+        }
+
+        // The same block prices related products, upsells and other products
+        // embedded in the page, each with its own postId context. Compared
+        // with the queried object, since get_the_ID() is the looped product
+        // inside those lists.
+        if ( is_object( $instance ) && isset( $instance->context['postId'] ) && absint( $instance->context['postId'] ) !== (int) get_queried_object_id() ) {
+            return $block_content;
+        }
+
+        return $block_content . $this->claim_price_history_link_html();
+    }
+
+    /**
+     * Returns the Price history link for the product page being viewed and
+     * marks it placed, or returns '' when it was already placed during the
+     * request or does not belong on this page.
+     *
+     * @return string Link markup, or ''.
+     */
+    protected function claim_price_history_link_html(): string {
+        if ( $this->price_history_link_injected ) {
+            return '';
+        }
+        $product_id = $this->get_price_history_link_product_id();
+        if ( 0 === $product_id ) {
+            return '';
+        }
+        $this->price_history_link_injected = true;
+        return $this->get_price_history_link_html( $product_id );
+    }
+
+    /**
+     * The product the Price history link is shown for: the product page being
+     * viewed, while the widget is active, the setting is on and the product
+     * is purchasable and not password protected.
+     *
+     * @return int Product ID, or 0 when the link should not be shown.
+     */
+    protected function get_price_history_link_product_id(): int {
+        if ( is_admin() || ! is_product() || $this->is_amp_request() || ! $this->is_widget_enabled() || ! $this->get_active_agent_name() ) {
+            return 0;
+        }
+        if ( ! (bool) get_option( 'gecx_price_history_link_enabled', 1 ) || $this->current_product_is_password_protected() ) {
+            return 0;
+        }
+
+        $product_id = self::resolve_current_product_id();
+        $product    = $product_id > 0 && function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null;
+        if ( ! $product || ! $product->is_purchasable() ) {
+            return 0;
+        }
+
+        /**
+         * Filters whether the Price history link is placed automatically on a
+         * product page. Return false to turn it off, for example to place
+         * the element yourself.
+         *
+         * @param bool $render     Default true.
+         * @param int  $product_id Product ID.
+         */
+        return apply_filters( 'gecx_render_price_history_link', true, $product_id ) ? $product_id : 0;
+    }
+
+    /**
+     * Builds the Price history link custom element markup.
+     *
+     * @param int $product_id Product ID.
+     * @return string HTML output.
+     */
+    public function get_price_history_link_html( int $product_id ): string {
+        return '<gecx-price-history-link product-id="' . esc_attr( (string) $product_id ) . '"'
+            . ' chat-widget-selector="gecx-woocommerce-chat-widget"'
+            . ( is_customize_preview() ? ' preview="true"' : '' )
+            . '></gecx-price-history-link>';
     }
 
     /**

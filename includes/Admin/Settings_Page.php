@@ -148,6 +148,7 @@ class Settings_Page {
             'statusInactive'       => __( 'Connection Status: Inactive', 'gemini-enterprise-for-cx' ),
             'errorToggleWidget'    => __( 'Failed to update storefront chat widget status. Please try again.', 'gemini-enterprise-for-cx' ),
             'errorTogglePrompts'   => __( 'Failed to update suggested prompts status. Please try again.', 'gemini-enterprise-for-cx' ),
+            'errorTogglePriceHistory' => __( 'Failed to update the price history link setting. Please try again.', 'gemini-enterprise-for-cx' ),
             'confirmDisconnect'    => __( 'Are you sure you want to disconnect this Gemini agent from your store?', 'gemini-enterprise-for-cx' ),
             'disconnecting'        => __( 'Disconnecting...', 'gemini-enterprise-for-cx' ),
             'disconnectLabel'      => __( 'Disconnect Agent', 'gemini-enterprise-for-cx' ),
@@ -232,6 +233,11 @@ class Settings_Page {
             'show_in_rest'      => true,
         ] );
         register_setting( 'gecx_agent_group', 'gecx_pdp_prompts_enabled', [
+            'type'              => 'integer',
+            'sanitize_callback' => 'absint',
+            'show_in_rest'      => true,
+        ] );
+        register_setting( 'gecx_agent_group', 'gecx_price_history_link_enabled', [
             'type'              => 'integer',
             'sanitize_callback' => 'absint',
             'show_in_rest'      => true,
@@ -330,6 +336,7 @@ class Settings_Page {
         $token_broker          = (string) get_option( 'gecx_token_broker_name', '' );
         $embed_enabled         = (bool) get_option( 'gecx_agent_enabled', 0 );
         $pdp_prompts_enabled   = (bool) get_option( 'gecx_pdp_prompts_enabled', 1 );
+        $price_history_enabled = (bool) get_option( 'gecx_price_history_link_enabled', 1 );
         $button_placement      = (string) get_option( 'gecx_button_placement', 'nav_menu' );
         $nav_menu_target       = Storefront::sanitize_nav_menu_target( get_option( 'gecx_nav_menu_target', '' ) );
         $nav_menu_locations    = (array) get_registered_nav_menus();
@@ -619,6 +626,24 @@ class Settings_Page {
                                         ?>
                                     </span>
                                 </span>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php esc_html_e( 'Price History', 'gemini-enterprise-for-cx' ); ?></th>
+                            <td>
+                                <label for="gecx_price_history_link_enabled">
+                                    <input type="checkbox"
+                                           id="gecx_price_history_link_enabled"
+                                           name="gecx_price_history_link_enabled"
+                                           value="1"
+                                           aria-describedby="gecx_price_history_link_enabled_description"
+                                           <?php checked( $price_history_enabled ); ?>
+                                           <?php disabled( ! $embed_enabled ); ?> />
+                                    <?php esc_html_e( 'Show price history link on product pages', 'gemini-enterprise-for-cx' ); ?>
+                                </label>
+                                <p class="description" id="gecx_price_history_link_enabled_description">
+                                    <?php esc_html_e( 'Shown below the price only when it is lower than usual. Shoppers can open the product\'s price history in the chat.', 'gemini-enterprise-for-cx' ); ?>
+                                </p>
                             </td>
                         </tr>
                     </table>
