@@ -101,8 +101,13 @@ test.describe(THEME || 'active theme', () => {
 			await settle(page);
 			const placement = await page.evaluate(() => {
 				const links = document.querySelectorAll('gecx-price-history-link');
-				const price = document.querySelector('.wp-block-woocommerce-product-price, div.product .price, .price');
-				const form = document.querySelector('div.product form.cart, form.cart');
+				const price = document.querySelector('.wp-block-woocommerce-product-price') ||
+					document.querySelector('div.product .summary .price') ||
+					document.querySelector('div.product .price') ||
+					document.querySelector('.price');
+				const form = document.querySelector('div.product form.cart') ||
+					document.querySelector('.wp-block-woocommerce-add-to-cart-form form.cart') ||
+					document.querySelector('form.cart');
 				const marginVar = links[0] ? getComputedStyle(links[0]).getPropertyValue('--gecx-price-history-link-margin').trim() : '';
 				return {
 					count: links.length,
@@ -110,10 +115,11 @@ test.describe(THEME || 'active theme', () => {
 						(price.compareDocumentPosition(links[0]) & Node.DOCUMENT_POSITION_FOLLOWING)),
 					beforeForm: !!(form && links[0] &&
 						(links[0].compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING)),
+					inFloatingBar: !!(links[0] && links[0].closest('[class*="sticky-add-to-cart"], .owp-floating-bar')),
 					marginVar,
 				};
 			});
-			expect(placement).toEqual({ count: 1, afterPrice: true, beforeForm: true, marginVar: '0' });
+			expect(placement).toEqual({ count: 1, afterPrice: true, beforeForm: true, inFloatingBar: false, marginVar: '0' });
 		} finally {
 			await requestUtils.rest({
 				path: '/wp/v2/settings',

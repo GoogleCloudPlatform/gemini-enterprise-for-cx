@@ -1770,7 +1770,7 @@ const GECX_PDP_TARGET_SELECTORS = [
  * @const {string}
  */
 const GECX_PDP_EXCLUDED_CONTAINERS =
-    '.sticky-add-to-cart, [class*="sticky-add-to-cart"], [class*="sticky_add_to_cart"], [id*="sticky-add-to-cart"], [class*="quick-view"], [class*="quickview"], .related, .upsells, .up-sells, .cross-sells, ul.products, .woocommerce-mini-cart';
+    '.sticky-add-to-cart, [class*="sticky-add-to-cart"], [class*="sticky_add_to_cart"], [id*="sticky-add-to-cart"], .owp-floating-bar, [class*="quick-view"], [class*="quickview"], .related, .upsells, .up-sells, .cross-sells, ul.products, .woocommerce-mini-cart';
 
 /**
  * The element holding the main product, used to scope the prompt target
