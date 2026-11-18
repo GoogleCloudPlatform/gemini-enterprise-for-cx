@@ -1727,47 +1727,6 @@ JS;
         remove_filter( 'post_password_required', '__return_false' );
     }
 
-    public function test_product_page_config_carries_the_current_product_id_as_an_int(): void {
-        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
-        $this->go_to( get_permalink( $product_id ) );
-
-        $config = $this->localized_storefront_config();
-
-        // Nested: wp_localize_script() would turn a top-level int into a string.
-        $this->assertSame( [ 'id' => $product_id ], $config['currentProduct'] );
-    }
-
-    public function test_current_product_id_does_not_depend_on_pdp_prompts_auto_inject(): void {
-        $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
-        $this->go_to( get_permalink( $product_id ) );
-        update_option( 'gecx_pdp_prompts_enabled', 0 );
-
-        $config = $this->localized_storefront_config();
-
-        $this->assertSame( [ 'id' => $product_id ], $config['currentProduct'] );
-        // isPdp keeps driving prompt placement, so it stays tied to the setting.
-        $this->assertArrayNotHasKey( 'isPdp', $config );
-    }
-
-    public function test_current_product_id_is_withheld_off_product_pages_and_for_password_protected_products(): void {
-        $this->assertArrayNotHasKey( 'currentProduct', $this->localized_storefront_config() );
-
-        $page_id = $this->factory()->post->create( [ 'post_type' => 'page' ] );
-        $this->go_to( get_permalink( $page_id ) );
-        $this->assertArrayNotHasKey( 'currentProduct', $this->localized_storefront_config() );
-
-        $product_id = $this->factory()->post->create( [
-            'post_type'     => 'product',
-            'post_password' => 'secret_pass',
-        ] );
-        $this->go_to( get_permalink( $product_id ) );
-        $this->assertArrayNotHasKey( 'currentProduct', $this->localized_storefront_config() );
-
-        add_filter( 'post_password_required', '__return_false' );
-        $this->assertSame( [ 'id' => $product_id ], $this->localized_storefront_config()['currentProduct'] );
-        remove_filter( 'post_password_required', '__return_false' );
-    }
-
     public function test_config_has_no_product_prompts_markup_off_product_pages(): void {
         $this->assertArrayNotHasKey( 'productPrompts', $this->localized_storefront_config()['markup'] );
     }
@@ -1812,6 +1771,15 @@ JS;
         $this->assertStringContainsString( '.mega-menu-open .gecx-nav-menu-item', $css );
         $this->assertStringContainsString( '.gecx-mobile-header-button.gecx-mobile-header-button--row', $css );
         $this->assertStringContainsString( 'body.gecx-chat-open .gecx-mobile-header-button--floating', $css );
+        $this->assertStringContainsString( '--gecx-price-history-link-margin: 0', $css );
+    }
+
+    /**
+     * Activates the storefront widget with the Price history link setting enabled.
+     */
+    private function activate_price_history_widget(): Storefront {
+        update_option( 'gecx_price_history_link_enabled', 1 );
+        return $this->activate_widget();
     }
 
     /**
@@ -1844,28 +1812,66 @@ JS;
 
     private const PRICE_BLOCK_HTML = '<div class="wp-block-woocommerce-product-price"><div class="wc-block-components-product-price">$20.00</div></div>';
 
-    public function test_price_history_link_renders_after_the_price_on_classic_product_pages(): void {
+    public function test_price_history_link_is_off_by_default(): void {
+        delete_option( 'gecx_price_history_link_enabled' );
         $storefront = $this->activate_widget();
+        $this->go_to_purchasable_product();
+
+        $this->assertSame( '', $this->render_classic_price_history_link( $storefront ) );
+        $this->assertSame( self::PRICE_BLOCK_HTML, $storefront->inject_block_price_history_link( self::PRICE_BLOCK_HTML ) );
+    }
+
+    public function test_price_history_link_renders_after_the_price_on_classic_product_pages(): void {
+        $storefront = $this->activate_price_history_widget();
         $product_id = $this->go_to_purchasable_product();
 
         $this->assertSame(
             '<gecx-price-history-link product-id="' . $product_id . '" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>',
             $this->render_classic_price_history_link( $storefront )
         );
-        // Hooked just after woocommerce_template_single_price (priority 10).
+        // Hooked onto woocommerce_after_template_part for single-product/price.php
+        // and woocommerce_single_product_summary (priority 11) as fallback.
+        $this->assertSame( 10, has_action( 'woocommerce_after_template_part', [ $storefront, 'inject_after_single_price_template' ] ) );
         $this->assertSame( 11, has_action( 'woocommerce_single_product_summary', [ $storefront, 'inject_price_history_link' ] ) );
     }
 
-    public function test_price_history_link_is_on_by_default(): void {
-        delete_option( 'gecx_price_history_link_enabled' );
-        $storefront = $this->activate_widget();
-        $this->go_to_purchasable_product();
+    public function test_price_history_link_renders_after_single_price_template_part_and_respects_custom_hook_filters(): void {
+        $storefront = $this->activate_price_history_widget();
+        $product_id = $this->go_to_purchasable_product();
 
-        $this->assertStringContainsString( '<gecx-price-history-link', $this->render_classic_price_history_link( $storefront ) );
+        ob_start();
+        $storefront->inject_after_single_price_template( 'single-product/title.php' );
+        $this->assertSame( '', (string) ob_get_clean() );
+
+        ob_start();
+        $storefront->inject_after_single_price_template( 'single-product/price.php' );
+        $printed = (string) ob_get_clean();
+
+        $this->assertSame(
+            '<gecx-price-history-link product-id="' . $product_id . '" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>',
+            $printed
+        );
+        // Summary fallback does not duplicate it once placed.
+        $this->assertSame( '', $this->render_classic_price_history_link( $storefront ) );
+
+        // Custom priority filter leaves placement to the summary hook instead.
+        $storefront_custom = $this->activate_price_history_widget();
+        $priority_filter   = static function (): int {
+            return 25;
+        };
+        add_filter( 'gecx_price_history_link_priority', $priority_filter );
+        try {
+            ob_start();
+            $storefront_custom->inject_after_single_price_template( 'single-product/price.php' );
+            $this->assertSame( '', (string) ob_get_clean() );
+            $this->assertStringContainsString( '<gecx-price-history-link', $this->render_classic_price_history_link( $storefront_custom ) );
+        } finally {
+            remove_filter( 'gecx_price_history_link_priority', $priority_filter );
+        }
     }
 
     public function test_price_history_link_follows_the_product_price_block_not_inside_it(): void {
-        $storefront = $this->activate_widget();
+        $storefront = $this->activate_price_history_widget();
         $product_id = $this->go_to_purchasable_product();
         $block      = (object) [ 'context' => [ 'postId' => $product_id ] ];
 
@@ -1874,30 +1880,48 @@ JS;
         $this->assertStringStartsWith( self::PRICE_BLOCK_HTML . '<gecx-price-history-link product-id="' . $product_id . '"', $output );
     }
 
-    public function test_price_history_link_skips_price_blocks_of_other_products(): void {
-        $storefront = $this->activate_widget();
-        $this->go_to_purchasable_product();
+    public function test_price_history_link_skips_price_blocks_of_other_products_and_dirty_global_post(): void {
+        $storefront = $this->activate_price_history_widget();
+        $product_id = $this->go_to_purchasable_product();
         $related_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
         $block      = (object) [ 'context' => [ 'postId' => $related_id ] ];
 
         $this->assertSame( self::PRICE_BLOCK_HTML, $storefront->inject_block_price_history_link( self::PRICE_BLOCK_HTML, [], $block ) );
-        $this->assertStringContainsString( '<gecx-price-history-link', $this->render_classic_price_history_link( $storefront ) );
+
+        // Even without block context, a secondary loop pointing global $post at
+        // another product must not claim the link or leak that product's ID.
+        $original_post   = $GLOBALS['post'] ?? null;
+        $GLOBALS['post'] = get_post( $related_id );
+        try {
+            $this->assertSame( self::PRICE_BLOCK_HTML, $storefront->inject_block_price_history_link( self::PRICE_BLOCK_HTML ) );
+            ob_start();
+            $storefront->inject_after_single_price_template( 'single-product/price.php' );
+            $this->assertSame( '', (string) ob_get_clean() );
+
+            // Classic summary fallback still resolves the main queried product ID.
+            $this->assertSame(
+                '<gecx-price-history-link product-id="' . $product_id . '" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>',
+                $this->render_classic_price_history_link( $storefront )
+            );
+        } finally {
+            $GLOBALS['post'] = $original_post;
+        }
     }
 
     public function test_price_history_link_is_placed_once_when_hook_and_block_filter_both_fire(): void {
-        $storefront = $this->activate_widget();
+        $storefront = $this->activate_price_history_widget();
         $this->go_to_purchasable_product();
 
         $this->assertStringContainsString( '<gecx-price-history-link', $this->render_classic_price_history_link( $storefront ) );
         $this->assertSame( self::PRICE_BLOCK_HTML, $storefront->inject_block_price_history_link( self::PRICE_BLOCK_HTML ) );
 
-        $storefront = $this->activate_widget();
+        $storefront = $this->activate_price_history_widget();
         $this->assertStringContainsString( '<gecx-price-history-link', $storefront->inject_block_price_history_link( self::PRICE_BLOCK_HTML ) );
         $this->assertSame( '', $this->render_classic_price_history_link( $storefront ) );
     }
 
     public function test_price_history_link_is_left_to_the_price_block_when_the_hook_runs_inside_render_block(): void {
-        $storefront = $this->activate_widget();
+        $storefront = $this->activate_price_history_widget();
         $this->go_to_purchasable_product();
 
         // WooCommerce's block template compatibility layer fires
@@ -1918,8 +1942,8 @@ JS;
     }
 
     public function test_price_history_link_is_not_rendered_with_the_setting_off(): void {
+        $storefront = $this->activate_price_history_widget();
         update_option( 'gecx_price_history_link_enabled', 0 );
-        $storefront = $this->activate_widget();
         $this->go_to_purchasable_product();
 
         $this->assertSame( '', $this->render_classic_price_history_link( $storefront ) );
@@ -1927,7 +1951,7 @@ JS;
     }
 
     public function test_price_history_link_is_not_rendered_off_product_pages(): void {
-        $storefront = $this->activate_widget();
+        $storefront = $this->activate_price_history_widget();
         $page_id    = $this->factory()->post->create( [ 'post_type' => 'page' ] );
         $this->go_to( get_permalink( $page_id ) );
 
@@ -1936,7 +1960,7 @@ JS;
     }
 
     public function test_price_history_link_is_not_rendered_for_password_protected_products(): void {
-        $storefront = $this->activate_widget();
+        $storefront = $this->activate_price_history_widget();
         $this->go_to_purchasable_product( [ 'post_password' => 'secret_pass' ] );
 
         $this->assertSame( '', $this->render_classic_price_history_link( $storefront ) );
@@ -1944,7 +1968,7 @@ JS;
     }
 
     public function test_price_history_link_is_not_rendered_for_products_that_cannot_be_bought(): void {
-        $storefront = $this->activate_widget();
+        $storefront = $this->activate_price_history_widget();
         $product_id = $this->factory()->post->create( [ 'post_type' => 'product' ] );
         $this->go_to( get_permalink( $product_id ) );
 
@@ -1953,7 +1977,7 @@ JS;
     }
 
     public function test_price_history_link_is_not_rendered_while_the_widget_is_disabled(): void {
-        $storefront = $this->activate_widget();
+        $storefront = $this->activate_price_history_widget();
         update_option( 'gecx_agent_enabled', 0 );
         $this->go_to_purchasable_product();
 
@@ -1961,7 +1985,7 @@ JS;
     }
 
     public function test_price_history_link_filter_can_turn_it_off_per_product(): void {
-        $storefront = $this->activate_widget();
+        $storefront = $this->activate_price_history_widget();
         $product_id = $this->go_to_purchasable_product();
         $seen       = 0;
         $filter     = static function ( $render, $id ) use ( &$seen ) {

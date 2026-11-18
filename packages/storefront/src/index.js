@@ -1866,6 +1866,88 @@ function initPdpPlacement() {
   }
 }
 
+/** @type {boolean} Whether jQuery variation form listeners have been bound. */
+let gecxJqueryVariationListenersBound = false;
+
+/** @type {boolean} Whether native DOM variation change listener has been bound. */
+let gecxDomVariationListenerBound = false;
+
+/**
+ * Updates `variant-id` on `<gecx-price-history-link>` elements matching the
+ * variation form's product ID.
+ * @param {?Element} form
+ * @param {*} rawVariationId
+ */
+function gecxSyncPriceHistoryVariant(form, rawVariationId) {
+  const parsed = Number(rawVariationId);
+  const variantId = (!isNaN(parsed) && parsed > 0) ? String(Math.floor(parsed)) : '';
+  const formProductId = (form && typeof form.getAttribute === 'function') ?
+      (form.getAttribute('data-product_id') || '') :
+      '';
+  gecxEach('gecx-price-history-link', function(link) {
+    if (formProductId && link.getAttribute('product-id') !== formProductId) {
+      return;
+    }
+    if (variantId) {
+      if (link.getAttribute('variant-id') !== variantId) {
+        link.setAttribute('variant-id', variantId);
+      }
+    } else if (link.hasAttribute('variant-id')) {
+      link.removeAttribute('variant-id');
+    }
+  });
+}
+
+/**
+ * Syncs `<gecx-price-history-link>` with any variation already selected on the
+ * page and binds WooCommerce variation selection events once.
+ */
+function initPriceHistoryVariationSync() {
+  if (!document.querySelector('gecx-price-history-link')) {
+    return;
+  }
+  gecxEach('form.variations_form', function(form) {
+    if (form.closest && form.closest(GECX_PDP_EXCLUDED_CONTAINERS)) {
+      return;
+    }
+    const input = form.querySelector('input[name="variation_id"]');
+    if (input) {
+      gecxSyncPriceHistoryVariant(form, input.value);
+    }
+  });
+  if (!gecxJqueryVariationListenersBound && document.body &&
+      window.jQuery && window.jQuery(document.body).on) {
+    gecxJqueryVariationListenersBound = true;
+    window.jQuery(document.body).on('found_variation.gecx', 'form.variations_form', function(event, variation) {
+      if (this.closest && this.closest(GECX_PDP_EXCLUDED_CONTAINERS)) {
+        return;
+      }
+      const id = (variation && variation.variation_id) ? variation.variation_id : '';
+      gecxSyncPriceHistoryVariant(this, id);
+    });
+    window.jQuery(document.body).on('reset_data.gecx hide_variation.gecx', 'form.variations_form', function() {
+      if (this.closest && this.closest(GECX_PDP_EXCLUDED_CONTAINERS)) {
+        return;
+      }
+      gecxSyncPriceHistoryVariant(this, '');
+    });
+  }
+  if (!gecxDomVariationListenerBound) {
+    gecxDomVariationListenerBound = true;
+    document.addEventListener('change', function(e) {
+      const target = e.target;
+      if (!target || target.name !== 'variation_id' || typeof target.closest !== 'function') {
+        return;
+      }
+      const form = target.closest('form.variations_form');
+      if (!form || form.closest(GECX_PDP_EXCLUDED_CONTAINERS)) {
+        return;
+      }
+      gecxSyncPriceHistoryVariant(form, target.value);
+    });
+  }
+}
+
 /**
  * Known bars themes fix to the bottom of the viewport, in addition to the
  * direct children of <body> checked generically.
@@ -2374,6 +2456,7 @@ function gecxPlaceAll() {
   initNavPlacement();
   initMobileHeaderPlacement();
   initPdpPlacement();
+  initPriceHistoryVariationSync();
   updateFloatingOffset();
   updateFloatingWidgetCentering();
 }

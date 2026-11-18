@@ -80,4 +80,46 @@ test.describe(THEME || 'active theme', () => {
 		});
 		expect(placement).toEqual({ count: 1, afterForm: true, inStickyBar: false });
 	});
+
+	test('keeps price history link off by default and places it right after the price when enabled', async ({ page, requestUtils }) => {
+		await requestUtils.rest({
+			path: '/wp/v2/settings',
+			method: 'POST',
+			data: { gecx_price_history_link_enabled: 0 },
+		});
+		await page.goto('/product/e2e-mug/');
+		await settle(page);
+		expect(await page.locator('gecx-price-history-link').count()).toBe(0);
+
+		await requestUtils.rest({
+			path: '/wp/v2/settings',
+			method: 'POST',
+			data: { gecx_price_history_link_enabled: 1 },
+		});
+		try {
+			await page.goto('/product/e2e-mug/');
+			await settle(page);
+			const placement = await page.evaluate(() => {
+				const links = document.querySelectorAll('gecx-price-history-link');
+				const price = document.querySelector('.wp-block-woocommerce-product-price, div.product .price, .price');
+				const form = document.querySelector('div.product form.cart, form.cart');
+				const marginVar = links[0] ? getComputedStyle(links[0]).getPropertyValue('--gecx-price-history-link-margin').trim() : '';
+				return {
+					count: links.length,
+					afterPrice: !!(price && links[0] &&
+						(price.compareDocumentPosition(links[0]) & Node.DOCUMENT_POSITION_FOLLOWING)),
+					beforeForm: !!(form && links[0] &&
+						(links[0].compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING)),
+					marginVar,
+				};
+			});
+			expect(placement).toEqual({ count: 1, afterPrice: true, beforeForm: true, marginVar: '0' });
+		} finally {
+			await requestUtils.rest({
+				path: '/wp/v2/settings',
+				method: 'POST',
+				data: { gecx_price_history_link_enabled: 0 },
+			});
+		}
+	});
 });

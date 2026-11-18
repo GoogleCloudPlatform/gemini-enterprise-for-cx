@@ -240,6 +240,7 @@ class Settings_Page {
         register_setting( 'gecx_agent_group', 'gecx_price_history_link_enabled', [
             'type'              => 'integer',
             'sanitize_callback' => 'absint',
+            'default'           => 0,
             'show_in_rest'      => true,
         ] );
         register_setting( 'gecx_agent_group', 'gecx_button_placement', [
@@ -336,7 +337,7 @@ class Settings_Page {
         $token_broker          = (string) get_option( 'gecx_token_broker_name', '' );
         $embed_enabled         = (bool) get_option( 'gecx_agent_enabled', 0 );
         $pdp_prompts_enabled   = (bool) get_option( 'gecx_pdp_prompts_enabled', 1 );
-        $price_history_enabled = (bool) get_option( 'gecx_price_history_link_enabled', 1 );
+        $price_history_enabled = (bool) get_option( 'gecx_price_history_link_enabled', 0 );
         $button_placement      = (string) get_option( 'gecx_button_placement', 'nav_menu' );
         $nav_menu_target       = Storefront::sanitize_nav_menu_target( get_option( 'gecx_nav_menu_target', '' ) );
         $nav_menu_locations    = (array) get_registered_nav_menus();

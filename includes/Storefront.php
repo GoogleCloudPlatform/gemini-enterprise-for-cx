@@ -164,8 +164,12 @@ class Storefront {
         add_filter( 'render_block_woocommerce/add-to-cart-form', [ $this, 'inject_block_suggested_prompts' ], 10, 2 );
         add_filter( 'render_block_woocommerce/single-product-details', [ $this, 'inject_block_suggested_prompts' ], 10, 2 );
 
-        // Just after the price, which WooCommerce hooks at priority 10. On
-        // block templates the Product Price block filter places it instead.
+        // Right after single-product/price.php on classic templates (including
+        // Astra, OceanWP and Blocksy, which bundle the whole summary into one
+        // priority-10 callback), falling back to woocommerce_single_product_summary
+        // at priority 11. On block templates the Product Price block filter
+        // places it instead.
+        add_action( 'woocommerce_after_template_part', [ $this, 'inject_after_single_price_template' ], 10, 1 );
         $price_history_hook     = apply_filters( 'gecx_price_history_link_hook', 'woocommerce_single_product_summary' );
         $price_history_priority = apply_filters( 'gecx_price_history_link_priority', 11 );
         add_action( $price_history_hook, [ $this, 'inject_price_history_link' ], $price_history_priority );
@@ -453,7 +457,8 @@ class Storefront {
             '   body.gecx-chat-open .gecx-mobile-header-button--floating, body:has(chat-messenger:not(.messenger-hidden)) .gecx-mobile-header-button--floating {' .
             '     display: none !important;' .
             '   }' .
-            ' }'
+            ' }' .
+            ' :where(.price + gecx-price-history-link, .wp-block-woocommerce-product-price + gecx-price-history-link) { --gecx-price-history-link-margin: 0; }'
         );
 
         $defer_until_interaction = (bool) get_option( 'gecx_defer_widget_until_interaction', false );
@@ -538,20 +543,6 @@ class Storefront {
             // casts top-level scalars to strings, and false becomes "".
             'cartRefresh'      => self::get_cart_refresh_config(),
         ];
-
-        // Independent of the PDP prompts setting, so features that need the
-        // product (such as the Price history link) work with prompts turned
-        // off. Kept apart from isPdp, which storefront.js reads to decide
-        // whether to place prompts and which also covers pages that merely
-        // embed a product. Nested so the ID stays an int: top-level scalars
-        // are cast to strings by wp_localize_script(). Absent when the page
-        // is not a product page or the product is password protected.
-        if ( is_product() && ! $this->current_product_is_password_protected() ) {
-            $product_id = self::resolve_current_product_id();
-            if ( $product_id > 0 ) {
-                $config['currentProduct'] = [ 'id' => $product_id ];
-            }
-        }
 
         if ( $this->is_pdp_prompts_auto_inject_enabled() ) {
             $is_product_page = is_product();
@@ -1119,6 +1110,33 @@ class Storefront {
     }
 
     /**
+     * Places the Price history link right after WooCommerce's single-product
+     * price template (`single-product/price.php`).
+     *
+     * Themes such as Astra, OceanWP and Blocksy unhook WooCommerce's default
+     * `woocommerce_single_product_summary` callbacks and render title, price,
+     * excerpt, add-to-cart and meta together inside a single priority-10
+     * callback, which would push a priority-11 summary callback below the
+     * add-to-cart form and product meta. All of them still render the price
+     * via `woocommerce_template_single_price()`.
+     *
+     * @param string $template_name WooCommerce template name.
+     */
+    public function inject_after_single_price_template( string $template_name = '' ): void {
+        if ( 'single-product/price.php' !== $template_name ) {
+            return;
+        }
+        // Let custom hook or priority filters place the link where asked.
+        if ( has_filter( 'gecx_price_history_link_hook' ) || has_filter( 'gecx_price_history_link_priority' ) ) {
+            return;
+        }
+        if ( get_the_ID() && (int) get_the_ID() !== (int) get_queried_object_id() ) {
+            return;
+        }
+        $this->inject_price_history_link();
+    }
+
+    /**
      * Places the Price history link after the price on classic single
      * product templates, and block themes still using them.
      *
@@ -1161,10 +1179,15 @@ class Storefront {
         }
 
         // The same block prices related products, upsells and other products
-        // embedded in the page, each with its own postId context. Compared
-        // with the queried object, since get_the_ID() is the looped product
-        // inside those lists.
-        if ( is_object( $instance ) && isset( $instance->context['postId'] ) && absint( $instance->context['postId'] ) !== (int) get_queried_object_id() ) {
+        // embedded in the page, each with its own postId context or looped
+        // post. Compared with the queried object, since get_the_ID() is the
+        // looped product inside those lists.
+        $queried_id = (int) get_queried_object_id();
+        if ( is_object( $instance ) && isset( $instance->context['postId'] ) ) {
+            if ( absint( $instance->context['postId'] ) !== $queried_id ) {
+                return $block_content;
+            }
+        } elseif ( get_the_ID() && (int) get_the_ID() !== $queried_id ) {
             return $block_content;
         }
 
@@ -1201,12 +1224,22 @@ class Storefront {
         if ( is_admin() || ! is_product() || $this->is_amp_request() || ! $this->is_widget_enabled() || ! $this->get_active_agent_name() ) {
             return 0;
         }
-        if ( ! (bool) get_option( 'gecx_price_history_link_enabled', 1 ) || $this->current_product_is_password_protected() ) {
+        if ( ! (bool) get_option( 'gecx_price_history_link_enabled', 0 ) ) {
             return 0;
         }
 
-        $product_id = self::resolve_current_product_id();
-        $product    = $product_id > 0 && function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null;
+        // On a product page the queried object is the product being viewed,
+        // even if an earlier widget or loop left global $post pointing at
+        // another post.
+        $product_id = (int) get_queried_object_id();
+        if ( $product_id <= 0 ) {
+            $product_id = self::resolve_current_product_id();
+        }
+        if ( $product_id <= 0 || post_password_required( $product_id ) ) {
+            return 0;
+        }
+
+        $product = function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null;
         if ( ! $product || ! $product->is_purchasable() ) {
             return 0;
         }

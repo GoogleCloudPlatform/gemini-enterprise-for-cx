@@ -46,10 +46,10 @@ An `agent` or `existing` answer holds for the rest of the page view, so the scri
 
 ### Placing the Price history link
 
-On product pages the plugin renders `<gecx-price-history-link product-id="…" chat-widget-selector="gecx-woocommerce-chat-widget">`, a custom element from the chat widget bundle that stays hidden unless the product's price is lower than usual. Classic templates get it on `woocommerce_single_product_summary` at priority 11, just after the price; block templates get it after the Product Price block of the product being viewed. It is placed once per page, only for purchasable products that are not password protected, and only while the storefront widget and the **Show price history link on product pages** setting are on.
+On product pages the plugin renders `<gecx-price-history-link product-id="…" chat-widget-selector="gecx-woocommerce-chat-widget">`, a custom element from the chat widget bundle that stays hidden unless the product's price is lower than usual. Classic templates get it right after `single-product/price.php` (falling back to `woocommerce_single_product_summary` at priority 11); block templates get it after the Product Price block of the product being viewed. On variable products, `storefront.js` keeps `variant-id` in step with the selected variation. It is placed once per page, only for purchasable products that are not password protected, and only while the storefront widget and the **Show price history link on product pages** setting (off by default) are on.
 
 * `gecx_render_price_history_link`: whether to place the link for a product (`$render`, `$product_id`). Return false to turn it off, for example to render the element yourself.
-* `gecx_price_history_link_hook` and `gecx_price_history_link_priority`: the classic template action and priority the link is placed on.
+* `gecx_price_history_link_hook` and `gecx_price_history_link_priority`: the classic template action and priority the link is placed on (overrides the default `single-product/price.php` template-part placement).
 
 ## License
 

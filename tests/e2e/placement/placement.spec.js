@@ -1299,3 +1299,97 @@ test.describe('cart session binding', () => {
     expect(bindRequests).toHaveLength(1);
   });
 });
+
+test.describe('price history link styling and variation sync', () => {
+  test('zeroes inline-start margin when placed below classic or block price containers', async ({ page }) => {
+    await openFixture(page, {
+      bodyClass: 'single-product',
+      body: `<main><div id="product-42" class="product type-product">
+        <p class="price">$20.00</p>
+        <gecx-price-history-link id="classic-link" product-id="42" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>
+        <div class="wp-block-woocommerce-product-price">$20.00</div>
+        <gecx-price-history-link id="block-link" product-id="42" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>
+        <span>$20.00 <gecx-price-history-link id="inline-link" product-id="42" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link></span>
+      </div></main>`,
+    });
+
+    const margins = await page.evaluate(() => ({
+      classic: getComputedStyle(document.getElementById('classic-link')).getPropertyValue('--gecx-price-history-link-margin').trim(),
+      block: getComputedStyle(document.getElementById('block-link')).getPropertyValue('--gecx-price-history-link-margin').trim(),
+      inline: getComputedStyle(document.getElementById('inline-link')).getPropertyValue('--gecx-price-history-link-margin').trim(),
+    }));
+    expect(margins).toEqual({ classic: '0', block: '0', inline: '' });
+  });
+
+  test('syncs variant-id from initial variation input and change/jQuery events while ignoring other products', async ({ page }) => {
+    await openFixture(page, {
+      bodyClass: 'single-product',
+      body: `<script>
+        (function() {
+          const handlers = {};
+          window.jQuery = function(el) {
+            return {
+              on(events, selector, fn) {
+                events.split(/\\s+/).forEach((ev) => {
+                  const name = ev.split('.')[0];
+                  (handlers[name] = handlers[name] || []).push({ selector, fn });
+                });
+                return this;
+              },
+              trigger(name, data) {
+                (handlers[name] || []).forEach(({ selector, fn }) => {
+                  if (el.matches && el.matches(selector)) {
+                    fn.call(el, { target: el }, data);
+                  }
+                });
+                return this;
+              },
+            };
+          };
+        })();
+      </script>
+      <main>
+        <div id="product-42" class="product type-product">
+          <p class="price">$20.00</p>
+          <gecx-price-history-link id="main-link" product-id="42" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>
+          <form id="main-variations" class="variations_form cart" data-product_id="42">
+            <input type="hidden" name="variation_id" value="101" />
+          </form>
+        </div>
+        <section class="related">
+          <form id="related-variations" class="variations_form cart" data-product_id="42">
+            <input type="hidden" name="variation_id" value="999" />
+          </form>
+        </section>
+        <form id="other-product-variations" class="variations_form cart" data-product_id="77">
+          <input type="hidden" name="variation_id" value="888" />
+        </form>
+      </main>`,
+    });
+
+    const link = page.locator('#main-link');
+    await expect(link).toHaveAttribute('variant-id', '101');
+
+    // Selecting another variation via WooCommerce's jQuery found_variation event updates variant-id.
+    await page.evaluate(() => {
+      window.jQuery(document.getElementById('other-product-variations')).trigger('found_variation', { variation_id: 888 });
+      window.jQuery(document.getElementById('related-variations')).trigger('found_variation', { variation_id: 999 });
+      window.jQuery(document.getElementById('main-variations')).trigger('found_variation', { variation_id: 202 });
+    });
+    await expect(link).toHaveAttribute('variant-id', '202');
+
+    // Clearing the variation removes variant-id.
+    await page.evaluate(() => {
+      window.jQuery(document.getElementById('main-variations')).trigger('reset_data');
+    });
+    await expect(link).not.toHaveAttribute('variant-id');
+
+    // Native change event on variation_id input also syncs variant-id.
+    await page.evaluate(() => {
+      const input = document.querySelector('#main-variations input[name="variation_id"]');
+      input.value = '303';
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await expect(link).toHaveAttribute('variant-id', '303');
+  });
+});

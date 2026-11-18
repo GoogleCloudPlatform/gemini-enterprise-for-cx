@@ -134,6 +134,43 @@ class AdminTest extends RestTestCase {
         $this->assertEquals( 1, get_option( 'gecx_agent_enabled' ) );
     }
 
+    public function test_rest_price_history_link_setting_defaults_off_and_toggles(): void {
+        delete_option( 'gecx_price_history_link_enabled' );
+
+        $get_response = rest_get_server()->dispatch( new WP_REST_Request( 'GET', '/wp/v2/settings' ) );
+        $this->assertSame( 200, $get_response->get_status() );
+        $this->assertSame( 0, $get_response->get_data()['gecx_price_history_link_enabled'] );
+
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_price_history_link_enabled' => 1 ] );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertSame( 200, $response->get_status() );
+        $this->assertSame( 1, get_option( 'gecx_price_history_link_enabled' ) );
+
+        $request = new WP_REST_Request( 'POST', '/wp/v2/settings' );
+        $request->set_body_params( [ 'gecx_price_history_link_enabled' => 0 ] );
+        $response = rest_get_server()->dispatch( $request );
+        $this->assertSame( 200, $response->get_status() );
+        $this->assertSame( 0, get_option( 'gecx_price_history_link_enabled' ) );
+
+        // Settings page renders the checkbox unchecked by default, and disabled while widget is off.
+        delete_option( 'gecx_price_history_link_enabled' );
+        update_option( 'gecx_auth_complete', 1 );
+        update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
+        update_option( 'gecx_agent_enabled', 0 );
+        update_option( 'gecx_sync_last_attempt', (string) time() );
+
+        $admin = new Admin( dirname( __DIR__, 3 ) . '/gecx-agent.php' );
+        ob_start();
+        try {
+            $admin->settings_page->render_settings_page();
+        } finally {
+            $html = (string) ob_get_clean();
+        }
+        $this->assertMatchesRegularExpression( '/<input[^>]*id="gecx_price_history_link_enabled"[^>]*disabled=\'disabled\'/s', $html );
+        $this->assertDoesNotMatchRegularExpression( '/<input[^>]*id="gecx_price_history_link_enabled"[^>]*checked=\'checked\'/s', $html );
+    }
+
     public function test_rest_unlink_agent(): void {
         update_option( 'gecx_agent_name', 'projects/123/locations/global/agents/agent-1' );
         update_option( 'gecx_token_broker_name', 'broker-1' );
