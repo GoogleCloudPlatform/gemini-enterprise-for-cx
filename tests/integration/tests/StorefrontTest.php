@@ -1811,6 +1811,59 @@ JS;
         return (string) ob_get_clean();
     }
 
+    /**
+     * The link markup placed for a product.
+     */
+    private function expected_price_history_link_html( int $product_id ): string {
+        return '<gecx-price-history-link product-id="' . $product_id . '" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>';
+    }
+
+    /**
+     * Removes the price history callbacks of every Storefront other than
+     * $storefront (the plugin's own instance from plugins_loaded), so tests
+     * that fire real hooks see one placer. Hooks are restored after each test.
+     */
+    private function isolate_price_history_storefront( Storefront $storefront ): void {
+        global $wp_filter;
+        foreach ( $wp_filter as $hook => $wp_hook ) {
+            foreach ( $wp_hook->callbacks as $priority => $callbacks ) {
+                foreach ( $callbacks as $callback ) {
+                    $function = $callback['function'];
+                    if ( is_array( $function ) && $function[0] instanceof Storefront && $function[0] !== $storefront
+                        && in_array( $function[1], [ 'inject_after_single_price_template', 'inject_price_history_link', 'inject_block_price_history_link', 'register_price_history_link_hook' ], true ) ) {
+                        remove_action( $hook, $function, $priority );
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Creates a product of the given type, visits its page and sets up the
+     * globals a single product template reads.
+     *
+     * @param \WC_Product $product Unsaved product.
+     * @return int Product ID.
+     */
+    private function go_to_product_page( \WC_Product $product ): int {
+        $product->set_name( 'Price history product' );
+        $product->set_status( 'publish' );
+        $product_id = $product->save();
+        $this->go_to( get_permalink( $product_id ) );
+        $GLOBALS['post'] = get_post( $product_id );
+        setup_postdata( $GLOBALS['post'] );
+        return $product_id;
+    }
+
+    /**
+     * Fires woocommerce_single_product_summary and returns what it printed.
+     */
+    private function render_single_product_summary(): string {
+        ob_start();
+        do_action( 'woocommerce_single_product_summary' );
+        return (string) ob_get_clean();
+    }
+
     private const PRICE_BLOCK_HTML = '<div class="wp-block-woocommerce-product-price"><div class="wc-block-components-product-price">$20.00</div></div>';
 
     public function test_price_history_link_is_off_by_default(): void {
@@ -1827,7 +1880,7 @@ JS;
         $product_id = $this->go_to_purchasable_product();
 
         $this->assertSame(
-            '<gecx-price-history-link product-id="' . $product_id . '" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>',
+            $this->expected_price_history_link_html( $product_id ),
             $this->render_classic_price_history_link( $storefront )
         );
         // Hooked onto woocommerce_after_template_part for single-product/price.php
@@ -1849,26 +1902,80 @@ JS;
         $printed = (string) ob_get_clean();
 
         $this->assertSame(
-            '<gecx-price-history-link product-id="' . $product_id . '" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>',
+            $this->expected_price_history_link_html( $product_id ),
             $printed
         );
         // Summary fallback does not duplicate it once placed.
         $this->assertSame( '', $this->render_classic_price_history_link( $storefront ) );
 
-        // Custom priority filter leaves placement to the summary hook instead.
-        $storefront_custom = $this->activate_price_history_widget();
-        $priority_filter   = static function (): int {
+    }
+
+    public function test_price_history_link_template_part_accepts_a_leading_slash(): void {
+        $storefront = $this->activate_price_history_widget();
+        $product_id = $this->go_to_purchasable_product();
+
+        // Elementor Pro's Product Price widget calls
+        // wc_get_template( '/single-product/price.php' ).
+        ob_start();
+        $storefront->inject_after_single_price_template( '/single-product/price.php' );
+        $this->assertSame( $this->expected_price_history_link_html( $product_id ), (string) ob_get_clean() );
+    }
+
+    public function test_price_history_link_priority_filter_added_after_plugins_loaded_applies(): void {
+        // As from a theme's functions.php: after the plugin constructed
+        // Storefront on plugins_loaded, before `wp`.
+        $storefront      = $this->activate_price_history_widget();
+        $priority_filter = static function (): int {
             return 25;
         };
         add_filter( 'gecx_price_history_link_priority', $priority_filter );
-        try {
-            ob_start();
-            $storefront_custom->inject_after_single_price_template( 'single-product/price.php' );
-            $this->assertSame( '', (string) ob_get_clean() );
-            $this->assertStringContainsString( '<gecx-price-history-link', $this->render_classic_price_history_link( $storefront_custom ) );
-        } finally {
-            remove_filter( 'gecx_price_history_link_priority', $priority_filter );
+        $this->go_to_purchasable_product();
+
+        $this->assertSame( 25, has_action( 'woocommerce_single_product_summary', [ $storefront, 'inject_price_history_link' ] ) );
+
+        // The custom placement replaces the template-part placement.
+        ob_start();
+        $storefront->inject_after_single_price_template( 'single-product/price.php' );
+        $this->assertSame( '', (string) ob_get_clean() );
+        $this->assertStringContainsString( '<gecx-price-history-link', $this->render_classic_price_history_link( $storefront ) );
+    }
+
+    public function test_price_history_link_hook_filter_moves_the_link_to_another_action(): void {
+        $storefront  = $this->activate_price_history_widget();
+        $hook_filter = static function (): string {
+            return 'woocommerce_after_single_product_summary';
+        };
+        add_filter( 'gecx_price_history_link_hook', $hook_filter );
+        $this->go_to_purchasable_product();
+        $this->isolate_price_history_storefront( $storefront );
+
+        $this->assertFalse( has_action( 'woocommerce_single_product_summary', [ $storefront, 'inject_price_history_link' ] ) );
+        $this->assertSame( 11, has_action( 'woocommerce_after_single_product_summary', [ $storefront, 'inject_price_history_link' ] ) );
+
+        ob_start();
+        $storefront->inject_after_single_price_template( 'single-product/price.php' );
+        $this->assertSame( '', (string) ob_get_clean() );
+
+        ob_start();
+        do_action( 'woocommerce_after_single_product_summary' );
+        $this->assertSame( 1, substr_count( (string) ob_get_clean(), '<gecx-price-history-link' ) );
+    }
+
+    public function test_price_history_link_hook_is_registered_once_when_wp_fires_again(): void {
+        $storefront = $this->activate_price_history_widget();
+        $this->go_to_purchasable_product();
+        $storefront->register_price_history_link_hook();
+
+        global $wp_filter;
+        $count = 0;
+        foreach ( $wp_filter['woocommerce_single_product_summary']->callbacks as $callbacks ) {
+            foreach ( $callbacks as $callback ) {
+                if ( [ $storefront, 'inject_price_history_link' ] === $callback['function'] ) {
+                    ++$count;
+                }
+            }
         }
+        $this->assertSame( 1, $count );
     }
 
     public function test_price_history_link_follows_the_product_price_block_not_inside_it(): void {
@@ -1901,7 +2008,7 @@ JS;
 
             // Classic summary fallback still resolves the main queried product ID.
             $this->assertSame(
-                '<gecx-price-history-link product-id="' . $product_id . '" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>',
+                $this->expected_price_history_link_html( $product_id ),
                 $this->render_classic_price_history_link( $storefront )
             );
         } finally {
@@ -2000,5 +2107,125 @@ JS;
 
         $this->assertSame( '', $html );
         $this->assertSame( $product_id, $seen );
+    }
+
+    public function test_price_history_link_is_placed_once_right_after_the_price_through_the_summary_hook(): void {
+        $storefront = $this->activate_price_history_widget();
+        $this->isolate_price_history_storefront( $storefront );
+        $product = new \WC_Product_Simple();
+        $product->set_regular_price( '20' );
+        $product_id = $this->go_to_product_page( $product );
+
+        $html = $this->render_single_product_summary();
+
+        $this->assertSame( 1, substr_count( $html, '<gecx-price-history-link' ), $html );
+        $this->assertMatchesRegularExpression( '#<p class="price">.*?</p>\s*' . preg_quote( $this->expected_price_history_link_html( $product_id ), '#' ) . '#s', $html );
+    }
+
+    public function test_price_history_link_follows_the_price_when_a_store_moves_it_to_priority_25(): void {
+        $storefront = $this->activate_price_history_widget();
+        $this->isolate_price_history_storefront( $storefront );
+        remove_action( 'woocommerce_single_product_summary', 'woocommerce_template_single_price', 10 );
+        add_action( 'woocommerce_single_product_summary', 'woocommerce_template_single_price', 25 );
+        $product = new \WC_Product_Simple();
+        $product->set_regular_price( '20' );
+        $product->set_short_description( 'Short description' );
+        $product_id = $this->go_to_product_page( $product );
+
+        $html = $this->render_single_product_summary();
+
+        $this->assertSame( 1, substr_count( $html, '<gecx-price-history-link' ), $html );
+        $this->assertMatchesRegularExpression( '#<p class="price">.*?</p>\s*' . preg_quote( $this->expected_price_history_link_html( $product_id ), '#' ) . '#s', $html );
+        $this->assertLessThan( strpos( $html, '<gecx-price-history-link' ), strpos( $html, 'Short description' ) );
+    }
+
+    public function test_price_history_link_falls_back_to_the_summary_hook_when_the_price_is_unhooked(): void {
+        $storefront = $this->activate_price_history_widget();
+        $this->isolate_price_history_storefront( $storefront );
+        remove_action( 'woocommerce_single_product_summary', 'woocommerce_template_single_price', 10 );
+        $product = new \WC_Product_Simple();
+        $product->set_regular_price( '20' );
+        $this->go_to_product_page( $product );
+
+        // No price template, so the priority-11 fallback is the only placer
+        // left. It still places the link: the store only moved the price.
+        // Hiding the price is covered by the empty price HTML check.
+        $this->assertSame( 1, substr_count( $this->render_single_product_summary(), '<gecx-price-history-link' ) );
+    }
+
+    public function test_price_history_link_is_not_placed_when_the_price_html_is_blank(): void {
+        $storefront = $this->activate_price_history_widget();
+        $this->isolate_price_history_storefront( $storefront );
+        add_filter( 'woocommerce_get_price_html', '__return_empty_string' );
+        $product = new \WC_Product_Simple();
+        $product->set_regular_price( '20' );
+        $this->go_to_product_page( $product );
+
+        $this->assertStringNotContainsString( '<gecx-price-history-link', $this->render_single_product_summary() );
+        $this->assertSame( self::PRICE_BLOCK_HTML, $storefront->inject_block_price_history_link( self::PRICE_BLOCK_HTML ) );
+    }
+
+    public function test_price_history_link_follows_a_rendered_product_price_block(): void {
+        if ( ! WP_Block_Type_Registry::get_instance()->is_registered( 'woocommerce/product-price' ) ) {
+            $this->markTestSkipped( 'WooCommerce did not register the Product Price block.' );
+        }
+        $storefront = $this->activate_price_history_widget();
+        $this->isolate_price_history_storefront( $storefront );
+        $product = new \WC_Product_Simple();
+        $product->set_regular_price( '20' );
+        $product_id = $this->go_to_product_page( $product );
+        $related    = new \WC_Product_Simple();
+        $related->set_name( 'Related' );
+        $related->set_regular_price( '30' );
+        $related->set_status( 'publish' );
+        $related_id = $related->save();
+
+        $parsed = [ 'blockName' => 'woocommerce/product-price', 'attrs' => [ 'isDescendentOfSingleProductTemplate' => true ], 'innerBlocks' => [], 'innerHTML' => '', 'innerContent' => [] ];
+
+        $related_html = ( new \WP_Block( $parsed, [ 'postId' => $related_id ] ) )->render();
+        $this->assertStringNotContainsString( '<gecx-price-history-link', $related_html );
+
+        $html = ( new \WP_Block( $parsed, [ 'postId' => $product_id ] ) )->render();
+        $this->assertStringContainsString( 'wc-block-components-product-price', $html );
+        $this->assertStringEndsWith( $this->expected_price_history_link_html( $product_id ), $html );
+        $this->assertSame( 1, substr_count( $html, '<gecx-price-history-link' ) );
+    }
+
+    public function test_price_history_link_renders_for_variable_products(): void {
+        $storefront = $this->activate_price_history_widget();
+        $this->isolate_price_history_storefront( $storefront );
+        $product    = new \WC_Product_Variable();
+        $product_id = $this->go_to_product_page( $product );
+        $variation  = new \WC_Product_Variation();
+        $variation->set_parent_id( $product_id );
+        $variation->set_regular_price( '20' );
+        $variation->set_status( 'publish' );
+        $variation->save();
+        \WC_Product_Variable::sync( $product_id );
+        wc_delete_product_transients( $product_id );
+
+        $this->assertSame( $this->expected_price_history_link_html( $product_id ), $this->render_classic_price_history_link( $storefront ) );
+    }
+
+    public function test_price_history_link_never_renders_for_grouped_or_external_products(): void {
+        $external = new \WC_Product_External();
+        $external->set_regular_price( '20' );
+        $external->set_product_url( 'https://example.com/product' );
+        foreach ( [ new \WC_Product_Grouped(), $external ] as $product ) {
+            $storefront = $this->activate_price_history_widget();
+            $this->go_to_product_page( $product );
+            $this->assertSame( '', $this->render_classic_price_history_link( $storefront ), get_class( $product ) );
+        }
+    }
+
+    public function test_price_history_link_is_placed_once_per_product_on_a_page_embedding_two(): void {
+        $storefront = $this->activate_price_history_widget();
+        $first_id   = $this->go_to_purchasable_product();
+        $this->assertSame( $this->expected_price_history_link_html( $first_id ), $this->render_classic_price_history_link( $storefront ) );
+        $this->assertSame( '', $this->render_classic_price_history_link( $storefront ) );
+
+        // A second product the same Storefront instance has not placed a link for.
+        $second_id = $this->go_to_purchasable_product();
+        $this->assertSame( $this->expected_price_history_link_html( $second_id ), $this->render_classic_price_history_link( $storefront ) );
     }
 }
