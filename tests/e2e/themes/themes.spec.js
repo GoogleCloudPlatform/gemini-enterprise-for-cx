@@ -81,7 +81,7 @@ test.describe(THEME || 'active theme', () => {
 		expect(placement).toEqual({ count: 1, afterForm: true, inStickyBar: false });
 	});
 
-	test('keeps price history link off by default and places it right after the price when enabled', async ({ page, requestUtils }) => {
+	test('places no price history link with the setting off, and one right after the price with it on', async ({ page, requestUtils }) => {
 		await requestUtils.rest({
 			path: '/wp/v2/settings',
 			method: 'POST',
@@ -120,6 +120,38 @@ test.describe(THEME || 'active theme', () => {
 				};
 			});
 			expect(placement).toEqual({ count: 1, afterPrice: true, beforeForm: true, inFloatingBar: false, marginVar: '0' });
+		} finally {
+			await requestUtils.rest({
+				path: '/wp/v2/settings',
+				method: 'POST',
+				data: { gecx_price_history_link_enabled: 0 },
+			});
+		}
+	});
+
+	test('keeps the price history link variant in step with the selected variation', async ({ page, requestUtils }) => {
+		await requestUtils.rest({
+			path: '/wp/v2/settings',
+			method: 'POST',
+			data: { gecx_price_history_link_enabled: 1 },
+		});
+		try {
+			await page.goto('/product/e2e-variable-tee/');
+			await settle(page);
+			const link = page.locator('gecx-price-history-link');
+			await expect(link).toHaveCount(1);
+			await expect(link).not.toHaveAttribute('variant-id');
+
+			const select = page.locator('div.product form.variations_form select').first();
+			const variationId = page.locator('div.product form.variations_form input[name="variation_id"]').first();
+			await select.selectOption({ label: 'Blue' });
+			await expect(variationId).not.toHaveValue('');
+			const selected = await variationId.inputValue();
+			await expect(link).toHaveAttribute('variant-id', selected);
+
+			await select.selectOption('');
+			await expect(variationId).toHaveValue('');
+			await expect(link).not.toHaveAttribute('variant-id');
 		} finally {
 			await requestUtils.rest({
 				path: '/wp/v2/settings',
