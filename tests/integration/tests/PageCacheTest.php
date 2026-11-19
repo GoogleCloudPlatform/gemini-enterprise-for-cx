@@ -30,6 +30,12 @@ namespace {
 			return true;
 		}
 	}
+	if ( ! function_exists( 'batcache_clear_url' ) ) {
+		function batcache_clear_url( string $url ): bool {
+			$GLOBALS['gecx_test_batcache_cleared_urls'][] = $url;
+			return true;
+		}
+	}
 }
 
 namespace Google\Gemini_Enterprise_For_CX\Tests\Integration {
@@ -40,12 +46,14 @@ namespace Google\Gemini_Enterprise_For_CX\Tests\Integration {
 
 		public function set_up(): void {
 			parent::set_up();
-			$GLOBALS['gecx_test_page_cache_purges'] = [];
+			$GLOBALS['gecx_test_page_cache_purges']     = [];
+			$GLOBALS['gecx_test_batcache_cleared_urls'] = [];
 		}
 
 		public function tear_down(): void {
 			remove_action( 'shutdown', [ Page_Cache::class, 'purge_all' ] );
-			unset( $GLOBALS['gecx_test_page_cache_purges'] );
+			remove_all_filters( 'gecx_batcache_allow_full_cache_flush' );
+			unset( $GLOBALS['gecx_test_page_cache_purges'], $GLOBALS['gecx_test_batcache_cleared_urls'] );
 			parent::tear_down();
 		}
 
@@ -130,13 +138,38 @@ namespace Google\Gemini_Enterprise_For_CX\Tests\Integration {
 
 		public function test_purge_flushes_batcache_when_present(): void {
 			wp_cache_set( 'cached_home', '<html>cached</html>', 'batcache' );
+			wp_cache_set( 'unrelated_key', 'keep', 'gecx_other' );
 			$GLOBALS['batcache'] = (object) [ 'group' => 'batcache' ];
 
 			try {
 				Page_Cache::purge_all();
 				$this->assertFalse( wp_cache_get( 'cached_home', 'batcache' ) );
+				$this->assertSame( 'keep', wp_cache_get( 'unrelated_key', 'gecx_other' ) );
+				$this->assertSame( [], $GLOBALS['gecx_test_batcache_cleared_urls'] );
 			} finally {
 				unset( $GLOBALS['batcache'] );
+				wp_cache_delete( 'unrelated_key', 'gecx_other' );
+			}
+		}
+
+		public function test_purge_batcache_skips_full_object_cache_flush_when_flush_group_is_unsupported_unless_opted_in(): void {
+			$method = new \ReflectionMethod( Page_Cache::class, 'purge_batcache' );
+			$method->setAccessible( true );
+
+			wp_cache_set( 'unrelated_key', 'keep', 'gecx_other' );
+			$GLOBALS['batcache'] = (object) [ 'group' => 'batcache' ];
+
+			try {
+				$method->invoke( null, false );
+				$this->assertSame( 'keep', wp_cache_get( 'unrelated_key', 'gecx_other' ) );
+				$this->assertSame( [ home_url( '/' ) ], $GLOBALS['gecx_test_batcache_cleared_urls'] );
+
+				add_filter( 'gecx_batcache_allow_full_cache_flush', '__return_true' );
+				$method->invoke( null, false );
+				$this->assertFalse( wp_cache_get( 'unrelated_key', 'gecx_other' ) );
+			} finally {
+				unset( $GLOBALS['batcache'] );
+				wp_cache_delete( 'unrelated_key', 'gecx_other' );
 			}
 		}
 

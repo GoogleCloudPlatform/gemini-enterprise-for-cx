@@ -196,13 +196,11 @@ class Session_Attribution {
 
         // Do NOT call WC()->initialize_session() or new \WC_Session_Handler()
         // here when WC()->session is null (as it is on non-Store-API REST
-        // routes). WooCommerce's Interactivity API cart.js omits X-WP-Nonce,
-        // storing a logged-in shopper's cart in a guest `t_...` session cookie,
-        // whereas /gecx/v1/session sends X-WP-Nonce. Booting WC_Session_Handler
-        // on this authenticated request runs migrate_guest_session_to_user_session(),
-        // rewriting `wp_woocommerce_session_*` to the numeric user ID so the
-        // very next un-nonced cart.js call fails is_session_cookie_valid() and
-        // calls destroy_session(), wiping the shopper's cart.
+        // routes): recording `gecx_session_id` does not need a full
+        // `WC_Session_Handler` boot, which would run `save_data()` over an
+        // in-memory snapshot and rewrite `wp_woocommerce_session_*` cookies
+        // (including migrating any guest `t_...` cookie on stores with custom
+        // REST auth filters).
 
         // A session outside the linked agent's project is logged, not refused:
         // the order webhook never delivers a bare ID, and the backend
@@ -323,9 +321,9 @@ class Session_Attribution {
             self::persist_session_id_to_row( $wpdb, $session_key, $session_id, true );
 
             // When a logged-in shopper also holds a verified guest session
-            // cookie minted by WooCommerce's un-nonced Store API cart.js,
-            // annotate that existing guest row in place without migrating or
-            // altering cookies.
+            // cookie (for example on a site where custom REST auth filters ran
+            // Store API requests unauthenticated), annotate that existing guest
+            // row in place without migrating or altering cookies.
             if ( '' !== $current_user_key && 0 === strpos( $cookie_customer_key, 't_' ) && $cookie_customer_key !== $session_key ) {
                 self::persist_session_id_to_row( $wpdb, $cookie_customer_key, $session_id, false );
             }
@@ -455,8 +453,7 @@ class Session_Attribution {
             }
 
             // Fallback to database lookup without initializing WC_Session_Handler
-            // (initializing WC_Session_Handler on a nonced REST request would
-            // migrate a logged-in shopper's Store API guest cart cookie).
+            // on read-only attribution checks.
             global $wpdb;
             $candidate_keys = [];
             if ( isset( WC()->session ) && is_object( WC()->session ) && method_exists( WC()->session, 'get_customer_id' ) ) {

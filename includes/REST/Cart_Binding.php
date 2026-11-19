@@ -151,10 +151,9 @@ class Cart_Binding {
         }
 
         $user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
-        // Return before WC()->initialize_session() for logged-in shoppers:
-        // initializing WC_Session_Handler on a nonced REST request migrates a
-        // Store API `t_...` guest cookie to the numeric user ID, causing the
-        // next un-nonced Store API cart.js call to destroy_session().
+        // Return before WC()->initialize_session() for logged-in shoppers,
+        // avoiding an unnecessary WC_Session_Handler boot and cookie migration
+        // on a route that always answers `existing` for authenticated users.
         if ( $user_id > 0 ) {
             return self::respond( 'existing' );
         }

@@ -151,18 +151,10 @@ class Page_Cache {
         }
         // Batcache (WordPress.com Atomic, VIP, Pressable). Batcache stores
         // full HTML responses in the persistent object cache rather than on
-        // disk, so flushing its cache group (or the object cache when group
-        // flushing is unsupported) evicts cached storefront pages.
-        if ( ( isset( $GLOBALS['batcache'] ) && is_object( $GLOBALS['batcache'] ) ) || function_exists( 'batcache_cancel' ) ) {
-            $batcache_group = ( isset( $GLOBALS['batcache'] ) && is_object( $GLOBALS['batcache'] ) && isset( $GLOBALS['batcache']->group ) && is_string( $GLOBALS['batcache']->group ) && '' !== $GLOBALS['batcache']->group )
-                ? $GLOBALS['batcache']->group
-                : 'batcache';
-            if ( function_exists( 'wp_cache_supports' ) && wp_cache_supports( 'flush_group' ) && function_exists( 'wp_cache_flush_group' ) ) {
-                wp_cache_flush_group( $batcache_group );
-            } elseif ( function_exists( 'wp_cache_flush' ) ) {
-                wp_cache_flush();
-            }
-        }
+        // disk. Only its group is flushed when the drop-in advertises
+        // `flush_group`, so a merchant's whole object cache is not emptied on
+        // storefront-option writes.
+        self::purge_batcache();
 
         // Caches that purge on an action of their own. Firing one that no
         // plugin listens to does nothing.
@@ -184,5 +176,44 @@ class Page_Cache {
          * Hook it to purge a host or CDN cache the plugin does not know.
          */
         do_action( 'gecx_purge_page_caches' );
+    }
+
+    /**
+     * Purges Batcache when active without emptying the whole object cache by
+     * default on drop-ins that do not advertise `flush_group`.
+     *
+     * @param bool|null $supports_flush_group Optional override for tests; null checks `wp_cache_supports( 'flush_group' )`.
+     */
+    private static function purge_batcache( ?bool $supports_flush_group = null ): void {
+        if ( ! ( isset( $GLOBALS['batcache'] ) && is_object( $GLOBALS['batcache'] ) ) && ! function_exists( 'batcache_cancel' ) ) {
+            return;
+        }
+
+        $batcache_group = ( isset( $GLOBALS['batcache'] ) && is_object( $GLOBALS['batcache'] ) && isset( $GLOBALS['batcache']->group ) && is_string( $GLOBALS['batcache']->group ) && '' !== $GLOBALS['batcache']->group )
+            ? $GLOBALS['batcache']->group
+            : 'batcache';
+
+        $can_flush_group = null !== $supports_flush_group
+            ? $supports_flush_group
+            : ( function_exists( 'wp_cache_supports' ) && wp_cache_supports( 'flush_group' ) && function_exists( 'wp_cache_flush_group' ) );
+
+        if ( $can_flush_group ) {
+            wp_cache_flush_group( $batcache_group );
+            return;
+        }
+
+        if ( function_exists( 'batcache_clear_url' ) ) {
+            batcache_clear_url( home_url( '/' ) );
+        }
+
+        /**
+         * Filters whether Batcache purging may fall back to `wp_cache_flush()`
+         * when the object-cache drop-in does not support `flush_group`.
+         *
+         * @param bool $allow_full_flush Default false.
+         */
+        if ( apply_filters( 'gecx_batcache_allow_full_cache_flush', false ) && function_exists( 'wp_cache_flush' ) ) {
+            wp_cache_flush();
+        }
     }
 }
