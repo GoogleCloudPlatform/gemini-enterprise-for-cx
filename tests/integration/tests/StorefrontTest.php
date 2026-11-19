@@ -1772,6 +1772,7 @@ JS;
         $this->assertStringContainsString( '.gecx-mobile-header-button.gecx-mobile-header-button--row', $css );
         $this->assertStringContainsString( 'body.gecx-chat-open .gecx-mobile-header-button--floating', $css );
         $this->assertStringContainsString( '--gecx-price-history-link-margin: 0', $css );
+        $this->assertStringContainsString( 'gecx-price-history-link:not(:defined) { display: none; }', $css );
     }
 
     /**

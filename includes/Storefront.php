@@ -458,7 +458,8 @@ class Storefront {
             '     display: none !important;' .
             '   }' .
             ' }' .
-            ' :where(.price + gecx-price-history-link, .wp-block-woocommerce-product-price + gecx-price-history-link) { --gecx-price-history-link-margin: 0; }'
+            ' :where(.price + gecx-price-history-link, .wp-block-woocommerce-product-price + gecx-price-history-link) { --gecx-price-history-link-margin: 0; }' .
+            ' gecx-price-history-link:not(:defined) { display: none; }'
         );
 
         $defer_until_interaction = (bool) get_option( 'gecx_defer_widget_until_interaction', false );
