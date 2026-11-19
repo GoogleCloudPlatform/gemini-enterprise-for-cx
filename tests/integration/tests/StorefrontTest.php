@@ -1563,7 +1563,7 @@ JS;
 
     public function test_agent_button_block_is_server_rendered(): void {
         $storefront = $this->activate_widget( 'manual' );
-        foreach ( [ 'gecx/agent-button', 'gecx/suggested-prompts' ] as $block_name ) {
+        foreach ( [ 'gecx/agent-button', 'gecx/suggested-prompts', 'gecx/price-history-link' ] as $block_name ) {
             if ( WP_Block_Type_Registry::get_instance()->is_registered( $block_name ) ) {
                 WP_Block_Type_Registry::get_instance()->unregister( $block_name );
             }
@@ -1580,7 +1580,7 @@ JS;
 
     public function test_suggested_prompts_block_is_server_rendered(): void {
         $storefront = $this->activate_widget( 'manual' );
-        foreach ( [ 'gecx/agent-button', 'gecx/suggested-prompts' ] as $block_name ) {
+        foreach ( [ 'gecx/agent-button', 'gecx/suggested-prompts', 'gecx/price-history-link' ] as $block_name ) {
             if ( WP_Block_Type_Registry::get_instance()->is_registered( $block_name ) ) {
                 WP_Block_Type_Registry::get_instance()->unregister( $block_name );
             }
@@ -2246,5 +2246,43 @@ JS;
         $this->assertSame( $product_id, $seen );
         $this->assertStringContainsString( ' label="Price trend"', $html );
         $this->assertStringContainsString( ' always-show>', $html );
+    }
+
+    public function test_price_history_link_shortcode_and_block_render_with_automatic_placement_off(): void {
+        $storefront = $this->activate_price_history_widget();
+        foreach ( [ 'gecx/agent-button', 'gecx/suggested-prompts', 'gecx/price-history-link' ] as $block_name ) {
+            if ( WP_Block_Type_Registry::get_instance()->is_registered( $block_name ) ) {
+                WP_Block_Type_Registry::get_instance()->unregister( $block_name );
+            }
+        }
+        $storefront->register_blocks();
+        $block = WP_Block_Type_Registry::get_instance()->get_registered( 'gecx/price-history-link' );
+        $this->assertInstanceOf( WP_Block_Type::class, $block );
+        $this->assertSame( [ $storefront, 'render_price_history_link_shortcode' ], $block->render_callback );
+        $this->assertTrue( shortcode_exists( 'gecx_price_history_link' ) );
+
+        add_filter( 'gecx_render_price_history_link', '__return_false' );
+        $product_id = $this->go_to_purchasable_product();
+
+        $this->assertSame( '', $this->render_classic_price_history_link( $storefront ) );
+        $this->assertSame( $this->expected_price_history_link_html( $product_id ), $storefront->render_price_history_link_shortcode() );
+        // Still once per product.
+        $this->assertSame( '', $storefront->render_price_history_link_shortcode() );
+    }
+
+    public function test_price_history_link_shortcode_applies_the_same_checks(): void {
+        $storefront = $this->activate_price_history_widget();
+        $this->go_to_purchasable_product( [ 'post_password' => 'secret_pass' ] );
+        $this->assertSame( '', $storefront->render_price_history_link_shortcode() );
+
+        $storefront = $this->activate_price_history_widget();
+        update_option( 'gecx_price_history_link_enabled', 0 );
+        $this->go_to_purchasable_product();
+        $this->assertSame( '', $storefront->render_price_history_link_shortcode() );
+
+        $storefront = $this->activate_price_history_widget();
+        $page_id    = $this->factory()->post->create( [ 'post_type' => 'page' ] );
+        $this->go_to( get_permalink( $page_id ) );
+        $this->assertSame( '', $storefront->render_price_history_link_shortcode() );
     }
 }

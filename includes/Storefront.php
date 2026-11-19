@@ -193,6 +193,7 @@ class Storefront {
 
         add_shortcode( 'gecx_suggested_prompts', [ $this, 'render_suggested_prompts_shortcode' ] );
         add_shortcode( 'gecx_agent_button', [ $this, 'render_agent_button_shortcode' ] );
+        add_shortcode( 'gecx_price_history_link', [ $this, 'render_price_history_link_shortcode' ] );
 
         // Keep "delay JavaScript" optimizers from holding the launcher back.
         add_filter( 'script_loader_tag', [ $this, 'exclude_script_from_optimizers' ], 10, 2 );
@@ -310,10 +311,11 @@ class Storefront {
 
     /**
      * Registers the plugin's blocks, the block editor counterparts of the
-     * [gecx_agent_button] and [gecx_suggested_prompts] shortcodes.
+     * [gecx_agent_button], [gecx_suggested_prompts] and
+     * [gecx_price_history_link] shortcodes.
      *
-     * Both are rendered on the server. In the editor they show placeholders:
-     * the launcher and prompts are custom elements defined by the
+     * All are rendered on the server. In the editor they show placeholders:
+     * the launcher, prompts and link are custom elements defined by the
      * Google-hosted widget bundle, which the editor does not load.
      */
     public function register_blocks(): void {
@@ -369,6 +371,21 @@ class Storefront {
                 ],
                 'uses_context'    => [ 'postId' ],
                 'render_callback' => [ $this, 'render_suggested_prompts_block' ],
+                'supports'        => [
+                    'html'     => false,
+                    'multiple' => false,
+                ],
+            ]
+        );
+        register_block_type(
+            'gecx/price-history-link',
+            [
+                'api_version'     => 2,
+                'title'           => __( 'Gemini Enterprise for CX Price History Link', 'gemini-enterprise-for-cx' ),
+                'description'     => __( 'Opens the product\'s price history in the chat, shown only when the price is lower than usual. For the Single Product template.', 'gemini-enterprise-for-cx' ),
+                'category'        => 'widgets',
+                'editor_script'   => 'gecx-editor-blocks',
+                'render_callback' => [ $this, 'render_price_history_link_shortcode' ],
                 'supports'        => [
                     'html'     => false,
                     'multiple' => false,
@@ -1256,10 +1273,12 @@ class Storefront {
      * marks it placed, or returns '' when it was already placed for that
      * product during the request or does not belong on this page.
      *
+     * @param bool $automatic Whether the plugin is placing it, rather than the
+     *                        shortcode or block.
      * @return string Link markup, or ''.
      */
-    protected function claim_price_history_link_html(): string {
-        $product_id = $this->get_price_history_link_product_id();
+    protected function claim_price_history_link_html( bool $automatic = true ): string {
+        $product_id = $this->get_price_history_link_product_id( $automatic );
         if ( 0 === $product_id || isset( $this->price_history_link_products[ $product_id ] ) ) {
             return '';
         }
@@ -1272,9 +1291,11 @@ class Storefront {
      * viewed, while the widget is active, the setting is on and the product
      * is purchasable, shows a price and is not password protected.
      *
+     * @param bool $automatic Whether the plugin is placing it, which
+     *                        gecx_render_price_history_link can turn off.
      * @return int Product ID, or 0 when the link should not be shown.
      */
-    protected function get_price_history_link_product_id(): int {
+    protected function get_price_history_link_product_id( bool $automatic = true ): int {
         if ( is_admin() || ! is_product() || $this->is_amp_request() || ! $this->is_widget_enabled() || ! $this->get_active_agent_name() ) {
             return 0;
         }
@@ -1303,10 +1324,14 @@ class Storefront {
             return 0;
         }
 
+        if ( ! $automatic ) {
+            return $product_id;
+        }
+
         /**
          * Filters whether the Price history link is placed automatically on a
          * product page. Return false to turn it off, for example to place
-         * the element yourself.
+         * it with the [gecx_price_history_link] shortcode or block instead.
          *
          * @param bool $render     Default true.
          * @param int  $product_id Product ID.
@@ -1350,6 +1375,22 @@ class Storefront {
         }
 
         return '<gecx-price-history-link' . $attrs_string . '></gecx-price-history-link>';
+    }
+
+    /**
+     * Renders the Price history link through the [gecx_price_history_link]
+     * shortcode or the gecx/price-history-link block, for the product page
+     * being viewed.
+     *
+     * The same checks apply as for automatic placement, except
+     * gecx_render_price_history_link, and the link is still placed once per
+     * product, so turn automatic placement off where the shortcode or block
+     * comes after the price.
+     *
+     * @return string HTML output, or ''.
+     */
+    public function render_price_history_link_shortcode(): string {
+        return $this->claim_price_history_link_html( false );
     }
 
     /**
