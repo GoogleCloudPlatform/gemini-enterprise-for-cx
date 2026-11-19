@@ -6,7 +6,7 @@ WC requires at least: 7.1
 WC tested up to: 11.3
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.2.2
+Stable tag: 1.2.3
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -30,6 +30,7 @@ The plugin is an interface to the Gemini Enterprise for CX software as a service
 
 * A launcher button in your header menu, a floating button, or wherever you place the `[gecx_agent_button]` shortcode or the launcher block.
 * Suggested questions on product pages, placed automatically or with the `[gecx_suggested_prompts]` shortcode or block.
+* A Price history link below the price on product pages, shown only when the price is lower than usual, if you turn it on in the settings. Placed automatically or with the `[gecx_price_history_link]` shortcode or block.
 
 = Merchant console =
 
@@ -66,7 +67,7 @@ This plugin connects to 3rd-party services provided by Google to function, and l
    * **Purpose:** Delivers the client runtime required to render the interactive chat widget and product suggestion pills on the customer-facing storefront, and to communicate with the GECX service.
    * **When it loads:** Never by default. It is enqueued on storefront pages only after a store administrator has connected the store to Google Cloud, linked an agent, and enabled the agent in the plugin settings. If either condition is unmet, the script is not requested at all.
    * **Why it is hosted externally:** It is the official client runtime for the Gemini Enterprise for CX SaaS platform, versioned and released with that service rather than with this plugin. It speaks directly to the service's streaming, session and agent protocols, which change far more often than a WordPress plugin release cycle. A copy frozen inside the plugin would break storefronts for any merchant who did not update the plugin in step with every service change.
-   * **Data Transmitted:** Standard HTTP request headers (IP address, User-Agent) when the browser fetches the script. Customer chat messages and product browsing context are processed by GECX during live chat interactions. For a shopper who is logged in to the store, the widget also sends GECX a token signed by the store that contains the shopper's WordPress user ID and email address; guests' tokens contain neither. When a guest uses the chat, the plugin may put their browser on the cart the agent is using. That cart, and the checkout details the guest enters while on it (name, address, email, phone), can then be read by GECX.
+   * **Data Transmitted:** Standard HTTP request headers (IP address, User-Agent) when the browser fetches the script. Customer chat messages and product browsing context are processed by GECX during live chat interactions. If the Price history link is turned on (it is off by default), the widget also asks GECX on each product page load, before the shopper opens the chat, whether the viewed product's price is lower than usual. It sends the product ID, and the variation ID when the shopper picks a variation, and records that the link was shown when it is. For a shopper who is logged in to the store, the widget also sends GECX a token signed by the store that contains the shopper's WordPress user ID and email address; guests' tokens contain neither. When a guest uses the chat, the plugin may put their browser on the cart the agent is using. That cart, and the checkout details the guest enters while on it (name, address, email, phone), can then be read by GECX.
    * **Terms of Service:** https://cloud.google.com/terms
    * **Privacy Policy:** https://policies.google.com/privacy
 
@@ -104,7 +105,7 @@ Access is currently by invitation. You can install the plugin without it, but co
 Only the chat widget script from `www.gstatic.com`, and only on storefronts with a linked, enabled agent. The widget stylesheet ships with the plugin. See 3rd Party Services above.
 
 = What data is sent to Google? =
-The store URL and admin tokens during setup, and shoppers' chat messages and viewed products while they chat. The 3rd Party Services section above lists exactly what is sent and when.
+The store URL and admin tokens during setup, and shoppers' chat messages and viewed products while they chat. With the Price history link turned on, each product page load also asks, before any chat, whether the viewed product's price is lower than usual, sending the product (and variation) ID. The 3rd Party Services section above lists exactly what is sent and when.
 
 = Where does the launcher appear, and what if my theme hides it? =
 With the Top navigation menu placement, the launcher joins your header menu and your theme's mobile menu, and moves beside the menu (hamburger) button whenever your theme shows one. If it cannot find a place on screen, it appears as a floating button instead.
@@ -137,6 +138,10 @@ After the agent changes the cart, the plugin refreshes WooCommerce cart fragment
 == Changelog ==
 
 The complete release history is kept in changelog.txt at the plugin root.
+
+= 1.2.3 =
+* Add a Price history link below the price on product pages, off by default (Settings > Show price history link on product pages). It is a custom element from the Google-hosted chat widget bundle: on page load it asks Gemini Enterprise for CX whether the viewed product's price is lower than usual and stays hidden unless it is, and a click opens the product's price history in the chat. It is placed right after `single-product/price.php` on classic templates (including Astra, OceanWP, Blocksy and Elementor Pro's Product Price widget), after the Product Price block on block templates, once per product and only for purchasable products that show a price and are not password protected, and follows the selected variation on variable products. Adds the `[gecx_price_history_link]` shortcode and block and the `gecx_render_price_history_link`, `gecx_price_history_link_attributes`, `gecx_price_history_link_hook` and `gecx_price_history_link_priority` filters. Needs a chat widget bundle that defines the element.
+* Skip OceanWP's floating add-to-cart bar (`.owp-floating-bar`) when looking for the main product's add-to-cart form, which also changes where the suggested prompts fallback is placed on OceanWP.
 
 = 1.2.2 =
 * Pause the product and order webhooks that Gemini Enterprise for CX registers on the store (those delivered to `/woocommerce/webhook` on `gecx.cloud.google.com` or the staging console) when the plugin is deactivated or the agent is unlinked, resume them on reactivation or when an agent is linked again, and delete them on uninstall, after the `plugin/uninstalled` notification and even if WooCommerce is inactive. The merchant's other webhooks are not touched.

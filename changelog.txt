@@ -1,5 +1,9 @@
 *** Gemini Enterprise for CX Changelog ***
 
+2026-11-19 - version 1.2.3
+* Add a Price history link below the price on product pages, off by default (Settings > Show price history link on product pages). It is a custom element from the Google-hosted chat widget bundle: on page load it asks Gemini Enterprise for CX whether the viewed product's price is lower than usual and stays hidden unless it is, and a click opens the product's price history in the chat. It is placed right after `single-product/price.php` on classic templates (including Astra, OceanWP, Blocksy and Elementor Pro's Product Price widget), after the Product Price block on block templates, once per product and only for purchasable products that show a price and are not password protected, and follows the selected variation on variable products. Adds the `[gecx_price_history_link]` shortcode and block and the `gecx_render_price_history_link`, `gecx_price_history_link_attributes`, `gecx_price_history_link_hook` and `gecx_price_history_link_priority` filters. Needs a chat widget bundle that defines the element.
+* Skip OceanWP's floating add-to-cart bar (`.owp-floating-bar`) when looking for the main product's add-to-cart form, which also changes where the suggested prompts fallback is placed on OceanWP.
+
 2026-11-12 - version 1.2.2
 * Pause the product and order webhooks that Gemini Enterprise for CX registers on the store (those delivered to `/woocommerce/webhook` on `gecx.cloud.google.com` or the staging console) when the plugin is deactivated or the agent is unlinked, resume them on reactivation or when an agent is linked again, and delete them on uninstall, after the `plugin/uninstalled` notification and even if WooCommerce is inactive. The merchant's other webhooks are not touched.
 
