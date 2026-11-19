@@ -1321,75 +1321,125 @@ test.describe('price history link styling and variation sync', () => {
     expect(margins).toEqual({ classic: '0', block: '0', inline: '' });
   });
 
-  test('syncs variant-id from initial variation input and change/jQuery events while ignoring other products', async ({ page }) => {
+  // A minimal jQuery: delegated handlers on document, and trigger() that
+  // bubbles from the target through its ancestors, calling only jQuery
+  // handlers. Like jQuery, it dispatches no native event.
+  const JQUERY_STUB = `<script>
+    (function() {
+      const handlers = [];
+      window.jQuery = function(el) {
+        return {
+          on(events, selector, fn) {
+            events.split(/\\s+/).forEach((ev) => {
+              handlers.push({ root: el, name: ev.split('.')[0], selector, fn });
+            });
+            return this;
+          },
+          val(value) {
+            el.value = value;
+            return this;
+          },
+          trigger(name, data) {
+            for (let node = el; node && node !== document; node = node.parentNode) {
+              handlers.forEach((h) => {
+                if (h.name === name && node.matches(h.selector) && h.root.contains(node)) {
+                  h.fn.call(node, { type: name, target: el }, data);
+                }
+              });
+            }
+            return this;
+          },
+        };
+      };
+    })();
+  </script>`;
+
+  const variationForm = (id, productId, value) => `<form id="${id}" class="variations_form cart" data-product_id="${productId}">
+      <input type="hidden" name="variation_id" value="${value}" />
+      <div class="single_variation_wrap"><div class="single_variation"></div></div>
+    </form>`;
+
+  test('syncs variant-id from WooCommerce variation events on the main form only', async ({ page }) => {
     await openFixture(page, {
       bodyClass: 'single-product',
-      body: `<script>
-        (function() {
-          const handlers = {};
-          window.jQuery = function(el) {
-            return {
-              on(events, selector, fn) {
-                events.split(/\\s+/).forEach((ev) => {
-                  const name = ev.split('.')[0];
-                  (handlers[name] = handlers[name] || []).push({ selector, fn });
-                });
-                return this;
-              },
-              trigger(name, data) {
-                (handlers[name] || []).forEach(({ selector, fn }) => {
-                  if (el.matches && el.matches(selector)) {
-                    fn.call(el, { target: el }, data);
-                  }
-                });
-                return this;
-              },
-            };
-          };
-        })();
-      </script>
+      body: `${JQUERY_STUB}
       <main>
         <div id="product-42" class="product type-product">
           <p class="price">$20.00</p>
           <gecx-price-history-link id="main-link" product-id="42" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>
-          <form id="main-variations" class="variations_form cart" data-product_id="42">
-            <input type="hidden" name="variation_id" value="101" />
-          </form>
+          ${variationForm('main-variations', 42, 101)}
         </div>
-        <section class="related">
-          <form id="related-variations" class="variations_form cart" data-product_id="42">
-            <input type="hidden" name="variation_id" value="999" />
-          </form>
-        </section>
-        <form id="other-product-variations" class="variations_form cart" data-product_id="77">
-          <input type="hidden" name="variation_id" value="888" />
-        </form>
+        <section class="related">${variationForm('related-variations', 42, 999)}</section>
+        ${variationForm('other-product-variations', 77, 888)}
       </main>`,
     });
 
     const link = page.locator('#main-link');
+    const trigger = (formId, name, data) => page.evaluate(([id, ev, d]) => {
+      window.jQuery(document.getElementById(id)).trigger(ev, d);
+    }, [formId, name, data]);
+
     await expect(link).toHaveAttribute('variant-id', '101');
 
-    // Selecting another variation via WooCommerce's jQuery found_variation event updates variant-id.
+    await trigger('main-variations', 'found_variation', { variation_id: 202 });
+    await expect(link).toHaveAttribute('variant-id', '202');
+    await trigger('related-variations', 'found_variation', { variation_id: 999 });
+    await expect(link).toHaveAttribute('variant-id', '202');
+    await trigger('other-product-variations', 'found_variation', { variation_id: 888 });
+    await expect(link).toHaveAttribute('variant-id', '202');
+
+    // reset_data from other forms leaves the selection alone.
+    await trigger('related-variations', 'reset_data');
+    await expect(link).toHaveAttribute('variant-id', '202');
+    await trigger('other-product-variations', 'reset_data');
+    await expect(link).toHaveAttribute('variant-id', '202');
+    await trigger('main-variations', 'reset_data');
+    await expect(link).not.toHaveAttribute('variant-id');
+
+    // hide_variation is triggered on .single_variation and bubbles to the form.
+    await trigger('main-variations', 'found_variation', { variation_id: 303 });
+    await expect(link).toHaveAttribute('variant-id', '303');
     await page.evaluate(() => {
-      window.jQuery(document.getElementById('other-product-variations')).trigger('found_variation', { variation_id: 888 });
-      window.jQuery(document.getElementById('related-variations')).trigger('found_variation', { variation_id: 999 });
-      window.jQuery(document.getElementById('main-variations')).trigger('found_variation', { variation_id: 202 });
+      window.jQuery(document.querySelector('#related-variations .single_variation')).trigger('hide_variation');
+    });
+    await expect(link).toHaveAttribute('variant-id', '303');
+    await page.evaluate(() => {
+      window.jQuery(document.querySelector('#main-variations .single_variation')).trigger('hide_variation');
+    });
+    await expect(link).not.toHaveAttribute('variant-id');
+  });
+
+  test('keeps the selection when an untouched second form for the product is on the page', async ({ page }) => {
+    await openFixture(page, {
+      bodyClass: 'single-product',
+      body: `${JQUERY_STUB}
+      <main>
+        <div id="product-42" class="product type-product">
+          <p class="price">$20.00</p>
+          <gecx-price-history-link id="main-link" product-id="42" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>
+          ${variationForm('main-variations', 42, '')}
+        </div>
+        <div class="wpcsb-wrapper">${variationForm('sticky-variations', 42, '')}</div>
+      </main>`,
+    });
+
+    const link = page.locator('#main-link');
+    await expect(link).not.toHaveAttribute('variant-id');
+
+    // As add-to-cart-variation.js does: set the input with jQuery, then
+    // trigger found_variation.
+    await page.evaluate(() => {
+      const form = document.getElementById('main-variations');
+      window.jQuery(form.querySelector('input[name="variation_id"]')).val('202').trigger('change');
+      window.jQuery(form).trigger('found_variation', { variation_id: 202 });
     });
     await expect(link).toHaveAttribute('variant-id', '202');
 
-    // Clearing the variation removes variant-id.
-    await page.evaluate(() => {
-      window.jQuery(document.getElementById('main-variations')).trigger('reset_data');
-    });
-    await expect(link).not.toHaveAttribute('variant-id');
-
-    // Native change event on variation_id input also syncs variant-id.
-    await page.evaluate(() => {
-      const input = document.querySelector('#main-variations input[name="variation_id"]');
-      input.value = '303';
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    await expect(link).toHaveAttribute('variant-id', '303');
+    // Later placement passes (resize, content changes) must not re-read the
+    // untouched sticky form.
+    await page.evaluate(() => window.gecxInit());
+    await page.setViewportSize({ width: 1100, height: 800 });
+    await page.waitForTimeout(400);
+    await expect(link).toHaveAttribute('variant-id', '202');
   });
 });

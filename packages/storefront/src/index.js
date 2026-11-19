@@ -1869,8 +1869,28 @@ function initPdpPlacement() {
 /** @type {boolean} Whether jQuery variation form listeners have been bound. */
 let gecxJqueryVariationListenersBound = false;
 
-/** @type {boolean} Whether native DOM variation change listener has been bound. */
-let gecxDomVariationListenerBound = false;
+/**
+ * `<gecx-price-history-link>` elements whose initial variation has been read.
+ * @type {!WeakSet<!Element>}
+ */
+const gecxPriceHistoryLinksSeen = new WeakSet();
+
+/**
+ * The product ID a variations form is for.
+ * @param {?Element} form
+ * @return {string}
+ */
+function gecxVariationFormProductId(form) {
+  if (!form || typeof form.getAttribute !== 'function') {
+    return '';
+  }
+  const fromData = form.getAttribute('data-product_id');
+  if (fromData) {
+    return fromData;
+  }
+  const input = form.querySelector('input[name="product_id"]');
+  return input ? input.value : '';
+}
 
 /**
  * Updates `variant-id` on `<gecx-price-history-link>` elements matching the
@@ -1881,9 +1901,7 @@ let gecxDomVariationListenerBound = false;
 function gecxSyncPriceHistoryVariant(form, rawVariationId) {
   const parsed = Number(rawVariationId);
   const variantId = (!isNaN(parsed) && parsed > 0) ? String(Math.floor(parsed)) : '';
-  const formProductId = (form && typeof form.getAttribute === 'function') ?
-      (form.getAttribute('data-product_id') || '') :
-      '';
+  const formProductId = gecxVariationFormProductId(form);
   gecxEach('gecx-price-history-link', function(link) {
     if (formProductId && link.getAttribute('product-id') !== formProductId) {
       return;
@@ -1899,51 +1917,68 @@ function gecxSyncPriceHistoryVariant(form, rawVariationId) {
 }
 
 /**
- * Syncs `<gecx-price-history-link>` with any variation already selected on the
- * page and binds WooCommerce variation selection events once.
+ * Whether a variations form belongs to the main product rather than a sticky
+ * bar, quick view or product list.
+ * @param {?Element} form
+ * @return {boolean}
+ */
+function gecxIsMainVariationForm(form) {
+  return !!form && !(form.closest && form.closest(GECX_PDP_EXCLUDED_CONTAINERS));
+}
+
+/**
+ * Syncs `<gecx-price-history-link>` with WooCommerce variation selection.
+ *
+ * Each link reads the variation already selected when it first appears,
+ * from the first main form for its product that has one. After that only
+ * WooCommerce's own events update it: `found_variation`, `reset_data` and
+ * `hide_variation`, all triggered with jQuery, so they reach jQuery handlers
+ * but not native listeners. Re-reading every form on each placement pass
+ * would let an untouched second form for the same product (a sticky
+ * add-to-cart bar, say) undo the shopper's choice.
  */
 function initPriceHistoryVariationSync() {
   if (!document.querySelector('gecx-price-history-link')) {
     return;
   }
-  gecxEach('form.variations_form', function(form) {
-    if (form.closest && form.closest(GECX_PDP_EXCLUDED_CONTAINERS)) {
+  gecxEach('gecx-price-history-link', function(link) {
+    if (gecxPriceHistoryLinksSeen.has(link)) {
       return;
     }
-    const input = form.querySelector('input[name="variation_id"]');
-    if (input) {
-      gecxSyncPriceHistoryVariant(form, input.value);
+    gecxPriceHistoryLinksSeen.add(link);
+    const productId = link.getAttribute('product-id');
+    const forms = document.querySelectorAll('form.variations_form');
+    for (let i = 0; i < forms.length; i++) {
+      const form = forms[i];
+      if (!gecxIsMainVariationForm(form) || gecxVariationFormProductId(form) !== productId) {
+        continue;
+      }
+      const input = form.querySelector('input[name="variation_id"]');
+      if (input && Number(input.value) > 0) {
+        gecxSyncPriceHistoryVariant(form, input.value);
+        break;
+      }
     }
   });
-  if (!gecxJqueryVariationListenersBound && document.body &&
-      window.jQuery && window.jQuery(document.body).on) {
+  // Bound to document rather than <body>, which pjax-style navigation can
+  // replace.
+  if (!gecxJqueryVariationListenersBound && window.jQuery &&
+      typeof window.jQuery(document).on === 'function') {
     gecxJqueryVariationListenersBound = true;
-    window.jQuery(document.body).on('found_variation.gecx', 'form.variations_form', function(event, variation) {
-      if (this.closest && this.closest(GECX_PDP_EXCLUDED_CONTAINERS)) {
+    window.jQuery(document).on('found_variation.gecx', 'form.variations_form', function(event, variation) {
+      if (!gecxIsMainVariationForm(this)) {
         return;
       }
       const id = (variation && variation.variation_id) ? variation.variation_id : '';
       gecxSyncPriceHistoryVariant(this, id);
     });
-    window.jQuery(document.body).on('reset_data.gecx hide_variation.gecx', 'form.variations_form', function() {
-      if (this.closest && this.closest(GECX_PDP_EXCLUDED_CONTAINERS)) {
+    // hide_variation is triggered on the form's .single_variation child and
+    // bubbles up to the form.
+    window.jQuery(document).on('reset_data.gecx hide_variation.gecx', 'form.variations_form', function() {
+      if (!gecxIsMainVariationForm(this)) {
         return;
       }
       gecxSyncPriceHistoryVariant(this, '');
-    });
-  }
-  if (!gecxDomVariationListenerBound) {
-    gecxDomVariationListenerBound = true;
-    document.addEventListener('change', function(e) {
-      const target = e.target;
-      if (!target || target.name !== 'variation_id' || typeof target.closest !== 'function') {
-        return;
-      }
-      const form = target.closest('form.variations_form');
-      if (!form || form.closest(GECX_PDP_EXCLUDED_CONTAINERS)) {
-        return;
-      }
-      gecxSyncPriceHistoryVariant(form, target.value);
     });
   }
 }
