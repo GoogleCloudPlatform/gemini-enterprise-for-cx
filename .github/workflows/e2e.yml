@@ -71,7 +71,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        theme: [ storefront, astra, kadence, oceanwp, twentytwentyfive ]
+        theme: [ storefront, astra, kadence, oceanwp, blocksy, twentytwentyfive ]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -113,7 +113,8 @@ jobs:
               "https://downloads.wordpress.org/theme/storefront.zip",
               "https://downloads.wordpress.org/theme/astra.zip",
               "https://downloads.wordpress.org/theme/kadence.zip",
-              "https://downloads.wordpress.org/theme/oceanwp.zip"
+              "https://downloads.wordpress.org/theme/oceanwp.zip",
+              "https://downloads.wordpress.org/theme/blocksy.zip"
             ],
             "testsEnvironment": false,
             "config": {
