@@ -1371,6 +1371,28 @@ JS;
         $this->assertSame( $token, $cart_reads[0]['headers']['Cart-Token'] );
     }
 
+    public function test_cart_update_omits_widget_cart_token_when_server_merged_into_browser_session(): void {
+        $token = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidF8xIn0.sig';
+        $log   = $this->run_cart_update_scenario(
+            [
+                'detail'        => [ 'cartId' => $token ],
+                'binding'       => 'merged',
+                'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 3 ] ] ],
+            ]
+        );
+
+        $cart_reads = array_values(
+            array_filter(
+                $log['fetches'],
+                static function ( array $fetch ): bool {
+                    return false !== strpos( $fetch['url'], 'wc/store/v1/cart' );
+                }
+            )
+        );
+        $this->assertCount( 1, $cart_reads );
+        $this->assertArrayNotHasKey( 'Cart-Token', $cart_reads[0]['headers'] );
+    }
+
     public function test_cart_update_binds_the_cart_session_before_reading_the_cart_without_reposting_the_bare_session_id(): void {
         $log = $this->run_cart_update_scenario(
             [

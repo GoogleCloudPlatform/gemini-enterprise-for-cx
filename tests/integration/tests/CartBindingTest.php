@@ -29,6 +29,7 @@ class CartBindingTest extends RestTestCase {
 
     private const DEFERRED    = [ 'binding' => 'deferred' ];
     private const EXISTING    = [ 'binding' => 'existing' ];
+    private const MERGED      = [ 'binding' => 'merged' ];
     private const UNSUPPORTED = [ 'binding' => 'unsupported' ];
 
 	public function set_up(): void {
@@ -210,13 +211,79 @@ class CartBindingTest extends RestTestCase {
         $this->assertSame( 0, WC()->session->cookie_set_calls );
     }
 
-    public function test_keeps_the_cart_of_a_cookied_guest_and_returns_no_token_for_it(): void {
-        $this->given_browser_session( 't_browser_cart', [ 'b' => [ 'product_id' => 9, 'quantity' => 1 ] ] );
+    public function test_merges_into_the_cart_of_a_cookied_guest_and_returns_no_token_for_it(): void {
+        $this->given_browser_session( 't_browser_cart', [ 'b' => [ 'product_id' => 9, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ] ] );
         $this->given_session_with_cart( 't_agent_cart', self::AGENT_CART_LINES );
+        $agent_token = $this->generate_jwt( 't_agent_cart' );
 
-        $this->assertSame( self::EXISTING, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
+        $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
         $this->assertSame( 't_browser_cart', WC()->session->get_customer_id() );
         $this->assertSame( 0, WC()->session->cookie_set_calls );
+
+        $merged = WC()->session->get( 'cart' );
+        $this->assertIsArray( $merged );
+        $this->assertCount( 2, $merged );
+        $this->assertSame( 9, $merged['b']['product_id'] );
+        $this->assertSame( 17510, $merged['a']['product_id'] );
+
+        // Repeat calls with the same token are idempotent because the agent row was drained.
+        $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
+        $this->assertCount( 2, WC()->session->get( 'cart' ) );
+        $this->assertSame( 1, WC()->session->get( 'cart' )['a']['quantity'] );
+    }
+
+    public function test_merge_combines_matching_lines_and_preserves_variations_and_item_data(): void {
+        $this->given_browser_session(
+            't_browser_cart',
+            [
+                'existing_simple' => [
+                    'key'        => 'existing_simple',
+                    'product_id' => 17510,
+                    'variation_id' => 0,
+                    'variation'  => [],
+                    'quantity'   => 2,
+                    'line_total' => 20.0,
+                ],
+                'existing_var_sm' => [
+                    'key'          => 'existing_var_sm',
+                    'product_id'   => 500,
+                    'variation_id' => 501,
+                    'variation'    => [ 'attribute_pa_size' => 'small' ],
+                    'quantity'     => 1,
+                ],
+            ]
+        );
+        $this->given_session_with_cart(
+            't_agent_cart',
+            [
+                'agent_simple' => [
+                    'key'          => 'agent_simple',
+                    'product_id'   => 17510,
+                    'variation_id' => 0,
+                    'variation'    => [],
+                    'quantity'     => 3,
+                ],
+                'agent_var_lg' => [
+                    'key'          => 'agent_var_lg',
+                    'product_id'   => 500,
+                    'variation_id' => 502,
+                    'variation'    => [ 'attribute_pa_size' => 'large' ],
+                    'quantity'     => 1,
+                    'addons'       => [ [ 'name' => 'Gift wrap', 'value' => 'Yes' ] ],
+                ],
+            ]
+        );
+
+        $this->assertSame( self::MERGED, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
+
+        $merged = WC()->session->get( 'cart' );
+        $this->assertCount( 3, $merged );
+        $this->assertSame( 5, $merged['existing_simple']['quantity'] );
+        $this->assertArrayNotHasKey( 'line_total', $merged['existing_simple'] );
+        $this->assertSame( 1, $merged['existing_var_sm']['quantity'] );
+        $this->assertSame( 502, $merged['agent_var_lg']['variation_id'] );
+        $this->assertSame( [ 'attribute_pa_size' => 'large' ], $merged['agent_var_lg']['variation'] );
+        $this->assertSame( [ [ 'name' => 'Gift wrap', 'value' => 'Yes' ] ], $merged['agent_var_lg']['addons'] );
     }
 
     /**
@@ -232,7 +299,8 @@ class CartBindingTest extends RestTestCase {
 
     /**
      * A custom session handler may write a cookie this plugin cannot verify.
-     * The cart behind it still counts, or binding would orphan it.
+     * The cart behind it still counts, so its cookie is kept and agent lines
+     * merge into that session rather than replacing it.
      */
     public function test_keeps_a_cart_whose_session_cookie_cannot_be_verified(): void {
         $_COOKIE['wp_woocommerce_session_test'] = 't_custom_cookie||12345||12345||forged';
@@ -240,9 +308,10 @@ class CartBindingTest extends RestTestCase {
         WC()->session->set( 'cart', [ 'b' => [ 'product_id' => 9, 'quantity' => 1 ] ] );
         $this->given_session_with_cart( 't_agent_cart', self::AGENT_CART_LINES );
 
-        $this->assertSame( self::EXISTING, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
+        $this->assertSame( self::MERGED, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
         $this->assertSame( 't_custom_cookie', WC()->session->get_customer_id() );
         $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertCount( 2, WC()->session->get( 'cart' ) );
     }
 
     public function test_rebinds_a_cookied_guest_with_an_empty_cart_to_the_agent_cart(): void {
@@ -256,14 +325,15 @@ class CartBindingTest extends RestTestCase {
         $this->assertSame( 1, WC()->session->cookie_set_calls );
     }
 
-    public function test_reads_the_browser_cart_through_the_store_session_handler(): void {
-        // A Redis or Memcached session handler: the browser's cart is not in
-        // the database table, but it is not empty.
+    public function test_reads_and_merges_the_browser_cart_through_the_store_session_handler(): void {
+        // The browser's cart is held in WC()->session memory rather than in the
+        // database table yet; both carts' items are preserved.
         $this->given_browser_session( 't_cached_browser_cart', [ 'b' => [ 'product_id' => 9, 'quantity' => 1 ] ] );
         $this->given_session_with_cart( 't_agent_cart', self::AGENT_CART_LINES );
 
-        $this->assertSame( self::EXISTING, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
+        $this->assertSame( self::MERGED, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
         $this->assertSame( 't_cached_browser_cart', WC()->session->get_customer_id() );
+        $this->assertCount( 2, WC()->session->get( 'cart' ) );
     }
 
     public function test_defers_for_a_cookied_guest_while_both_carts_are_empty(): void {
@@ -303,13 +373,16 @@ class CartBindingTest extends RestTestCase {
         $this->assertSame( self::DEFERRED, $this->bind( null ) );
     }
 
-    public function test_keeps_a_logged_in_shopper_cart(): void {
+    public function test_merges_agent_cart_into_logged_in_shopper_cart_without_setting_cookies(): void {
         $this->ensure_user_with_id( 42, 'shopper42', 'customer', 'shopper@example.com' );
         wp_set_current_user( 42 );
+        $this->given_session_with_cart( '42', [ 'u1' => [ 'product_id' => 77, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ] ] );
         $this->given_session_with_cart( 't_agent_cart', self::AGENT_CART_LINES );
+        $agent_token = $this->generate_jwt( 't_agent_cart' );
 
-        $this->assertSame( self::EXISTING, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
+        $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
         $this->assertSame( 0, WC()->session->cookie_set_calls );
+        $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
     }
 
     public function test_logged_in_shopper_does_not_initialize_wc_session_when_null(): void {
@@ -319,6 +392,79 @@ class CartBindingTest extends RestTestCase {
 
         $this->assertSame( self::EXISTING, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
         $this->assertNull( WC()->session );
+    }
+
+    public function test_logged_in_shopper_does_not_initialize_wc_session_when_null_even_when_merging(): void {
+        $this->ensure_user_with_id( 42, 'shopper42', 'customer', 'shopper@example.com' );
+        wp_set_current_user( 42 );
+
+        // Sign a real Store API guest cookie (`t_store_api_guest`) before
+        // resetting WC()->session to null, matching WooCommerce Blocks cart.js.
+        $guest_key = 't_store_api_guest';
+        $this->given_session_with_cart( $guest_key, [ 'g1' => [ 'product_id' => 88, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ] ] );
+        $this->given_session_with_cart( 't_agent_cart', self::AGENT_CART_LINES );
+
+        $signer   = new WC_Session_Handler();
+        $point_at = \Closure::bind(
+            function ( string $key ): void {
+                $this->_customer_id = $key;
+            },
+            $signer,
+            WC_Session_Handler::class
+        );
+        $point_at( $guest_key );
+        $signer->set_session_expiration();
+        $signer->set_customer_session_cookie( true );
+
+        $cookie_name             = 'wp_woocommerce_session_' . COOKIEHASH;
+        $_COOKIE[ $cookie_name ] = $this->cookies[ $cookie_name ]['value'];
+        $this->cookies           = [];
+        WC()->session            = null;
+
+        $agent_token = $this->generate_jwt( 't_agent_cart' );
+        $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
+        $this->assertNull( WC()->session );
+        $this->assertSame( [], $this->cookies );
+
+        // Repeat call is a no-op returning 'existing' with WC()->session still null.
+        $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
+        $this->assertNull( WC()->session );
+    }
+
+    public function test_hydrates_external_redis_like_session_handler_that_overrides_save_data(): void {
+        $this->given_session_with_cart( 't_agent_cart', self::AGENT_CART_LINES );
+        $redis_handler = new class() extends WC_Session {
+            public int $cookie_set_calls = 0;
+            public int $save_calls       = 0;
+
+            public function __construct() {
+                $this->_customer_id = 't_redis_browser_session';
+                $this->_data        = [];
+            }
+
+            public function set_customer_session_cookie( bool $set ): void {
+                if ( $set ) {
+                    $this->cookie_set_calls++;
+                }
+            }
+
+            public function save_data(): void {
+                $this->save_calls++;
+            }
+        };
+        WC()->session = $redis_handler;
+
+        $agent_token = $this->generate_jwt( 't_agent_cart' );
+        $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
+        $this->assertSame( 't_redis_browser_session', $redis_handler->get_customer_id() );
+        $this->assertSame( 1, $redis_handler->cookie_set_calls );
+        $this->assertSame( 1, $redis_handler->save_calls );
+        $this->assertCount( 1, $redis_handler->get( 'cart' ) );
+        $this->assertSame( 17510, $redis_handler->get( 'cart' )['a']['product_id'] );
+
+        // Repeat call is idempotent because t_agent_cart was drained.
+        $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
+        $this->assertSame( 1, $redis_handler->save_calls );
     }
 
     public function test_never_binds_a_browser_to_a_registered_user_session(): void {

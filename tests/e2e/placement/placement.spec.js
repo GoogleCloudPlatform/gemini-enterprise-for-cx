@@ -1298,6 +1298,62 @@ test.describe('cart session binding', () => {
 
     expect(bindRequests).toHaveLength(1);
   });
+
+  test('dispatches wc-blocks_store_sync_required after binding without mutating Interactivity API mini-cart badge styles', async ({ page }) => {
+    const iapiMiniCartBody = `<header><nav><ul>${navItem}</ul></nav>
+      <div data-block-name="woocommerce/mini-cart" data-wp-interactive="woocommerce/mini-cart" class="wc-block-mini-cart">
+        <button class="wc-block-mini-cart__button">
+          <span class="wc-block-mini-cart__quantity-badge">
+            <span hidden data-wp-bind--hidden="!state.badgeIsVisible" data-wp-text="state.totalItemsInCart" class="wc-block-mini-cart__badge" style="">0</span>
+          </span>
+        </button>
+      </div>
+      <span class="custom-classic-badge">0</span>
+    </header>`;
+    await openFixture(page, {
+      body: iapiMiniCartBody,
+      config: { cartRefresh: { nativeEvents: false, badgeSelectors: ['.wc-block-mini-cart__badge', '.custom-classic-badge'] } },
+    });
+    const bindRequests = await stubCartRoutes(page, { itemsCount: 0 });
+    await page.evaluate(() => {
+      window.__storeSyncEvents = [];
+      window.addEventListener('wc-blocks_store_sync_required', (e) => {
+        window.__storeSyncEvents.push({
+          detail: e.detail,
+          orderIndex: window.__events.length,
+        });
+      });
+    });
+
+    // Empty cart refresh (itemsCount: 0) must NOT set inline style="display: none"
+    // on the Interactivity API badge, while still updating the non-iAPI badge.
+    await agentChangesCart(page, { cartId: agentToken, totalQuantity: 0 });
+    await expect.poll(() => bodyEvents(page)).toEqual(['gecx:cart-session-bound', 'gecx:cart-updated']);
+    expect(bindRequests.order).toEqual(['cart-session', 'cart']);
+    expect(await page.evaluate(() => window.__storeSyncEvents)).toEqual([
+      { detail: { type: 'from_@wordpress/data' }, orderIndex: 1 },
+    ]);
+    expect(await page.locator('.wc-block-mini-cart__badge').getAttribute('style')).toBe('');
+    expect(await page.locator('.custom-classic-badge').evaluate((el) => el.style.display)).toBe('none');
+  });
+
+  test('reads the browser cart without the drained agent token when /cart-session answers merged, and merges again on later agent changes', async ({ page }) => {
+    await openFixture(page, fixture);
+    const shopperCartToken = cartToken('t_shopper_existing');
+    const bindRequests = await stubCartRoutes(page, { binding: 'merged', cartReadToken: shopperCartToken, itemsCount: 2 });
+
+    await agentChangesCart(page, { cartId: agentToken, totalQuantity: 1 });
+    await expect.poll(() => bodyEvents(page)).toEqual(['gecx:cart-session-bound', 'gecx:cart-updated']);
+    expect(await page.evaluate(() => window.__bound[0])).toEqual({ binding: 'merged' });
+    // Read without the drained agent Cart-Token so the Store API returns the browser's merged cart.
+    expect(bindRequests.cartReadTokens).toEqual(['']);
+
+    // A second agent change on that separate guest token asks /cart-session again so new items merge too.
+    await agentChangesCart(page, { cartId: agentToken, totalQuantity: 2 });
+    await expect.poll(() => bodyEvents(page)).toHaveLength(4);
+    expect(bindRequests).toHaveLength(2);
+    expect(bindRequests.cartReadTokens).toEqual(['', '']);
+  });
 });
 
 test.describe('price history link styling and variation sync', () => {
