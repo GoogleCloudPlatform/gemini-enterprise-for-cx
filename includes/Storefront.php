@@ -1321,10 +1321,35 @@ class Storefront {
      * @return string HTML output.
      */
     public function get_price_history_link_html( int $product_id ): string {
-        return '<gecx-price-history-link product-id="' . esc_attr( (string) $product_id ) . '"'
-            . ' chat-widget-selector="gecx-woocommerce-chat-widget"'
-            . ( is_customize_preview() ? ' preview="true"' : '' )
-            . '></gecx-price-history-link>';
+        $attrs = [
+            'product-id'           => (string) $product_id,
+            'chat-widget-selector' => 'gecx-woocommerce-chat-widget',
+            // Link text, which the widget also sends as the shopper's message.
+            'label'                => __( 'Price history', 'gemini-enterprise-for-cx' ),
+        ];
+        if ( is_customize_preview() ) {
+            $attrs['preview'] = 'true';
+        }
+
+        /**
+         * Filters the attributes of the Price history link element.
+         *
+         * @param array $attrs      Attribute names and values. true renders a
+         *                          bare attribute; false or null omits it.
+         * @param int   $product_id Product ID.
+         */
+        $attrs = (array) apply_filters( 'gecx_price_history_link_attributes', $attrs, $product_id );
+
+        $attrs_string = '';
+        foreach ( $attrs as $key => $val ) {
+            if ( true === $val || '' === $val ) {
+                $attrs_string .= ' ' . esc_attr( (string) $key );
+            } elseif ( false !== $val && null !== $val ) {
+                $attrs_string .= ' ' . esc_attr( (string) $key ) . '="' . esc_attr( (string) $val ) . '"';
+            }
+        }
+
+        return '<gecx-price-history-link' . $attrs_string . '></gecx-price-history-link>';
     }
 
     /**

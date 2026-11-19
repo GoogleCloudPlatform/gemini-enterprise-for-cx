@@ -1815,7 +1815,7 @@ JS;
      * The link markup placed for a product.
      */
     private function expected_price_history_link_html( int $product_id ): string {
-        return '<gecx-price-history-link product-id="' . $product_id . '" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>';
+        return '<gecx-price-history-link product-id="' . $product_id . '" chat-widget-selector="gecx-woocommerce-chat-widget" label="Price history"></gecx-price-history-link>';
     }
 
     /**
@@ -2227,5 +2227,24 @@ JS;
         // A second product the same Storefront instance has not placed a link for.
         $second_id = $this->go_to_purchasable_product();
         $this->assertSame( $this->expected_price_history_link_html( $second_id ), $this->render_classic_price_history_link( $storefront ) );
+    }
+
+    public function test_price_history_link_attributes_filter(): void {
+        $storefront = $this->activate_price_history_widget();
+        $product_id = $this->go_to_purchasable_product();
+        $seen       = 0;
+        $filter     = static function ( array $attrs, int $id ) use ( &$seen ): array {
+            $seen                 = $id;
+            $attrs['label']       = 'Price trend';
+            $attrs['always-show'] = true;
+            return $attrs;
+        };
+        add_filter( 'gecx_price_history_link_attributes', $filter, 10, 2 );
+
+        $html = $storefront->get_price_history_link_html( $product_id );
+
+        $this->assertSame( $product_id, $seen );
+        $this->assertStringContainsString( ' label="Price trend"', $html );
+        $this->assertStringContainsString( ' always-show>', $html );
     }
 }
