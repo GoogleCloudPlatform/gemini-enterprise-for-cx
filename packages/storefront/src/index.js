@@ -435,6 +435,13 @@ function gecxRefreshCartOrCheckoutSurface(hasBlockStore) {
 const gecxCartSessionBindings = Object.create(null);
 
 /**
+ * Active or queued /cart-session request chains keyed by gecxCartTokenSession(),
+ * used to serialize overlapping agent-change bind calls for the same session.
+ * @type {!Object<string, !Promise<string>>}
+ */
+const gecxCartSessionInFlight = Object.create(null);
+
+/**
  * Cart sessions that /cart-session bound directly to the browser ('agent'),
  * keyed by gecxCartTokenSession(). Sessions that answered 'merged' or
  * 'existing' left the browser on its own session, so a subsequent agent change
@@ -572,7 +579,8 @@ function gecxBindCartSession() {
     return;
   }
   gecxCartSessionBindPending = false;
-  if (gecxCartSessionBindings[gecxCartTokenSession(agentToken)]) {
+  const openSession = gecxCartTokenSession(agentToken);
+  if (gecxCartSessionBindings[openSession] || gecxCartSessionInFlight[openSession]) {
     // Already asked, or being asked, about this cart session.
     return;
   }
@@ -620,14 +628,32 @@ function gecxBindCartSessionAfterAgentChange(agentToken) {
   }
   gecxCartSessionBindPending = false;
   const session = gecxCartTokenSession(agentToken);
-  if (!gecxBoundAgentSessions[session]) {
-    delete gecxCartSessionBindings[session];
+  const runNext = function() {
+    if (gecxCartSessionBindingUnsupported) {
+      return Promise.resolve('');
+    }
+    if (!gecxBoundAgentSessions[session]) {
+      delete gecxCartSessionBindings[session];
+    }
+    return gecxRequestCartSessionBinding(agentToken)
+        .catch(function(err) {
+          gecxReportError('cart session binding', err);
+          return '';
+        });
+  };
+  const pending = gecxCartSessionInFlight[session];
+  if (pending) {
+    const queued = pending.then(runNext, runNext);
+    const clearQueued = function() {
+      if (gecxCartSessionInFlight[session] === queued) {
+        delete gecxCartSessionInFlight[session];
+      }
+    };
+    gecxCartSessionInFlight[session] = queued;
+    queued.then(clearQueued, clearQueued);
+    return queued;
   }
-  return gecxRequestCartSessionBinding(agentToken)
-      .catch(function(err) {
-        gecxReportError('cart session binding', err);
-        return '';
-      });
+  return runNext();
 }
 
 /**
@@ -699,6 +725,15 @@ function gecxRequestCartSessionBinding(agentToken) {
     }
   };
   gecxCartSessionBindings[session] = request;
+  if (!gecxCartSessionInFlight[session]) {
+    const clearInFlight = function() {
+      if (gecxCartSessionInFlight[session] === request) {
+        delete gecxCartSessionInFlight[session];
+      }
+    };
+    gecxCartSessionInFlight[session] = request;
+    request.then(clearInFlight, clearInFlight);
+  }
   request.then(function(binding) {
     if (binding !== 'agent' && binding !== 'merged' && binding !== 'existing') {
       forget();

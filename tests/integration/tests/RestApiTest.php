@@ -2558,10 +2558,12 @@ class RestApiTest extends RestTestCase {
 
 		$this->assertNull( $this->get_wc_session( 't_already_merged_222' ) );
 
-		// Custom non-SQL WC_Session handlers (Redis/Memcached) receive gecx_session_id
-		// on verified same-origin Cart-Token GETs without touching session['cart'].
+		// Custom non-SQL WC_Session handlers (Redis/Memcached) also do NOT call
+		// save_data() or write back stale request-start cart snapshots on read-only
+		// Cart-Token GETs, while still persisting both cart and gecx_session_id on
+		// mutations.
 		$custom_session = $this->create_store_api_session_mock( 't_redis_guest_333' );
-		$custom_session->set( 'cart', $newer_cart );
+		$custom_session->set( 'cart', [ 'stale_item' => [ 'product_id' => 10, 'quantity' => 1 ] ] );
 		WC()->session = $custom_session;
 
 		$redis_request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
@@ -2571,6 +2573,18 @@ class RestApiTest extends RestTestCase {
 
 		( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $redis_request );
 
+		$this->assertSame( 0, $custom_session->save_data_calls );
+		$this->assertNull( $custom_session->get( 'gecx_session_id' ) );
+
+		WC()->cart->cart_for_session = $newer_cart;
+		$redis_mutation              = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
+		$this->send_cart_token( $redis_mutation, $this->generate_jwt( 't_redis_guest_333' ) );
+		$redis_mutation->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$redis_mutation->set_header( 'Referer', 'https://example.org/shop/' );
+
+		( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $redis_mutation );
+
+		$this->assertSame( 1, $custom_session->save_data_calls );
 		$this->assertSame( $newer_cart, $custom_session->get( 'cart' ) );
 		$this->assertSame( 'projects/123/locations/global/commerceSessions/shopper-sess', $custom_session->get( 'gecx_session_id' ) );
 	}
@@ -3141,10 +3155,14 @@ class RestApiTest extends RestTestCase {
 	 */
 	private function create_store_api_session_mock( string $customer_id ): \WC_Session {
 		return new class( $customer_id ) extends \WC_Session {
+			public int $save_data_calls = 0;
+
 			public function __construct( string $customer_id ) {
 				$this->_customer_id = $customer_id;
 			}
-			public function save_data(): void {}
+			public function save_data(): void {
+				$this->save_data_calls++;
+			}
 		};
 	}
 
