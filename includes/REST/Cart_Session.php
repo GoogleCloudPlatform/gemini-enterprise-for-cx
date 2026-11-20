@@ -512,7 +512,7 @@ class Cart_Session {
             // session. Store API checkout applies the same rule; see
             // Session_Attribution::attach_session_to_order_metadata_store_api().
             $has_verified_origin = ! $has_cart_token || true === Auth_Context::verify_request_origin( $request );
-            $bound_session_id    = Session_Attribution::get_gecx_session_id_safely( $has_verified_origin );
+            $bound_session_id    = Session_Attribution::get_gecx_session_id_safely( $has_verified_origin, $is_mutation );
 
             $uses_sql_session_handler = ! isset( WC()->session )
                 || ! class_exists( 'WC_Session_Handler' )
