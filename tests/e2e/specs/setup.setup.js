@@ -120,6 +120,33 @@ setup('setup test environment', async ({ requestUtils, admin, page }) => {
 		}
 	}
 
+	// 7b. Ensure a variable product exists for price history variant tests.
+	try {
+		const existing = await requestUtils.rest({ path: '/wc/v3/products', params: { slug: 'e2e-variable-tee' } });
+		if (!Array.isArray(existing) || existing.length === 0) {
+			const tee = await requestUtils.rest({
+				path: '/wc/v3/products',
+				method: 'POST',
+				data: {
+					name: 'E2E Variable Tee',
+					slug: 'e2e-variable-tee',
+					type: 'variable',
+					status: 'publish',
+					attributes: [ { name: 'Color', visible: true, variation: true, options: [ 'Red', 'Blue' ] } ],
+				},
+			});
+			for (const color of [ 'Red', 'Blue' ]) {
+				await requestUtils.rest({
+					path: `/wc/v3/products/${tee.id}/variations`,
+					method: 'POST',
+					data: { regular_price: '20', attributes: [ { name: 'Color', option: color } ] },
+				});
+			}
+		}
+	} catch {
+		// Non-fatal; the variant test fails on its own if the product is missing.
+	}
+
 	// 8. Ensure E2E Main menu exists and assign it to available header locations.
 	try {
 		const menus = await requestUtils.rest({ path: '/wp/v2/menus' }).catch(() => []);

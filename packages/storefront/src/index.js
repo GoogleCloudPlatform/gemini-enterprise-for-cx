@@ -1770,7 +1770,7 @@ const GECX_PDP_TARGET_SELECTORS = [
  * @const {string}
  */
 const GECX_PDP_EXCLUDED_CONTAINERS =
-    '.sticky-add-to-cart, [class*="sticky-add-to-cart"], [class*="sticky_add_to_cart"], [id*="sticky-add-to-cart"], [class*="quick-view"], [class*="quickview"], .related, .upsells, .up-sells, .cross-sells, ul.products, .woocommerce-mini-cart';
+    '.sticky-add-to-cart, [class*="sticky-add-to-cart"], [class*="sticky_add_to_cart"], [id*="sticky-add-to-cart"], .owp-floating-bar, [class*="quick-view"], [class*="quickview"], .related, .upsells, .up-sells, .cross-sells, ul.products, .woocommerce-mini-cart';
 
 /**
  * The element holding the main product, used to scope the prompt target
@@ -1864,6 +1864,129 @@ function initPdpPlacement() {
       pdpTarget.parentNode.insertBefore(promptsEl, pdpTarget.nextSibling);
     }
   }
+}
+
+/** @type {boolean} Whether jQuery variation form listeners have been bound. */
+let gecxJqueryVariationListenersBound = false;
+
+/**
+ * `<gecx-price-history-link>` elements whose initial variation has been read.
+ * @type {!WeakSet<!Element>}
+ */
+const gecxPriceHistoryLinksSeen = new WeakSet();
+
+/**
+ * The product ID a variations form is for.
+ * @param {?Element} form
+ * @return {string}
+ */
+function gecxVariationFormProductId(form) {
+  if (!form || typeof form.getAttribute !== 'function') {
+    return '';
+  }
+  const fromData = form.getAttribute('data-product_id');
+  if (fromData) {
+    return fromData;
+  }
+  const input = form.querySelector('input[name="product_id"]');
+  return input ? input.value : '';
+}
+
+/**
+ * Updates `variant-id` on `<gecx-price-history-link>` elements matching the
+ * variation form's product ID.
+ * @param {?Element} form
+ * @param {*} rawVariationId
+ */
+function gecxSyncPriceHistoryVariant(form, rawVariationId) {
+  const parsed = Number(rawVariationId);
+  const variantId = (!isNaN(parsed) && parsed > 0) ? String(Math.floor(parsed)) : '';
+  const formProductId = gecxVariationFormProductId(form);
+  gecxEach('gecx-price-history-link', function(link) {
+    if (formProductId && link.getAttribute('product-id') !== formProductId) {
+      return;
+    }
+    if (variantId) {
+      if (link.getAttribute('variant-id') !== variantId) {
+        link.setAttribute('variant-id', variantId);
+      }
+    } else if (link.hasAttribute('variant-id')) {
+      link.removeAttribute('variant-id');
+    }
+  });
+}
+
+/**
+ * Whether a variations form belongs to the main product rather than a sticky
+ * bar, quick view or product list.
+ * @param {?Element} form
+ * @return {boolean}
+ */
+function gecxIsMainVariationForm(form) {
+  return !!form && !(form.closest && form.closest(GECX_PDP_EXCLUDED_CONTAINERS));
+}
+
+/**
+ * Syncs `<gecx-price-history-link>` with WooCommerce variation selection.
+ *
+ * Each link reads the variation already selected when it first appears,
+ * from the first main form for its product that has one, and once more when
+ * the jQuery handlers are first bound. After that only
+ * WooCommerce's own events update it: `found_variation`, `reset_data` and
+ * `hide_variation`, all triggered with jQuery, so they reach jQuery handlers
+ * but not native listeners. Re-reading every form on each placement pass
+ * would let an untouched second form for the same product (a sticky
+ * add-to-cart bar, say) undo the shopper's choice.
+ */
+function initPriceHistoryVariationSync() {
+  if (!document.querySelector('gecx-price-history-link')) {
+    return;
+  }
+  // Bound to document rather than <body>, which pjax-style navigation can
+  // replace.
+  let justBound = false;
+  if (!gecxJqueryVariationListenersBound && window.jQuery &&
+      typeof window.jQuery(document).on === 'function') {
+    gecxJqueryVariationListenersBound = true;
+    justBound = true;
+    window.jQuery(document).on('found_variation.gecx', 'form.variations_form', function(event, variation) {
+      if (!gecxIsMainVariationForm(this)) {
+        return;
+      }
+      const id = (variation && variation.variation_id) ? variation.variation_id : '';
+      gecxSyncPriceHistoryVariant(this, id);
+    });
+    // hide_variation is triggered on the form's .single_variation child and
+    // bubbles up to the form.
+    window.jQuery(document).on('reset_data.gecx hide_variation.gecx', 'form.variations_form', function() {
+      if (!gecxIsMainVariationForm(this)) {
+        return;
+      }
+      gecxSyncPriceHistoryVariant(this, '');
+    });
+  }
+  // When jQuery arrives after this script, WooCommerce can select the default
+  // variation before the handlers above exist, so read every link again once
+  // they are bound.
+  gecxEach('gecx-price-history-link', function(link) {
+    if (gecxPriceHistoryLinksSeen.has(link) && !justBound) {
+      return;
+    }
+    gecxPriceHistoryLinksSeen.add(link);
+    const productId = link.getAttribute('product-id');
+    const forms = document.querySelectorAll('form.variations_form');
+    for (let i = 0; i < forms.length; i++) {
+      const form = forms[i];
+      if (!gecxIsMainVariationForm(form) || gecxVariationFormProductId(form) !== productId) {
+        continue;
+      }
+      const input = form.querySelector('input[name="variation_id"]');
+      if (input && Number(input.value) > 0) {
+        gecxSyncPriceHistoryVariant(form, input.value);
+        break;
+      }
+    }
+  });
 }
 
 /**
@@ -2374,6 +2497,7 @@ function gecxPlaceAll() {
   initNavPlacement();
   initMobileHeaderPlacement();
   initPdpPlacement();
+  initPriceHistoryVariationSync();
   updateFloatingOffset();
   updateFloatingWidgetCentering();
 }

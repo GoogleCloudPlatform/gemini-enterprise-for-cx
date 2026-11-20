@@ -43,6 +43,8 @@ footer .gecx-nav-menu-item, .site-footer .gecx-nav-menu-item, [role="contentinfo
      display: none !important;
    }
  }
+ :where(.price + gecx-price-history-link, .wp-block-woocommerce-product-price + gecx-price-history-link) { --gecx-price-history-link-margin: 0; }
+ gecx-price-history-link:not(:defined) { display: none; }
 `;
 
 const buttonHtml = '<gecx-agent-button display-style="responsive" collapse-to="short-label" preset-icon="button_magic" enable-shimmer="true" hide-chat-bubble short-label="Shop"></gecx-agent-button>';

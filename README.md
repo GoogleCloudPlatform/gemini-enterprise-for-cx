@@ -44,6 +44,14 @@ A guest who has not added anything to their cart has no WooCommerce session cook
 
 An `agent` or `existing` answer holds for the rest of the page view, so the script asks once per cart session and reads later changes to that cart straight away. When the chat opens and the browser is put on the agent's cart, the script reads it and refreshes the page's cart as it does after an agent change, but without the events that open a mini-cart drawer or side cart. After each answer, the script dispatches `gecx:cart-session-bound` on `document.body`, with `binding` in its `detail`.
 
+### Placing the Price history link
+
+On product pages the plugin renders `<gecx-price-history-link product-id="…" chat-widget-selector="gecx-woocommerce-chat-widget" label="Price history">`, a custom element from the chat widget bundle. On page load it asks Gemini Enterprise for CX whether the product's price is lower than usual, and stays hidden unless it is. Classic templates get it right after `single-product/price.php`, including Elementor Pro's Product Price widget, falling back to `woocommerce_single_product_summary` at priority 11 when the price is rendered earlier than that or not through the template. Block templates get it after the Product Price block of the product being viewed. On variable products, `storefront.js` keeps `variant-id` in step with the selected variation. It is placed once per product per page, only for purchasable products that show a price and are not password protected, and only while the storefront widget and the **Show price history link on product pages** setting (off by default) are on.
+
+* `gecx_render_price_history_link`: whether to place the link automatically for a product (`$render`, `$product_id`). Return false to turn it off, for example to place it with the `[gecx_price_history_link]` shortcode or the Price History Link block instead. Those apply the same checks, for the product page being viewed, and still place one link per product.
+* `gecx_price_history_link_attributes`: the element's attributes (`$attrs`, `$product_id`), for example to change `label`.
+* `gecx_price_history_link_hook` and `gecx_price_history_link_priority`: the classic template action and priority the link is placed on, resolved on `wp`, so a theme's `functions.php` can set them. Either one replaces the `single-product/price.php` placement.
+
 ## License
 
 This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.

@@ -63,4 +63,39 @@ test.describe('Admin Settings', () => {
 		await expect(page.locator('#gecx_nav_menu_target_row')).toBeVisible();
 		await expect(page.locator('#gecx_floating_position_row')).toBeHidden();
 	});
+
+	test('price history link setting saves when toggled', async ({ admin, page, requestUtils }) => {
+		// Starts from off; PHPUnit covers the default.
+		await requestUtils.rest({
+			path: '/wp/v2/settings',
+			method: 'POST',
+			data: { gecx_agent_enabled: 1, gecx_price_history_link_enabled: 0 },
+		});
+		try {
+			await admin.visitAdminPage('admin.php?page=gemini-enterprise-for-cx');
+
+			const checkbox = page.locator('#gecx_price_history_link_enabled');
+			await expect(checkbox).toBeVisible();
+			await expect(checkbox).toBeEnabled();
+			await expect(checkbox).not.toBeChecked();
+
+			await checkbox.check();
+			await expect.poll(async () => {
+				const settings = await requestUtils.rest({ path: '/wp/v2/settings' });
+				return settings.gecx_price_history_link_enabled;
+			}).toBe(1);
+
+			await checkbox.uncheck();
+			await expect.poll(async () => {
+				const settings = await requestUtils.rest({ path: '/wp/v2/settings' });
+				return settings.gecx_price_history_link_enabled;
+			}).toBe(0);
+		} finally {
+			await requestUtils.rest({
+				path: '/wp/v2/settings',
+				method: 'POST',
+				data: { gecx_price_history_link_enabled: 0 },
+			});
+		}
+	});
 });

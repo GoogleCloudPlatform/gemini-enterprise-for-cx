@@ -22,5 +22,6 @@
   }
   define('gecx-agent-button', '<button type="button" style="padding:6px 12px;font:14px sans-serif">Ask AI</button>');
   define('gecx-suggested-prompts', '<div style="padding:8px;font:14px sans-serif">Suggested prompts</div>');
+  define('gecx-price-history-link', '<button type="button" style="padding:0;font:12px sans-serif">Price history</button>');
   define('gecx-woocommerce-chat-widget', '');
 })();

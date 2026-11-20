@@ -10,10 +10,11 @@
  */
 
 /**
- * @fileoverview Editor side of the gecx/agent-button and
- * gecx/suggested-prompts blocks. Both are rendered on the server; the editor
- * shows placeholders because the launcher and prompts are custom elements
- * from the Google-hosted widget bundle, which the editor does not load.
+ * @fileoverview Editor side of the gecx/agent-button, gecx/suggested-prompts
+ * and gecx/price-history-link blocks. All are rendered on the server; the
+ * editor shows placeholders because the launcher, prompts and link are custom
+ * elements from the Google-hosted widget bundle, which the editor does not
+ * load.
  */
 import { registerBlockType } from '@wordpress/blocks';
 import '@wordpress/element';
@@ -105,6 +106,23 @@ registerBlockType('gecx/suggested-prompts', {
         <Placeholder label={label} />
       </>
     );
+  },
+  save: function() {
+    return null;
+  }
+});
+
+registerBlockType('gecx/price-history-link', {
+  apiVersion: 2,
+  title: __('Gemini Enterprise for CX Price History Link', 'gemini-enterprise-for-cx'),
+  description: __(
+      'Opens the product\'s price history in the chat, shown only when the price is lower than usual. For the Single Product template.',
+      'gemini-enterprise-for-cx'),
+  category: 'widgets',
+  icon: 'chart-line',
+  supports: {html: false, multiple: false},
+  edit: function() {
+    return <Placeholder label={__('Price history', 'gemini-enterprise-for-cx')} />;
   },
   save: function() {
     return null;
