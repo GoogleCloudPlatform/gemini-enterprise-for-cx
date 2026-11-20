@@ -322,9 +322,12 @@ if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
         init.headers = headers;
       }
     }
+    const requestCredentials = (init && init.credentials) ||
+        (input && typeof input === 'object' && input.credentials) || '';
     return originalFetch.call(this, input, init).then(function(response) {
       try {
-        if (response && response.headers &&
+        if (requestCredentials !== 'omit' &&
+            response && response.headers &&
             gecxIsTargetEndpoint(url, gecxCartRestUrl(), /\/wc\/store\/v\d+\/cart(\b|\/|$)/)) {
           const token = (typeof response.headers.get === 'function') ?
               (response.headers.get('Cart-Token') || response.headers.get('cart-token')) :
