@@ -519,10 +519,10 @@ class Cart_Session {
                 || WC()->session instanceof \WC_Session_Handler
                 || ( class_exists( '\Automattic\WooCommerce\StoreApi\SessionHandler' ) && WC()->session instanceof \Automattic\WooCommerce\StoreApi\SessionHandler );
 
-            // Persist through WC()->session API so custom session handlers (Redis/Memcached) stay in sync.
-            // On read-only Cart-Token GETs using SQL session handlers, do not dirty WC()->session
-            // or call save_data(), as WC_Session_Handler::save_data() serializes the entire
-            // in-memory _data array (including the request-start cart snapshot) on shutdown.
+            // Persist through WC()->session API on cart mutations so custom session handlers (Redis/Memcached) stay in sync.
+            // Never dirty WC()->session or call save_data() on read-only GET requests (whether SQL or external
+            // Redis/Memcached handlers), because save_data() writes the entire request-start cart snapshot back
+            // to the session store and would overwrite concurrent cart updates.
             if ( $is_mutation && isset( WC()->session ) ) {
                 if ( method_exists( WC()->session, 'set' ) ) {
                     WC()->session->set( 'cart', $cart_for_session );
@@ -532,16 +532,6 @@ class Cart_Session {
                 }
                 if ( method_exists( WC()->session, 'save_data' ) ) {
                     WC()->session->save_data();
-                }
-            } elseif ( ! $is_mutation && ! $uses_sql_session_handler && ! empty( $bound_session_id ) && isset( WC()->session ) && method_exists( WC()->session, 'set' ) ) {
-                $existing_bound_id = method_exists( WC()->session, 'get' )
-                    ? (string) WC()->session->get( 'gecx_session_id' )
-                    : '';
-                if ( '' === $existing_bound_id ) {
-                    WC()->session->set( 'gecx_session_id', $bound_session_id );
-                    if ( method_exists( WC()->session, 'save_data' ) ) {
-                        WC()->session->save_data();
-                    }
                 }
             }
 

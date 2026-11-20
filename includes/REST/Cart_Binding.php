@@ -132,12 +132,18 @@ class Cart_Binding {
      *   It is never put in the body, which session-replay and RUM tools and
      *   HAR files capture whole (see
      *   Cart_Session::strip_cart_token_from_batch_body()).
-     * - 'merged': the agent's guest cart lines were merged into the browser's
-     *   own cart (a cookied guest with items, a logged-in shopper without
-     *   migrating their session cookie, or an external session handler such as
-     *   Redis/Memcached), and the agent's guest cart was drained so repeat
-     *   calls and client-side fallback copies are idempotent. No Cart-Token is
-     *   returned for the browser's own session.
+     * - 'merged': the agent's guest cart lines were atomically claimed and
+     *   merged into the browser's own cart (a cookied guest with items, a
+     *   logged-in shopper without migrating their session cookie, or an
+     *   external session handler such as Redis/Memcached), and the agent's
+     *   guest cart was drained so repeat calls and client-side fallback copies
+     *   are idempotent. No Cart-Token is returned on this route for the
+     *   browser's own session; instead, storefront.js omits the old
+     *   Cart-Token on its follow-up GET /wc/store/v1/cart and dispatches
+     *   gecx:cart-updated with the browser's Store API cart response, on which
+     *   the chat widget switches the agent session to the browser's
+     *   Cart-Token so subsequent agent quantity updates and removals target
+     *   the merged lines directly.
      * - 'existing': the browser keeps its own cart unchanged (already on the
      *   agent's cart, or nothing in the agent's guest cart to merge).
      * - 'deferred': nothing to bind yet.
@@ -176,18 +182,16 @@ class Cart_Binding {
             return self::respond( 'existing' );
         }
 
-        $agent_row       = ( '' !== $agent_key ) ? self::read_session_row( $agent_key ) : [];
-        $agent_lines     = self::extract_cart_lines( $agent_row['cart'] ?? null );
-        $gecx_session_id = isset( $agent_row['gecx_session_id'] ) && is_string( $agent_row['gecx_session_id'] )
-            ? $agent_row['gecx_session_id']
-            : '';
+        $agent_row   = ( '' !== $agent_key ) ? self::read_session_row( $agent_key ) : [];
+        $agent_lines = self::extract_cart_lines( $agent_row['cart'] ?? null );
 
         // The browser's own cart is checked whether or not its cookie
         // verifies: a session whose cookie this plugin cannot verify, such as
         // one a custom session handler signs in its own format, may still
         // hold a cart, and replacing the session cookie would orphan it. When
-        // the agent's guest cart also holds items, merge them into the
-        // browser's existing cart in place instead of swapping cookies.
+        // the agent's guest cart also holds items, claim the agent's cart
+        // atomically and merge into the browser's existing cart inside a
+        // per-session lock instead of swapping cookies.
         if ( self::browser_cart_has_items( $session ) ) {
             if ( empty( $agent_lines ) ) {
                 return self::respond( 'existing' );
@@ -195,9 +199,18 @@ class Cart_Binding {
             if ( ! self::is_table_backed( $session ) && ! self::can_persist_external_session( $session ) ) {
                 return self::respond( 'unsupported' );
             }
-            self::merge_into_browser_session( $session, $agent_lines, $gecx_session_id );
-            self::clear_session_row_cart( $agent_key );
-            return self::respond( 'merged' );
+            $lock_key = (string) $session->get_customer_id();
+            return self::with_merge_lock(
+                '' !== $lock_key ? $lock_key : $agent_key,
+                static function () use ( $session, $agent_key ): \WP_REST_Response {
+                    $claimed = self::claim_agent_session_cart( $agent_key );
+                    if ( null === $claimed ) {
+                        return self::respond( 'existing' );
+                    }
+                    self::merge_into_browser_session( $session, $claimed['lines'], $claimed['gecx_session_id'] );
+                    return self::respond( 'merged' );
+                }
+            );
         }
 
         // Neither cart holds anything yet. Asked again on the next chat open,
@@ -210,9 +223,18 @@ class Cart_Binding {
             if ( ! self::can_persist_external_session( $session ) ) {
                 return self::respond( 'unsupported' );
             }
-            self::hydrate_external_browser_session( $session, $agent_lines, $gecx_session_id );
-            self::clear_session_row_cart( $agent_key );
-            return self::respond( 'merged' );
+            $lock_key = (string) $session->get_customer_id();
+            return self::with_merge_lock(
+                '' !== $lock_key ? $lock_key : $agent_key,
+                static function () use ( $session, $agent_key ): \WP_REST_Response {
+                    $claimed = self::claim_agent_session_cart( $agent_key );
+                    if ( null === $claimed ) {
+                        return self::respond( 'existing' );
+                    }
+                    self::hydrate_external_browser_session( $session, $claimed['lines'], $claimed['gecx_session_id'] );
+                    return self::respond( 'merged' );
+                }
+            );
         }
         self::bind_browser_to_session( $session, $agent_key );
         $cart_token = self::mint_cart_token( $agent_key );
@@ -343,7 +365,15 @@ class Cart_Binding {
      */
     private static function browser_cart_has_items( $session ): bool {
         $lines = self::extract_cart_lines( method_exists( $session, 'get' ) ? $session->get( 'cart' ) : null );
-        return ! empty( $lines );
+        if ( ! empty( $lines ) ) {
+            return true;
+        }
+        $customer_id = method_exists( $session, 'get_customer_id' ) ? (string) $session->get_customer_id() : '';
+        if ( '' !== $customer_id && self::is_table_backed( $session ) ) {
+            $row_lines = self::extract_cart_lines( self::read_session_row( $customer_id )['cart'] ?? null );
+            return ! empty( $row_lines );
+        }
+        return false;
     }
 
     /**
@@ -443,7 +473,8 @@ class Cart_Binding {
     /**
      * Merges an agent guest cart into a logged-in shopper's cart without ever
      * calling WC()->initialize_session() or migrating a Store API `t_...`
-     * session cookie.
+     * session cookie. Any separate guest session cookie on the browser is left
+     * untouched so WooCommerce's own login migration handles it once.
      *
      * @param int    $user_id   Logged-in WordPress user ID (> 0).
      * @param string $agent_key Verified guest cart session key (`t_...`), or ''.
@@ -459,16 +490,21 @@ class Cart_Binding {
             return self::respond( 'existing' );
         }
 
-        $gecx_session_id = isset( $agent_row['gecx_session_id'] ) && is_string( $agent_row['gecx_session_id'] )
-            ? $agent_row['gecx_session_id']
-            : '';
-
+        $user_key = (string) $user_id;
         if ( null !== WC()->session && ! self::is_table_backed( WC()->session ) ) {
-            if ( (string) WC()->session->get_customer_id() === (string) $user_id && self::can_persist_external_session( WC()->session ) ) {
-                $merged = self::merge_into_browser_session( WC()->session, $agent_lines, $gecx_session_id );
-                self::update_persistent_user_cart( $user_id, $merged );
-                self::clear_session_row_cart( $agent_key );
-                return self::respond( 'merged' );
+            if ( (string) WC()->session->get_customer_id() === $user_key && self::can_persist_external_session( WC()->session ) ) {
+                return self::with_merge_lock(
+                    $user_key,
+                    static function () use ( $user_id, $agent_key ): \WP_REST_Response {
+                        $claimed = self::claim_agent_session_cart( $agent_key );
+                        if ( null === $claimed ) {
+                            return self::respond( 'existing' );
+                        }
+                        $merged = self::merge_into_browser_session( WC()->session, $claimed['lines'], $claimed['gecx_session_id'] );
+                        self::update_persistent_user_cart( $user_id, $merged );
+                        return self::respond( 'merged' );
+                    }
+                );
             }
             return self::respond( 'unsupported' );
         }
@@ -476,62 +512,51 @@ class Cart_Binding {
             return self::respond( 'unsupported' );
         }
 
-        $cookie_key   = Cart_Session::get_verified_session_cookie_customer_id();
-        $user_key     = (string) $user_id;
-        $existing_usr = self::read_user_cart_lines( $user_id );
-
-        if ( $cookie_key === $agent_key ) {
-            $merged_user = self::merge_cart_lines( $existing_usr, $agent_lines );
-            self::write_session_row_cart( $user_key, $merged_user, $gecx_session_id );
-            self::update_persistent_user_cart( $user_id, $merged_user );
-            return self::respond( 'existing' );
-        }
-
-        if ( 0 === strpos( $cookie_key, 't_' ) ) {
-            $cookie_row   = self::read_session_row( $cookie_key );
-            $cookie_lines = self::extract_cart_lines( $cookie_row['cart'] ?? null );
-            $merged_guest = self::merge_cart_lines( $cookie_lines, $agent_lines );
-            self::write_session_row_cart( $cookie_key, $merged_guest, $gecx_session_id );
-            $merged_user  = self::merge_cart_lines( $existing_usr, $merged_guest );
-            self::write_session_row_cart( $user_key, $merged_user, $gecx_session_id );
-            self::update_persistent_user_cart( $user_id, $merged_user );
-        } else {
-            $merged_user = self::merge_cart_lines( $existing_usr, $agent_lines );
-            self::write_session_row_cart( $user_key, $merged_user, $gecx_session_id );
-            self::update_persistent_user_cart( $user_id, $merged_user );
-            if ( null !== WC()->session && (string) WC()->session->get_customer_id() === $user_key && method_exists( WC()->session, 'set' ) ) {
-                WC()->session->set( 'cart', $merged_user );
-                if ( '' !== $gecx_session_id && method_exists( WC()->session, 'get' ) && empty( WC()->session->get( 'gecx_session_id' ) ) ) {
-                    WC()->session->set( 'gecx_session_id', $gecx_session_id );
+        return self::with_merge_lock(
+            $user_key,
+            static function () use ( $user_id, $user_key, $agent_key ): \WP_REST_Response {
+                $claimed = self::claim_agent_session_cart( $agent_key );
+                if ( null === $claimed ) {
+                    return self::respond( 'existing' );
                 }
-                if ( method_exists( WC()->session, 'save_data' ) ) {
-                    WC()->session->save_data();
+                $gecx_session_id = $claimed['gecx_session_id'];
+                $existing_usr    = self::read_user_cart_lines( $user_id );
+                $merged_user     = self::merge_cart_lines( $existing_usr, $claimed['lines'] );
+
+                self::write_session_row_cart( $user_key, $merged_user, $gecx_session_id );
+                self::update_persistent_user_cart( $user_id, $merged_user );
+                if ( null !== WC()->session && (string) WC()->session->get_customer_id() === $user_key && method_exists( WC()->session, 'set' ) ) {
+                    WC()->session->set( 'cart', $merged_user );
+                    if ( '' !== $gecx_session_id && method_exists( WC()->session, 'get' ) && empty( WC()->session->get( 'gecx_session_id' ) ) ) {
+                        WC()->session->set( 'gecx_session_id', $gecx_session_id );
+                    }
+                    if ( method_exists( WC()->session, 'save_data' ) ) {
+                        WC()->session->save_data();
+                    }
                 }
+                return self::respond( 'merged' );
             }
-        }
-
-        self::clear_session_row_cart( $agent_key );
-        return self::respond( 'merged' );
+        );
     }
 
     /**
      * Reads a logged-in user's existing cart lines without initializing
-     * WC()->session.
+     * WC()->session, preferring the fresh database session row when present.
      *
      * @param int $user_id WordPress user ID.
      * @return array
      */
     private static function read_user_cart_lines( int $user_id ): array {
-        $user_key = (string) $user_id;
+        $user_key  = (string) $user_id;
+        $row_lines = self::extract_cart_lines( self::read_session_row( $user_key )['cart'] ?? null );
+        if ( ! empty( $row_lines ) ) {
+            return $row_lines;
+        }
         if ( null !== WC()->session && (string) WC()->session->get_customer_id() === $user_key && method_exists( WC()->session, 'get' ) ) {
             $in_memory = self::extract_cart_lines( WC()->session->get( 'cart' ) );
             if ( ! empty( $in_memory ) ) {
                 return $in_memory;
             }
-        }
-        $row_lines = self::extract_cart_lines( self::read_session_row( $user_key )['cart'] ?? null );
-        if ( ! empty( $row_lines ) ) {
-            return $row_lines;
         }
         if ( function_exists( 'get_user_meta' ) && function_exists( 'get_current_blog_id' ) ) {
             $saved = get_user_meta( $user_id, '_woocommerce_persistent_cart_' . get_current_blog_id(), true );
@@ -568,10 +593,13 @@ class Cart_Binding {
      * @return array Merged cart lines.
      */
     private static function merge_into_browser_session( $session, array $agent_lines, string $gecx_session_id ): array {
-        $browser_lines = self::extract_cart_lines( method_exists( $session, 'get' ) ? $session->get( 'cart' ) : null );
         $customer_id   = (string) $session->get_customer_id();
-        if ( empty( $browser_lines ) && '' !== $customer_id && self::is_table_backed( $session ) ) {
+        $browser_lines = [];
+        if ( '' !== $customer_id && self::is_table_backed( $session ) ) {
             $browser_lines = self::extract_cart_lines( self::read_session_row( $customer_id )['cart'] ?? null );
+        }
+        if ( empty( $browser_lines ) && method_exists( $session, 'get' ) ) {
+            $browser_lines = self::extract_cart_lines( $session->get( 'cart' ) );
         }
         $merged = self::merge_cart_lines( $browser_lines, $agent_lines );
         $session->set( 'cart', $merged );
@@ -661,24 +689,23 @@ class Cart_Binding {
 
             $is_composite = self::is_composite_cart_line( $line );
             $sig          = $is_composite ? '' : self::cart_line_signature( $line );
-            if ( '' !== $sig && isset( $signature_map[ $sig ] ) ) {
-                $target_key   = $signature_map[ $sig ];
-                $existing_qty = isset( $merged[ $target_key ]['quantity'] ) ? (float) $merged[ $target_key ]['quantity'] : 0.0;
-                $combined_qty = $existing_qty + $qty;
-                if ( $sold_individually ) {
-                    $combined_qty = max( $existing_qty, 1.0 );
+            $target_key   = null;
+            if ( ! $is_composite ) {
+                if ( is_string( $source_key ) && '' !== $source_key && isset( $merged[ $source_key ] ) && self::lines_match_product_and_variation( $merged[ $source_key ], $line ) ) {
+                    $target_key = $source_key;
+                } elseif ( '' !== $sig && isset( $signature_map[ $sig ] ) ) {
+                    $target_key = $signature_map[ $sig ];
                 }
-                if ( null !== $stock_cap ) {
-                    $combined_qty = min( $combined_qty, max( $existing_qty, (float) $stock_cap ) );
-                }
-                $merged[ $target_key ]['quantity'] = ( floor( $combined_qty ) === $combined_qty ) ? (int) $combined_qty : $combined_qty;
-                unset(
-                    $merged[ $target_key ]['line_total'],
-                    $merged[ $target_key ]['line_subtotal'],
-                    $merged[ $target_key ]['line_tax'],
-                    $merged[ $target_key ]['line_subtotal_tax'],
-                    $merged[ $target_key ]['line_tax_data']
-                );
+            }
+            if ( null !== $target_key ) {
+                self::combine_into_existing_cart_line( $merged, $target_key, $qty, $sold_individually, $stock_cap );
+                continue;
+            }
+
+            $variation = isset( $line['variation'] ) && is_array( $line['variation'] ) ? $line['variation'] : [];
+            $generated = $is_composite ? '' : self::generate_wc_cart_id( $product_id, $variation_id, $variation, self::extract_custom_cart_item_data( $line ) );
+            if ( '' !== $generated && isset( $merged[ $generated ] ) && self::lines_match_product_and_variation( $merged[ $generated ], $line ) ) {
+                self::combine_into_existing_cart_line( $merged, $generated, $qty, $sold_individually, $stock_cap );
                 continue;
             }
 
@@ -693,9 +720,13 @@ class Cart_Binding {
             }
             $line['quantity'] = ( floor( $qty ) === $qty ) ? (int) $qty : $qty;
 
-            $dest_key = ( is_string( $source_key ) && '' !== $source_key && ! isset( $merged[ $source_key ] ) )
-                ? $source_key
-                : md5( (string) wp_json_encode( [ $source_key, $product_id, $variation_id, count( $merged ) ] ) );
+            if ( is_string( $source_key ) && '' !== $source_key && ! isset( $merged[ $source_key ] ) ) {
+                $dest_key = $source_key;
+            } elseif ( '' !== $generated && ! isset( $merged[ $generated ] ) ) {
+                $dest_key = $generated;
+            } else {
+                $dest_key = md5( (string) wp_json_encode( [ $source_key, $product_id, $variation_id, $variation, count( $merged ) ] ) );
+            }
             if ( isset( $line['key'] ) ) {
                 $line['key'] = $dest_key;
             }
@@ -706,6 +737,106 @@ class Cart_Binding {
         }
 
         return $merged;
+    }
+
+    /**
+     * Combines an incoming quantity into an existing cart line in `$merged`,
+     * enforcing `sold_individually` and stock caps and clearing stale totals.
+     *
+     * @param array    $merged            Target cart lines array (by reference).
+     * @param string   $target_key        Existing cart item key in `$merged`.
+     * @param float    $incoming_qty      Quantity to add.
+     * @param bool     $sold_individually Whether the product is sold individually.
+     * @param int|null $stock_cap         Maximum stock quantity, or null if uncapped.
+     */
+    private static function combine_into_existing_cart_line( array &$merged, string $target_key, float $incoming_qty, bool $sold_individually, ?int $stock_cap ): void {
+        $existing_qty = isset( $merged[ $target_key ]['quantity'] ) ? (float) $merged[ $target_key ]['quantity'] : 0.0;
+        $combined_qty = $existing_qty + $incoming_qty;
+        if ( $sold_individually ) {
+            $combined_qty = max( $existing_qty, 1.0 );
+        }
+        if ( null !== $stock_cap ) {
+            $combined_qty = min( $combined_qty, max( $existing_qty, (float) $stock_cap ) );
+        }
+        $merged[ $target_key ]['quantity'] = ( floor( $combined_qty ) === $combined_qty ) ? (int) $combined_qty : $combined_qty;
+        unset(
+            $merged[ $target_key ]['line_total'],
+            $merged[ $target_key ]['line_subtotal'],
+            $merged[ $target_key ]['line_tax'],
+            $merged[ $target_key ]['line_subtotal_tax'],
+            $merged[ $target_key ]['line_tax_data']
+        );
+    }
+
+    /**
+     * Whether two non-composite cart lines refer to the same product,
+     * variation ID, and sorted variation attribute map.
+     *
+     * @param mixed $existing Existing cart line entry.
+     * @param array $incoming Incoming cart line entry.
+     * @return bool
+     */
+    private static function lines_match_product_and_variation( $existing, array $incoming ): bool {
+        if ( ! is_array( $existing ) || self::is_composite_cart_line( $existing ) ) {
+            return false;
+        }
+        $existing_pid = isset( $existing['product_id'] ) ? (int) $existing['product_id'] : 0;
+        $incoming_pid = isset( $incoming['product_id'] ) ? (int) $incoming['product_id'] : 0;
+        $existing_vid = isset( $existing['variation_id'] ) ? (int) $existing['variation_id'] : 0;
+        $incoming_vid = isset( $incoming['variation_id'] ) ? (int) $incoming['variation_id'] : 0;
+        if ( $existing_pid !== $incoming_pid || $existing_vid !== $incoming_vid ) {
+            return false;
+        }
+        $existing_var = isset( $existing['variation'] ) && is_array( $existing['variation'] ) ? $existing['variation'] : [];
+        $incoming_var = isset( $incoming['variation'] ) && is_array( $incoming['variation'] ) ? $incoming['variation'] : [];
+        ksort( $existing_var );
+        ksort( $incoming_var );
+        return $existing_var === $incoming_var;
+    }
+
+    /**
+     * Extracts custom item data fields from a cart line, stripping standard
+     * WooCommerce cart-line bookkeeping fields.
+     *
+     * @param array $line Cart line array.
+     * @return array
+     */
+    private static function extract_custom_cart_item_data( array $line ): array {
+        $custom = $line;
+        unset(
+            $custom['key'],
+            $custom['product_id'],
+            $custom['variation_id'],
+            $custom['variation'],
+            $custom['quantity'],
+            $custom['data'],
+            $custom['data_hash'],
+            $custom['line_tax_data'],
+            $custom['line_subtotal'],
+            $custom['line_subtotal_tax'],
+            $custom['line_total'],
+            $custom['line_tax']
+        );
+        ksort( $custom );
+        return $custom;
+    }
+
+    /**
+     * Computes a canonical WooCommerce cart item key via
+     * `WC()->cart->generate_cart_id()` when a cart instance is available.
+     *
+     * @param int   $product_id     Product ID.
+     * @param int   $variation_id   Variation ID.
+     * @param array $variation      Variation attributes.
+     * @param array $cart_item_data Custom cart item data.
+     * @return string Generated key, or '' when `WC()->cart` is unavailable.
+     */
+    private static function generate_wc_cart_id( int $product_id, int $variation_id, array $variation, array $cart_item_data ): string {
+        if ( ! function_exists( 'WC' ) || null === WC()->cart || ! method_exists( WC()->cart, 'generate_cart_id' ) ) {
+            return '';
+        }
+        $cart_id = WC()->cart->generate_cart_id( $product_id, $variation_id, $variation, $cart_item_data );
+        return is_string( $cart_id ) ? $cart_id : '';
     }
 
     /**
@@ -740,23 +871,102 @@ class Cart_Binding {
         $variation = isset( $line['variation'] ) && is_array( $line['variation'] ) ? $line['variation'] : [];
         ksort( $variation );
 
-        $custom = $line;
-        unset(
-            $custom['key'],
-            $custom['product_id'],
-            $custom['variation_id'],
-            $custom['variation'],
-            $custom['quantity'],
-            $custom['data_hash'],
-            $custom['line_tax_data'],
-            $custom['line_subtotal'],
-            $custom['line_subtotal_tax'],
-            $custom['line_total'],
-            $custom['line_tax']
-        );
-        ksort( $custom );
+        $custom = self::extract_custom_cart_item_data( $line );
 
         return md5( (string) wp_json_encode( [ $product_id, $variation_id, $variation, $custom ] ) );
+    }
+
+    /**
+     * Runs `$callback` under a per-session advisory lock so concurrent merges
+     * targeting the same shopper cart serialize cleanly.
+     *
+     * @param string   $lock_key Target session key.
+     * @param callable $callback Critical section returning a WP_REST_Response.
+     * @return \WP_REST_Response
+     */
+    private static function with_merge_lock( string $lock_key, callable $callback ): \WP_REST_Response {
+        global $wpdb;
+        if ( '' === $lock_key || ! isset( $wpdb ) ) {
+            return $callback();
+        }
+        $lock_name = 'gecx_cart_' . md5( $wpdb->prefix . ':' . $lock_key );
+        $prev_supp = $wpdb->suppress_errors( true );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Advisory lock serializes concurrent merges targeting the same session row.
+        $acquired = $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK( %s, 5 )', $lock_name ) );
+        $wpdb->suppress_errors( $prev_supp );
+        if ( '0' === (string) $acquired ) {
+            return self::respond( 'deferred' );
+        }
+        try {
+            return $callback();
+        } finally {
+            if ( 1 === (int) $acquired ) {
+                $prev_supp = $wpdb->suppress_errors( true );
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Releases advisory lock acquired above.
+                $wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK( %s )', $lock_name ) );
+                $wpdb->suppress_errors( $prev_supp );
+            }
+        }
+    }
+
+    /**
+     * Atomically claims and drains the cart lines stored in an agent guest
+     * session row via compare-and-swap on `session_value`.
+     *
+     * Retries when a concurrent agent Store API write modifies `session_value`
+     * between SELECT and UPDATE so newly added lines are captured rather than
+     * wiped, and returns `null` when an overlapping request has already
+     * drained the row so lines are never merged twice.
+     *
+     * @param string $agent_key Guest session key (`t_...`).
+     * @return array|null `['lines' => array, 'gecx_session_id' => string]`, or null if empty/already claimed.
+     */
+    private static function claim_agent_session_cart( string $agent_key ): ?array {
+        global $wpdb;
+        if ( '' === $agent_key || ! isset( $wpdb ) ) {
+            return null;
+        }
+        for ( $attempt = 0; $attempt < 3; $attempt++ ) {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Must read uncached session_value for compare-and-swap.
+            $raw = $wpdb->get_var( $wpdb->prepare(
+                "SELECT session_value FROM {$wpdb->prefix}woocommerce_sessions WHERE session_key = %s",
+                $agent_key
+            ) );
+            if ( empty( $raw ) || ! is_string( $raw ) ) {
+                return null;
+            }
+            $session_data = maybe_unserialize( $raw );
+            if ( ! is_array( $session_data ) ) {
+                return null;
+            }
+            $agent_lines = self::extract_cart_lines( $session_data['cart'] ?? null );
+            if ( empty( $agent_lines ) ) {
+                return null;
+            }
+            $gecx_session_id = isset( $session_data['gecx_session_id'] ) && is_string( $session_data['gecx_session_id'] )
+                ? $session_data['gecx_session_id']
+                : '';
+
+            $drained         = $session_data;
+            $drained['cart'] = maybe_serialize( [] );
+            $drained_raw     = maybe_serialize( $drained );
+
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Compare-and-swap claim on session_value prevents double-merge and lost concurrent agent writes.
+            $updated = $wpdb->query( $wpdb->prepare(
+                "UPDATE {$wpdb->prefix}woocommerce_sessions SET session_value = %s WHERE session_key = %s AND session_value = %s",
+                $drained_raw,
+                $agent_key,
+                $raw
+            ) );
+            if ( 1 === (int) $updated ) {
+                self::evict_session_cache( $agent_key );
+                return [
+                    'lines'           => $agent_lines,
+                    'gecx_session_id' => $gecx_session_id,
+                ];
+            }
+        }
+        return null;
     }
 
     /**
@@ -794,36 +1004,6 @@ class Cart_Binding {
         ) );
         if ( false !== $result ) {
             self::evict_session_cache( $session_key );
-        }
-    }
-
-    /**
-     * Empties the cart stored in an agent guest session row after its items
-     * have been merged into the shopper's session so repeat calls and fallback
-     * client copies are idempotent.
-     *
-     * @param string $agent_key Guest session key (`t_...`).
-     */
-    private static function clear_session_row_cart( string $agent_key ): void {
-        global $wpdb;
-        if ( '' === $agent_key || ! isset( $wpdb ) ) {
-            return;
-        }
-        $session_data = self::read_session_row( $agent_key );
-        if ( empty( $session_data ) ) {
-            return;
-        }
-        $session_data['cart'] = maybe_serialize( [] );
-        $serialized           = maybe_serialize( $session_data );
-
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Direct update required to drain merged guest cart row.
-        $result = $wpdb->query( $wpdb->prepare(
-            "UPDATE {$wpdb->prefix}woocommerce_sessions SET session_value = %s WHERE session_key = %s",
-            $serialized,
-            $agent_key
-        ) );
-        if ( false !== $result ) {
-            self::evict_session_cache( $agent_key );
         }
     }
 
