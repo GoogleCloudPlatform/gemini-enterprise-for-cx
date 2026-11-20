@@ -436,14 +436,19 @@ class Session_Attribution {
      * the first-party `gecx_session_id` cookie set when an uncookied guest
      * started a chat before adding items to the cart.
      *
-     * @param bool $include_cookie Whether the browser's cookie may be used. The
-     *                             callers acting on a Cart-Token session pass
-     *                             false unless the request came from one of
-     *                             the store's own pages, because that session
-     *                             need not be this browser's.
+     * @param bool $include_cookie        Whether the browser's cookie may be used. The
+     *                                    callers acting on a Cart-Token session pass
+     *                                    false unless the request came from one of
+     *                                    the store's own pages, because that session
+     *                                    need not be this browser's.
+     * @param bool $persist_to_wc_session Whether to copy a cookie-resolved ID into
+     *                                    WC()->session. Read-only GET cart requests
+     *                                    pass false so WC()->session is not marked
+     *                                    dirty (which would trigger a shutdown
+     *                                    save_data() write-back of stale cart state).
      * @return string Session ID, or '' when none is bound.
      */
-    public static function get_gecx_session_id_safely( bool $include_cookie = true ) {
+    public static function get_gecx_session_id_safely( bool $include_cookie = true, bool $persist_to_wc_session = true ) {
         $session_id = '';
         if ( function_exists( 'WC' ) ) {
             if ( isset( WC()->session ) && is_object( WC()->session ) && method_exists( WC()->session, 'get' ) ) {
@@ -495,7 +500,7 @@ class Session_Attribution {
             $cookie_session_id = sanitize_text_field( wp_unslash( $_COOKIE[ self::SESSION_COOKIE_NAME ] ) );
             if ( self::is_valid_session_id( $cookie_session_id ) ) {
                 $session_id = $cookie_session_id;
-                if ( function_exists( 'WC' ) && isset( WC()->session ) && is_object( WC()->session ) && method_exists( WC()->session, 'set' ) ) {
+                if ( $persist_to_wc_session && function_exists( 'WC' ) && isset( WC()->session ) && is_object( WC()->session ) && method_exists( WC()->session, 'set' ) ) {
                     WC()->session->set( 'gecx_session_id', $session_id );
                 }
             }
