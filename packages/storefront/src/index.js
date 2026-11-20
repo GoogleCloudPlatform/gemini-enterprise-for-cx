@@ -1930,7 +1930,8 @@ function gecxIsMainVariationForm(form) {
  * Syncs `<gecx-price-history-link>` with WooCommerce variation selection.
  *
  * Each link reads the variation already selected when it first appears,
- * from the first main form for its product that has one. After that only
+ * from the first main form for its product that has one, and once more when
+ * the jQuery handlers are first bound. After that only
  * WooCommerce's own events update it: `found_variation`, `reset_data` and
  * `hide_variation`, all triggered with jQuery, so they reach jQuery handlers
  * but not native listeners. Re-reading every form on each placement pass
@@ -1941,8 +1942,34 @@ function initPriceHistoryVariationSync() {
   if (!document.querySelector('gecx-price-history-link')) {
     return;
   }
+  // Bound to document rather than <body>, which pjax-style navigation can
+  // replace.
+  let justBound = false;
+  if (!gecxJqueryVariationListenersBound && window.jQuery &&
+      typeof window.jQuery(document).on === 'function') {
+    gecxJqueryVariationListenersBound = true;
+    justBound = true;
+    window.jQuery(document).on('found_variation.gecx', 'form.variations_form', function(event, variation) {
+      if (!gecxIsMainVariationForm(this)) {
+        return;
+      }
+      const id = (variation && variation.variation_id) ? variation.variation_id : '';
+      gecxSyncPriceHistoryVariant(this, id);
+    });
+    // hide_variation is triggered on the form's .single_variation child and
+    // bubbles up to the form.
+    window.jQuery(document).on('reset_data.gecx hide_variation.gecx', 'form.variations_form', function() {
+      if (!gecxIsMainVariationForm(this)) {
+        return;
+      }
+      gecxSyncPriceHistoryVariant(this, '');
+    });
+  }
+  // When jQuery arrives after this script, WooCommerce can select the default
+  // variation before the handlers above exist, so read every link again once
+  // they are bound.
   gecxEach('gecx-price-history-link', function(link) {
-    if (gecxPriceHistoryLinksSeen.has(link)) {
+    if (gecxPriceHistoryLinksSeen.has(link) && !justBound) {
       return;
     }
     gecxPriceHistoryLinksSeen.add(link);
@@ -1960,27 +1987,6 @@ function initPriceHistoryVariationSync() {
       }
     }
   });
-  // Bound to document rather than <body>, which pjax-style navigation can
-  // replace.
-  if (!gecxJqueryVariationListenersBound && window.jQuery &&
-      typeof window.jQuery(document).on === 'function') {
-    gecxJqueryVariationListenersBound = true;
-    window.jQuery(document).on('found_variation.gecx', 'form.variations_form', function(event, variation) {
-      if (!gecxIsMainVariationForm(this)) {
-        return;
-      }
-      const id = (variation && variation.variation_id) ? variation.variation_id : '';
-      gecxSyncPriceHistoryVariant(this, id);
-    });
-    // hide_variation is triggered on the form's .single_variation child and
-    // bubbles up to the form.
-    window.jQuery(document).on('reset_data.gecx hide_variation.gecx', 'form.variations_form', function() {
-      if (!gecxIsMainVariationForm(this)) {
-        return;
-      }
-      gecxSyncPriceHistoryVariant(this, '');
-    });
-  }
 }
 
 /**

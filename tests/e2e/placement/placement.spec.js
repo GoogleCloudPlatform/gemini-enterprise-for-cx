@@ -1442,4 +1442,49 @@ test.describe('price history link styling and variation sync', () => {
     await page.waitForTimeout(400);
     await expect(link).toHaveAttribute('variant-id', '202');
   });
+
+  test('reads the default variation when jQuery loads after storefront.js', async ({ page }) => {
+    // The delay-JS setup: storefront.js runs without jQuery, then jQuery and
+    // add-to-cart-variation.js load. WooCommerce selects the default variation
+    // and triggers found_variation shortly after its script starts, before the
+    // debounced placement pass binds the handlers.
+    await openFixture(page, {
+      bodyClass: 'single-product',
+      body: `<main>
+        <div id="product-42" class="product type-product">
+          <p class="price">$20.00</p>
+          <gecx-price-history-link id="main-link" product-id="42" chat-widget-selector="gecx-woocommerce-chat-widget"></gecx-price-history-link>
+          ${variationForm('main-variations', 42, '')}
+        </div>
+      </main>`,
+    });
+
+    const link = page.locator('#main-link');
+    await expect(link).not.toHaveAttribute('variant-id');
+
+    await page.evaluate((stubSource) => {
+      setTimeout(() => {
+        const holder = document.createElement('div');
+        holder.innerHTML = stubSource;
+        const script = document.createElement('script');
+        script.textContent = holder.querySelector('script').textContent;
+        document.body.appendChild(script);
+        // add-to-cart-variation.js: select the default variation about 100 ms
+        // after it starts.
+        setTimeout(() => {
+          const form = document.getElementById('main-variations');
+          window.jQuery(form.querySelector('input[name="variation_id"]')).val('202').trigger('change');
+          window.jQuery(form).trigger('found_variation', { variation_id: 202 });
+        }, 100);
+      }, 1000);
+    }, JQUERY_STUB);
+
+    await expect(link).toHaveAttribute('variant-id', '202');
+
+    // The handlers are bound: later selections still reach the link.
+    await page.evaluate(() => {
+      window.jQuery(document.getElementById('main-variations')).trigger('found_variation', { variation_id: 303 });
+    });
+    await expect(link).toHaveAttribute('variant-id', '303');
+  });
 });
