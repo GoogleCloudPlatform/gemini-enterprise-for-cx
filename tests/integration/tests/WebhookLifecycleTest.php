@@ -151,6 +151,15 @@ class WebhookLifecycleTest extends RestTestCase {
         );
     }
 
+    public function test_payload_currency_is_empty_when_unknown(): void {
+        $webhook_id = $this->create_gecx_webhook();
+
+        // No currency in the payload and no WC_Order for the ID: the plugin must not guess 'USD'.
+        $minimized = $this->rest_api->order_webhook->minimize_order_webhook_payload( [ 'id' => 987654 ], 'order', 987654, $webhook_id );
+
+        $this->assertSame( '', $minimized['currency'] );
+    }
+
     public function test_payload_untouched_for_foreign_webhook(): void {
         $this->create_gecx_webhook();
 

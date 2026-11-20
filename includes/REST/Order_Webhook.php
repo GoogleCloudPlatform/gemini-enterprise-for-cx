@@ -707,7 +707,9 @@ class Order_Webhook {
 
         return [
             'id'             => isset( $payload['id'] ) ? (int) $payload['id'] : ( $order instanceof \WC_Order ? (int) $order->get_id() : (int) $resource_id ),
-            'currency'       => isset( $payload['currency'] ) ? (string) $payload['currency'] : ( $order instanceof \WC_Order && method_exists( $order, 'get_currency' ) ? (string) $order->get_currency() : 'USD' ),
+            // Empty when unknown rather than a guessed 'USD': GECX falls back to the
+            // store's catalog currency, and a guess can't be told from a real USD order.
+            'currency'       => isset( $payload['currency'] ) ? (string) $payload['currency'] : ( $order instanceof \WC_Order && method_exists( $order, 'get_currency' ) ? (string) $order->get_currency() : '' ),
             'total'          => isset( $payload['total'] ) ? (string) $payload['total'] : ( $order instanceof \WC_Order && method_exists( $order, 'get_total' ) ? (string) $order->get_total() : '0.00' ),
             'total_tax'      => isset( $payload['total_tax'] ) ? (string) $payload['total_tax'] : ( $order instanceof \WC_Order && method_exists( $order, 'get_total_tax' ) ? (string) $order->get_total_tax() : '0.00' ),
             'shipping_total' => isset( $payload['shipping_total'] ) ? (string) $payload['shipping_total'] : ( $order instanceof \WC_Order && method_exists( $order, 'get_shipping_total' ) ? (string) $order->get_shipping_total() : '0.00' ),
