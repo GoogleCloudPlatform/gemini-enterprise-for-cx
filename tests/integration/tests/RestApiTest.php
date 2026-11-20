@@ -1324,7 +1324,7 @@ class RestApiTest extends RestTestCase {
             ],
         ] );
 
-        $result = apply_filters( 'rest_post_dispatch', $response, null, $request );
+        $result = apply_filters( 'rest_post_dispatch', $response, rest_get_server(), $request );
 
         $this->assertSame( 'a.cart.token', $result->get_headers()['Cart-Token'] );
     }
@@ -1558,7 +1558,7 @@ class RestApiTest extends RestTestCase {
             ],
         ] );
 
-        $result = apply_filters( 'rest_post_dispatch', $response, null, $request );
+        $result = apply_filters( 'rest_post_dispatch', $response, rest_get_server(), $request );
 
         $this->assertSame( 'a.cart.token', $result->get_headers()['Cart-Token'] );
         $this->assertSame( [ 'Nonce' => 'a-nonce' ], $result->get_data()['responses'][0]['headers'] );
