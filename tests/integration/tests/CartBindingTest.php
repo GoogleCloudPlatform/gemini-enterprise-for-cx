@@ -397,9 +397,9 @@ class CartBindingTest extends RestTestCase {
 
         $saved_meta = get_user_meta( 42, '_woocommerce_persistent_cart_' . get_current_blog_id(), true );
         $this->assertSame( 2, $saved_meta['cart']['shared']['quantity'] ?? null );
-        $this->assertSame( [], maybe_unserialize( $this->get_wc_session( 't_agent_cart' )['cart'] ?? '' ) );
+        $this->assertSame( self::AGENT_CART_LINES, maybe_unserialize( $this->get_wc_session( 't_agent_cart' )['cart'] ?? '' ) );
 
-        // Repeat calls do not re-add lines because t_agent_cart was drained.
+        // Repeat calls do not re-add lines because gecx_merged recorded the synced quantity.
         $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
         $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
         $user_cart_after = maybe_unserialize( $this->get_wc_session( '42' )['cart'] ?? '' );
@@ -407,7 +407,7 @@ class CartBindingTest extends RestTestCase {
         $this->assertSame( 2, $user_cart_after['shared']['quantity'] );
     }
 
-    public function test_logged_in_shopper_with_cookie_matching_agent_key_drains_agent_and_never_doubles_quantities(): void {
+    public function test_logged_in_shopper_with_cookie_matching_agent_key_never_doubles_quantities(): void {
         $this->ensure_user_with_id( 42, 'shopper42', 'customer', 'shopper@example.com' );
         wp_set_current_user( 42 );
         $this->given_session_with_cart( '42', [ 'u1' => [ 'product_id' => 77, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ] ] );
@@ -433,7 +433,7 @@ class CartBindingTest extends RestTestCase {
         $agent_token = $this->generate_jwt( 't_agent_cart' );
         $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
         $this->assertNull( WC()->session );
-        $this->assertSame( [], maybe_unserialize( $this->get_wc_session( 't_agent_cart' )['cart'] ?? '' ) );
+        $this->assertSame( self::AGENT_CART_LINES, maybe_unserialize( $this->get_wc_session( 't_agent_cart' )['cart'] ?? '' ) );
 
         $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
         $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
@@ -505,7 +505,7 @@ class CartBindingTest extends RestTestCase {
         $this->assertIsArray( $guest_cart );
         $this->assertCount( 1, $guest_cart );
         $this->assertSame( 1, $guest_cart['g1']['quantity'] );
-        $this->assertSame( [], maybe_unserialize( $this->get_wc_session( 't_agent_cart' )['cart'] ?? '' ) );
+        $this->assertSame( self::AGENT_CART_LINES, maybe_unserialize( $this->get_wc_session( 't_agent_cart' )['cart'] ?? '' ) );
     }
 
     public function test_hydrates_external_redis_like_session_handler_that_overrides_save_data(): void {
@@ -751,12 +751,22 @@ class CartBindingTest extends RestTestCase {
         $simple->set_regular_price( '18' );
         $simple_id = $simple->save();
 
-        WC()->cart = new \WC_Cart();
-        $small_var = [ 'attribute_size' => 'Small' ];
-        $large_var = [ 'attribute_size' => 'Large' ];
-        $small_key = WC()->cart->generate_cart_id( $variable_id, $variation_id, $small_var, [] );
-        $large_key = WC()->cart->generate_cart_id( $variable_id, $variation_id, $large_var, [] );
-        $canon_key = WC()->cart->generate_cart_id( $simple_id, 0, [], [] );
+        $reference_cart = new \WC_Cart();
+        $small_var      = [ 'attribute_size' => 'Small' ];
+        $large_var      = [ 'attribute_size' => 'Large' ];
+        $small_key      = $reference_cart->generate_cart_id( $variable_id, $variation_id, $small_var, [] );
+        $large_key      = $reference_cart->generate_cart_id( $variable_id, $variation_id, $large_var, [] );
+        $canon_key      = $reference_cart->generate_cart_id( $simple_id, 0, [], [] );
+
+        // On REST routes WC()->cart is null; generate_wc_cart_id() still computes
+        // the canonical WC_Cart::generate_cart_id() key when a source key collides
+        // with an unrelated browser line.
+        $fallback_simple = new \WC_Product_Simple();
+        $fallback_simple->set_name( 'Null-Cart Fallback Item' );
+        $fallback_simple->set_regular_price( '14' );
+        $fallback_id  = $fallback_simple->save();
+        $fallback_key = $reference_cart->generate_cart_id( $fallback_id, 0, [], [] );
+        WC()->cart    = null;
 
         $this->given_browser_session(
             't_browser_cart',
@@ -777,6 +787,13 @@ class CartBindingTest extends RestTestCase {
                     'variation'          => [],
                     'quantity'           => 1,
                     'theme_runtime_meta' => 'from-browser',
+                ],
+                'shared_slot' => [
+                    'key'          => 'shared_slot',
+                    'product_id'   => 999,
+                    'variation_id' => 0,
+                    'variation'    => [],
+                    'quantity'     => 1,
                 ],
             ]
         );
@@ -804,6 +821,15 @@ class CartBindingTest extends RestTestCase {
                     'variation'          => [],
                     'quantity'     => 2,
                 ],
+                // Collides with 'shared_slot' on a different product while WC()->cart is null:
+                // must receive the canonical generate_cart_id key ($fallback_key).
+                'shared_slot' => [
+                    'key'          => 'shared_slot',
+                    'product_id'   => $fallback_id,
+                    'variation_id' => 0,
+                    'variation'    => [],
+                    'quantity'     => 1,
+                ],
             ]
         );
 
@@ -811,62 +837,125 @@ class CartBindingTest extends RestTestCase {
 
         $merged = WC()->session->get( 'cart' );
         $this->assertIsArray( $merged );
-        // Small combined to 3, Large kept separate on the same variation_id,
-        // and the colliding simple key merged onto $canon_key without creating
-        // a non-generate_cart_id synthetic key.
-        $this->assertCount( 3, $merged );
+        $this->assertCount( 5, $merged );
         $this->assertSame( 3, $merged[ $small_key ]['quantity'] );
         $this->assertSame( 1, $merged[ $large_key ]['quantity'] );
         $this->assertSame( 3, $merged[ $canon_key ]['quantity'] );
+        $this->assertArrayHasKey( $fallback_key, $merged );
+        $this->assertSame( 1, $merged[ $fallback_key ]['quantity'] );
     }
 
-    public function test_atomic_cas_claim_captures_concurrent_agent_write_and_prevents_double_merge(): void {
-        // 1. Concurrent Store API add lands on t_agent_cart between SELECT and CAS UPDATE:
-        //    the first CAS misses (0 rows), retries on the updated row, and merges BOTH lines.
-        $this->given_browser_session( 't_browser_cart', [ 'b' => [ 'product_id' => 9, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ] ] );
-        $this->given_session_with_cart( 't_agent_cart', self::AGENT_CART_LINES );
-
-        $concurrent_add = function ( string $sql ) use ( &$concurrent_add ): string {
-            if ( false !== strpos( $sql, 'UPDATE' ) && false !== strpos( $sql, 'AND session_value =' ) ) {
-                remove_filter( 'query', $concurrent_add );
-                $updated_lines = self::AGENT_CART_LINES;
-                $updated_lines['concurrent'] = [
-                    'product_id'   => 321,
-                    'variation_id' => 0,
-                    'variation'    => [],
-                    'quantity'     => 2,
-                ];
-                $this->given_session_with_cart( 't_agent_cart', $updated_lines );
-            }
-            return $sql;
-        };
-        add_filter( 'query', $concurrent_add );
+    public function test_stale_in_flight_agent_save_after_merge_only_adds_new_delta_lines(): void {
+        // Reproduces overlapping "add A and C" where A merges while C's Store API
+        // request (which loaded {A:1} at start) finishes afterwards and saves {A:1, C:1}.
+        $this->given_browser_session(
+            't_browser_cart',
+            [
+                'b' => [ 'product_id' => 9, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+            ]
+        );
+        $this->given_session_with_cart(
+            't_agent_cart',
+            [
+                'a' => [ 'product_id' => 17510, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+            ]
+        );
 
         $agent_token = $this->generate_jwt( 't_agent_cart' );
         $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
-        remove_filter( 'query', $concurrent_add );
+
+        // In-flight Store API save for C writes {A:1, C:1} blindly to t_agent_cart.
+        $this->given_session_with_cart(
+            't_agent_cart',
+            [
+                'a' => [ 'product_id' => 17510, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+                'c' => [ 'product_id' => 321, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+            ]
+        );
+
+        $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
+        $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
 
         $merged = WC()->session->get( 'cart' );
         $this->assertCount( 3, $merged );
         $this->assertSame( 1, $merged['a']['quantity'] );
-        $this->assertSame( 2, $merged['concurrent']['quantity'] );
-        $this->assertSame( [], maybe_unserialize( $this->get_wc_session( 't_agent_cart' )['cart'] ?? '' ) );
+        $this->assertSame( 1, $merged['b']['quantity'] );
+        $this->assertSame( 1, $merged['c']['quantity'] );
+    }
 
-        // 2. Overlapping POST drains t_agent_cart between our fast-path SELECT and CAS UPDATE:
-        //    CAS returns null so lines are NOT added a second time.
+    public function test_agent_quantity_updates_and_removals_propagate_to_merged_lines(): void {
+        $this->given_browser_session(
+            't_browser_cart',
+            [
+                'shared' => [ 'product_id' => 10, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+            ]
+        );
+        $this->given_session_with_cart(
+            't_agent_cart',
+            [
+                'agent_shared' => [ 'product_id' => 10, 'variation_id' => 0, 'variation' => [], 'quantity' => 2 ],
+                'agent_only'   => [ 'product_id' => 20, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+            ]
+        );
+
+        $agent_token = $this->generate_jwt( 't_agent_cart' );
+        $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
+        $this->assertSame( 3, WC()->session->get( 'cart' )['shared']['quantity'] );
+        $this->assertSame( 1, WC()->session->get( 'cart' )['agent_only']['quantity'] );
+
+        // Agent increases agent_only from 1 -> 4 and reduces agent_shared from 2 -> 1.
+        $this->given_session_with_cart(
+            't_agent_cart',
+            [
+                'agent_shared' => [ 'product_id' => 10, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+                'agent_only'   => [ 'product_id' => 20, 'variation_id' => 0, 'variation' => [], 'quantity' => 4 ],
+            ]
+        );
+        $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
+        $this->assertSame( 2, WC()->session->get( 'cart' )['shared']['quantity'] );
+        $this->assertSame( 4, WC()->session->get( 'cart' )['agent_only']['quantity'] );
+
+        // Agent removes both lines from t_agent_cart: agent_only is deleted and
+        // shared drops back to the 1 unit the shopper originally put in their cart.
+        $this->given_session_with_cart( 't_agent_cart', [] );
+        $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
+        $this->assertCount( 1, WC()->session->get( 'cart' ) );
+        $this->assertSame( 1, WC()->session->get( 'cart' )['shared']['quantity'] );
+        $this->assertArrayNotHasKey( 'agent_only', WC()->session->get( 'cart' ) );
+        $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
+    }
+
+    public function test_failed_target_session_write_returns_error_and_preserves_agent_lines_for_retry(): void {
+        $this->ensure_user_with_id( 42, 'shopper42', 'customer', 'shopper@example.com' );
+        wp_set_current_user( 42 );
+        $this->given_session_with_cart( '42', [ 'u1' => [ 'product_id' => 77, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ] ] );
         $this->given_session_with_cart( 't_agent_cart', self::AGENT_CART_LINES );
-        $concurrent_drain = function ( string $sql ) use ( &$concurrent_drain ): string {
-            if ( false !== strpos( $sql, 'UPDATE' ) && false !== strpos( $sql, 'AND session_value =' ) ) {
-                remove_filter( 'query', $concurrent_drain );
-                $this->given_session_with_cart( 't_agent_cart', [] );
+        WC()->session = null;
+
+        $fail_write = static function ( string $sql ) {
+            if ( false !== strpos( $sql, 'INSERT INTO' ) && false !== strpos( $sql, 'woocommerce_sessions' ) ) {
+                return '';
             }
             return $sql;
         };
-        add_filter( 'query', $concurrent_drain );
+        add_filter( 'query', $fail_write );
 
-        $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
-        remove_filter( 'query', $concurrent_drain );
-        $this->assertSame( 1, WC()->session->get( 'cart' )['a']['quantity'] );
+        $request = new WP_REST_Request( 'POST', '/gecx/v1/cart-session' );
+        $request->set_param( 'cart_token', $this->generate_jwt( 't_agent_cart' ) );
+        $error = ( new REST_API() )->cart_binding->bind_cart_session_handler( $request );
+        remove_filter( 'query', $fail_write );
+
+        $this->assertInstanceOf( WP_Error::class, $error );
+        $this->assertSame( 'cart_merge_failed', $error->get_error_code() );
+        $this->assertSame( 500, $error->get_error_data()['status'] ?? 0 );
+        $this->assertSame( self::AGENT_CART_LINES, maybe_unserialize( $this->get_wc_session( 't_agent_cart' )['cart'] ?? '' ) );
+        $this->assertCount( 1, maybe_unserialize( $this->get_wc_session( '42' )['cart'] ?? '' ) );
+
+        // Subsequent retry after DB recovery succeeds without losing or doubling lines.
+        $this->assertSame( self::MERGED, $this->bind( $this->generate_jwt( 't_agent_cart' ) ) );
+        $user_cart = maybe_unserialize( $this->get_wc_session( '42' )['cart'] ?? '' );
+        $this->assertCount( 2, $user_cart );
+        $this->assertSame( 1, $user_cart['a']['quantity'] );
     }
 
     public function test_merge_rereads_fresh_browser_session_row_instead_of_stale_in_memory_snapshot(): void {
