@@ -1375,6 +1375,7 @@ JS;
         $log   = $this->run_cart_update_scenario(
             [
                 'detail'        => [ 'cartId' => $token ],
+                'binding'       => 'agent',
                 'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ] ],
             ]
         );
@@ -1391,13 +1392,23 @@ JS;
         $this->assertSame( $token, $cart_reads[0]['headers']['Cart-Token'] );
     }
 
-    public function test_cart_update_omits_widget_cart_token_when_server_merged_into_browser_session(): void {
+    public function test_cart_update_omits_widget_cart_token_when_server_merged_or_kept_existing_browser_session(): void {
         $token = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidF8xIn0.sig';
-        $log   = $this->run_cart_update_scenario(
+        // First update answers 'merged', follow-up update answers 'existing':
+        // neither read sends the agent's Cart-Token, so the Blocks store keeps
+        // receiving the browser's cart rather than the agent's guest cart.
+        $log = $this->run_cart_update_scenario(
             [
-                'detail'        => [ 'cartId' => $token ],
-                'binding'       => 'merged',
-                'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 3 ] ] ],
+                'store'               => [ 'itemsCount' => 1 ],
+                'detail'              => [ 'cartId' => $token ],
+                'secondDetail'        => [ 'cartId' => $token ],
+                'secondUpdateAfterMs' => 15,
+                'waitMs'              => 70,
+                'bindings'            => [ 'merged', 'existing' ],
+                'cartResponses'       => [
+                    [ 'status' => 200, 'body' => [ 'items_count' => 3 ] ],
+                    [ 'status' => 200, 'body' => [ 'items_count' => 3 ] ],
+                ],
             ]
         );
 
@@ -1409,8 +1420,10 @@ JS;
                 }
             )
         );
-        $this->assertCount( 1, $cart_reads );
+        $this->assertCount( 2, $cart_reads );
         $this->assertArrayNotHasKey( 'Cart-Token', $cart_reads[0]['headers'] );
+        $this->assertArrayNotHasKey( 'Cart-Token', $cart_reads[1]['headers'] );
+        $this->assertSame( [ [ 'items_count' => 3 ], [ 'items_count' => 3 ] ], $log['received'] );
     }
 
     public function test_cart_update_serializes_overlapping_cart_session_binds_for_same_session(): void {
