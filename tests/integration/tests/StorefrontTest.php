@@ -1112,11 +1112,13 @@ const vm = require('vm');
 const code = fs.readFileSync(process.argv[2], 'utf8');
 const scenario = JSON.parse(process.argv[3]);
 
-const log = { fetches: [], jquery: [], events: [], received: [], reloads: 0, badges: {}, sequence: [] };
+const log = { fetches: [], jquery: [], events: [], received: [], reloads: 0, badges: {}, sequence: [], maxInFlightCartSession: 0 };
 const listeners = { window: {}, document: {} };
 const on = (target) => (name, cb) => { (listeners[target][name] = listeners[target][name] || []).push(cb); };
 
 let cartResponses = scenario.cartResponses.slice();
+let bindings = Array.isArray(scenario.bindings) ? scenario.bindings.slice() : null;
+let inFlightCartSession = 0;
 function fakeFetch(url, init) {
   log.fetches.push({ url: url, method: (init && init.method) || 'GET', headers: (init && init.headers) || {} });
   if (url.indexOf('auth-context') !== -1) {
@@ -1125,14 +1127,25 @@ function fakeFetch(url, init) {
   }
   if (url.indexOf('/gecx/v1/cart-session') !== -1) {
     log.sequence.push('cart-session');
-    const binding = scenario.binding || 'existing';
+    inFlightCartSession++;
+    if (inFlightCartSession > log.maxInFlightCartSession) {
+      log.maxInFlightCartSession = inFlightCartSession;
+    }
+    const binding = bindings ? (bindings.shift() || 'existing') : (scenario.binding || 'existing');
     const token = binding === 'agent' ? (scenario.boundToken || null) : null;
-    return Promise.resolve({
-      ok: true,
-      status: 200,
-      headers: { get: (name) => String(name).toLowerCase() === 'cart-token' ? token : null },
-      json: () => Promise.resolve({ binding: binding })
-    });
+    const finish = () => {
+      inFlightCartSession--;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => String(name).toLowerCase() === 'cart-token' ? token : null },
+        json: () => Promise.resolve({ binding: binding })
+      };
+    };
+    if (scenario.cartSessionDelayMs) {
+      return new Promise((resolve) => setTimeout(() => resolve(finish()), scenario.cartSessionDelayMs));
+    }
+    return Promise.resolve(finish());
   }
   if (url.indexOf('/gecx/v1/session') !== -1) {
     log.sequence.push('session');
@@ -1202,6 +1215,7 @@ const document = {
 
 const sandbox = {
   window: window, document: document, fetch: fakeFetch, CustomEvent: FakeCustomEvent,
+  atob: (s) => Buffer.from(s, 'base64').toString('binary'),
   MutationObserver: class { observe() {} }, URL: URL, console: { warn: () => {}, error: console.error },
   setTimeout: setTimeout, clearTimeout: clearTimeout
 };
@@ -1209,15 +1223,21 @@ sandbox.window.getComputedStyle = () => ({ display: 'block', visibility: 'visibl
 vm.createContext(sandbox);
 vm.runInContext(code, sandbox);
 
-const evt = { type: 'chat-messenger-update-cart', detail: scenario.detail || {} };
-// A bubbling event reaches the document listener and then the window one.
-(listeners.document['chat-messenger-update-cart'] || []).forEach((cb) => cb(evt));
-(listeners.window['chat-messenger-update-cart'] || []).forEach((cb) => cb(evt));
+const fireCartUpdate = (detail) => {
+  const evt = { type: 'chat-messenger-update-cart', detail: detail || {} };
+  // A bubbling event reaches the document listener and then the window one.
+  (listeners.document['chat-messenger-update-cart'] || []).forEach((cb) => cb(evt));
+  (listeners.window['chat-messenger-update-cart'] || []).forEach((cb) => cb(evt));
+};
+fireCartUpdate(scenario.detail);
+if (scenario.secondDetail) {
+  setTimeout(() => fireCartUpdate(scenario.secondDetail), scenario.secondUpdateAfterMs || 5);
+}
 
 setTimeout(() => {
   Object.keys(badgeEls).forEach((sel) => { log.badges[sel] = badgeEls[sel].textContent; });
   process.stdout.write(JSON.stringify(log));
-}, 50);
+}, scenario.waitMs || 50);
 JS;
 
         $temp_runner = (string) tempnam( sys_get_temp_dir(), 'gecx_js_cart_' );
@@ -1355,6 +1375,7 @@ JS;
         $log   = $this->run_cart_update_scenario(
             [
                 'detail'        => [ 'cartId' => $token ],
+                'binding'       => 'agent',
                 'cartResponses' => [ [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ] ],
             ]
         );
@@ -1369,6 +1390,102 @@ JS;
         );
         $this->assertCount( 1, $cart_reads );
         $this->assertSame( $token, $cart_reads[0]['headers']['Cart-Token'] );
+    }
+
+    public function test_cart_update_omits_widget_cart_token_when_server_merged_or_kept_existing_browser_session(): void {
+        $token = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidF8xIn0.sig';
+        // First update answers 'merged', follow-up update answers 'existing':
+        // neither read sends the agent's Cart-Token, so the Blocks store keeps
+        // receiving the browser's cart rather than the agent's guest cart.
+        $log = $this->run_cart_update_scenario(
+            [
+                'store'               => [ 'itemsCount' => 1 ],
+                'detail'              => [ 'cartId' => $token ],
+                'secondDetail'        => [ 'cartId' => $token ],
+                'secondUpdateAfterMs' => 15,
+                'waitMs'              => 70,
+                'bindings'            => [ 'merged', 'existing' ],
+                'cartResponses'       => [
+                    [ 'status' => 200, 'body' => [ 'items_count' => 3 ] ],
+                    [ 'status' => 200, 'body' => [ 'items_count' => 3 ] ],
+                ],
+            ]
+        );
+
+        $cart_reads = array_values(
+            array_filter(
+                $log['fetches'],
+                static function ( array $fetch ): bool {
+                    return false !== strpos( $fetch['url'], 'wc/store/v1/cart' );
+                }
+            )
+        );
+        $this->assertCount( 2, $cart_reads );
+        $this->assertArrayNotHasKey( 'Cart-Token', $cart_reads[0]['headers'] );
+        $this->assertArrayNotHasKey( 'Cart-Token', $cart_reads[1]['headers'] );
+        $this->assertSame( [ [ 'items_count' => 3 ], [ 'items_count' => 3 ] ], $log['received'] );
+    }
+
+    public function test_cart_update_serializes_overlapping_cart_session_binds_for_same_session(): void {
+        $token_a = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidF8xIiwibiI6MX0.sig';
+        $token_b = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoidF8xIiwibiI6Mn0.sig';
+
+        // Two overlapping updates for the same t_1 session where the first answers 'merged':
+        // the second waits for the first POST /gecx/v1/cart-session to settle before starting.
+        $merged_log = $this->run_cart_update_scenario(
+            [
+                'detail'              => [ 'cartId' => $token_a ],
+                'secondDetail'        => [ 'cartId' => $token_b ],
+                'secondUpdateAfterMs' => 5,
+                'cartSessionDelayMs'  => 20,
+                'waitMs'              => 90,
+                'bindings'            => [ 'merged', 'merged' ],
+                'cartResponses'       => [
+                    [ 'status' => 200, 'body' => [ 'items_count' => 2 ] ],
+                    [ 'status' => 200, 'body' => [ 'items_count' => 3 ] ],
+                ],
+            ]
+        );
+
+        $merged_binds = array_values(
+            array_filter(
+                $merged_log['fetches'],
+                static function ( array $fetch ): bool {
+                    return false !== strpos( $fetch['url'], '/gecx/v1/cart-session' );
+                }
+            )
+        );
+        $this->assertSame( 1, $merged_log['maxInFlightCartSession'] );
+        $this->assertCount( 2, $merged_binds );
+
+        // When the first in-flight bind answers 'agent', the queued second call reuses
+        // the bound session rather than issuing a redundant second POST.
+        $agent_log = $this->run_cart_update_scenario(
+            [
+                'detail'              => [ 'cartId' => $token_a ],
+                'secondDetail'        => [ 'cartId' => $token_b ],
+                'secondUpdateAfterMs' => 5,
+                'cartSessionDelayMs'  => 20,
+                'waitMs'              => 90,
+                'bindings'            => [ 'agent', 'agent' ],
+                'boundToken'          => $token_b,
+                'cartResponses'       => [
+                    [ 'status' => 200, 'body' => [ 'items_count' => 1 ] ],
+                    [ 'status' => 200, 'body' => [ 'items_count' => 2 ] ],
+                ],
+            ]
+        );
+
+        $agent_binds = array_values(
+            array_filter(
+                $agent_log['fetches'],
+                static function ( array $fetch ): bool {
+                    return false !== strpos( $fetch['url'], '/gecx/v1/cart-session' );
+                }
+            )
+        );
+        $this->assertSame( 1, $agent_log['maxInFlightCartSession'] );
+        $this->assertCount( 1, $agent_binds );
     }
 
     public function test_cart_update_binds_the_cart_session_before_reading_the_cart_without_reposting_the_bare_session_id(): void {

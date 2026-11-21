@@ -24,25 +24,41 @@ This plugin connects to the Gemini Enterprise for CX Software as a Service (SaaS
 
 ### Keeping a theme's cart in step with the agent
 
-After the agent changes the cart, the plugin refreshes WooCommerce cart fragments, updates the WooCommerce Blocks cart data store, and dispatches `wc-blocks_added_to_cart` or `wc-blocks_removed_from_cart`. Themes and side-cart plugins that need more can listen for the `gecx:cart-updated` event on `document.body`. Its `detail` carries `change` (`added`, `removed` or `updated`), `itemsCount`, `previousItemsCount` and the Store API `cart`.
+After the agent changes the cart, the plugin refreshes WooCommerce cart fragments, updates the WooCommerce Blocks cart data store, dispatches `wc-blocks_store_sync_required` (`{ detail: { type: 'from_@wordpress/data' } }`) so WooCommerce 10.4+'s Interactivity API mini-cart updates in place, and dispatches `wc-blocks_added_to_cart` or `wc-blocks_removed_from_cart`. Themes and side-cart plugins that need more can listen for the `gecx:cart-updated` event on `document.body`. Its `detail` carries `change` (`added`, `removed` or `updated`), `itemsCount`, `previousItemsCount` and the Store API `cart`.
 
 These filters adjust the behavior:
 
 * `gecx_enqueue_cart_fragments`: whether to load `wc-cart-fragments`. Defaults to true on classic themes and false on block themes.
-* `gecx_cart_badge_selectors`: CSS selectors of cart badges to write the item count into when the Blocks cart data store is not on the page. Only list elements whose whole text is the number.
+* `gecx_cart_badge_selectors`: CSS selectors of cart badges to write the item count into when the Blocks cart data store is not on the page (elements managed by the WordPress Interactivity API are skipped automatically). Only list elements whose whole text is the number.
 * `gecx_cart_refresh_native_events`: whether to dispatch the WooCommerce Blocks events. Default true.
 * `gecx_cart_refresh_legacy_events`: whether to trigger the jQuery `added_to_cart` and `removed_from_cart` events in place of the native ones. Default false, because many themes open a side cart on them.
 
 ### Putting the browser on the agent's cart
 
-A guest who has not added anything to their cart has no WooCommerce session cookie, so the agent can hold a cart the browser is not bound to, for example one the chat widget resumed from an earlier page view. A guest can also have a session whose cart is empty, which WooCommerce starts when the cart or checkout page is opened or prefetched, and the agent's changes do not reach that browser either. When the chat opens, and after each change the agent makes to the cart, the storefront script calls `POST /wp-json/gecx/v1/cart-session` with the agent's cart token (`cart_token`). After an agent change, the script reads the cart and dispatches `gecx:cart-updated` only once the route has answered. The route needs the `wp_rest` nonce and a same-origin request. It binds the browser to the agent's cart only when that cart holds items and the browser's own cart is empty, since setting a session cookie turns off full-page caching for the visitor and changes the `woocommerce-*` nonces already on the page. It answers `binding`:
+A guest who has not added anything to their cart has no WooCommerce session cookie, so the agent can hold a cart the browser is not bound to, for example one the chat widget resumed from an earlier page view. A guest can also have a session whose cart is empty, which WooCommerce starts when the cart or checkout page is opened or prefetched, and the agent's changes do not reach that browser either. When the chat opens, and after each change the agent makes to the cart, the storefront script calls `POST /wp-json/gecx/v1/cart-session` with the agent's cart token (`cart_token`). After an agent change, the script reads the cart and dispatches `gecx:cart-updated` only once the route has answered. The route needs the `wp_rest` nonce and a same-origin request. It binds the browser to the agent's cart when that cart holds items and the browser's own cart is empty (since setting a session cookie turns off full-page caching for the visitor and changes the `woocommerce-*` nonces already on the page), and merges the agent's guest cart lines into the browser's active cart on the server when the shopper already has items, is logged in, or uses a supported external session handler. It answers `binding`:
 
 * `agent`: the browser now uses the agent's cart. A token for that cart comes in the response's `Cart-Token` header, never in its body.
-* `existing`: the browser keeps its own cart: a logged-in shopper, a guest whose cart holds items (the chat widget adopts it by itself), or a browser already on the agent's cart.
+* `merged`: the agent's guest cart lines were merged into the browser's own cart (a cookied guest with items, a logged-in shopper without migrating their session cookie, or an external session handler such as Redis or Memcached), and the agent's guest cart was drained so repeat calls and fallback copies are idempotent. No `Cart-Token` header is returned for the browser's own session.
+* `existing`: the browser keeps its own cart unchanged (already on the agent's cart, or nothing in the agent's guest cart to merge).
 * `deferred`: nothing to bind yet; the script tries again the next time the chat opens or the agent changes the cart.
-* `unsupported`: the store's session handler is not one known to keep sessions in the WooCommerce sessions table, where the agent's cart is, so the browser cannot be bound; the script stops asking for the rest of the page view.
+* `unsupported`: the store's session handler cannot be bound or hydrated; the script stops asking for the rest of the page view.
 
-An `agent` or `existing` answer holds for the rest of the page view, so the script asks once per cart session and reads later changes to that cart straight away. When the chat opens and the browser is put on the agent's cart, the script reads it and refreshes the page's cart as it does after an agent change, but without the events that open a mini-cart drawer or side cart. After each answer, the script dispatches `gecx:cart-session-bound` on `document.body`, with `binding` in its `detail`.
+An `agent` answer holds for the rest of the page view, so the script asks once for that bound cart session and reads later changes straight away; `merged` and `existing` answers leave the browser on its own session, so later agent changes on a separate guest token ask the route again to merge new items. When the chat opens and the browser is bound (`agent`) or merged (`merged`), the script reads the cart and refreshes the page's cart surfaces without the events that open a mini-cart drawer or side cart. After each answer, the script dispatches `gecx:cart-session-bound` on `document.body`, with `binding` in its `detail`.
+
+### Caching and JavaScript optimization exclusions
+
+The plugin automatically adds opt-out attributes (`data-cfasync="false"`, `data-no-optimize="1"`, `data-no-defer="1"`) to its storefront script tags (`gecx-storefront-js`, `gecx-storefront-js-js-extra`, and `gecx-widget-script`) and registers exclusions on WP Rocket's `rocket_delay_js_exclusions` filter.
+
+If you use another optimization plugin, custom CDN rule, or aggressive JS-delay / REST-caching configuration (such as WP Fastest Cache, LiteSpeed Cache, or Autoptimize), configure two sets of exclusions so launcher placement and the 4-second cart-binding handoff never stall or read cached nonces:
+
+1. **Exclude the storefront and chat widget scripts from JavaScript delay, defer, and combine:**
+   * Storefront script path: `/wp-content/plugins/gemini-enterprise-for-cx/build/scripts/storefront/` (handles `gecx-storefront-js` and inline `gecxStorefrontConfig`)
+   * Chat widget bundle URL: `www.gstatic.com/gecx/chat-widget/woocommerce-chat-widget.js` (handle `gecx-widget-script`)
+   * **WP Rocket** (*File Optimization > Delay JavaScript execution / Combine JavaScript files*): handled automatically via `rocket_delay_js_exclusions`; if using Combine JS, also exclude `/wp-content/plugins/gemini-enterprise-for-cx/build/scripts/storefront/(.*)` and `gecxStorefrontConfig`.
+   * **WP Fastest Cache** (*Exclude > Exclude JS*): add Exclude JS rules containing `gemini-enterprise-for-cx/build/scripts/storefront` and `gstatic.com/gecx/chat-widget`.
+   * **LiteSpeed Cache** (*Page Optimization > Tuning > JS Excludes & JS Deferred / Delayed Excludes*): handled automatically via `data-no-optimize="1"` and `data-no-defer="1"`; if overriding tag attributes, add `gemini-enterprise-for-cx/build/scripts/storefront/`, `gecxStorefrontConfig`, and `gstatic.com/gecx/chat-widget/`.
+2. **Exclude `/wp-json/gecx/*` from page and REST API caching:**
+   * Exclude `/wp-json/gecx/*` (and `?rest_route=/gecx/*` on stores using plain permalinks) from full-page, edge/CDN, and REST response caches so `POST /wp-json/gecx/v1/auth-context`, `POST /wp-json/gecx/v1/refresh-token`, `POST /wp-json/gecx/v1/session`, and `POST /wp-json/gecx/v1/cart-session` always reach WordPress with fresh nonces and live WooCommerce session state.
 
 ### Placing the Price history link
 
