@@ -87,7 +87,7 @@ class Cart_Binding {
         $migrated_ledger = null;
 
         $user_row = self::read_session_row( $user_key );
-        if ( array_key_exists( 'gecx_merged', $user_row ) ) {
+        if ( isset( $user_row['gecx_merged'] ) ) {
             $migrated_ledger = self::extract_merged_ledger( $user_row['gecx_merged'] );
         } elseif ( function_exists( 'WC' ) && null !== WC()->session && is_object( WC()->session ) && method_exists( WC()->session, 'get_customer_id' ) && (string) WC()->session->get_customer_id() === $user_key && method_exists( WC()->session, 'get' ) ) {
             $in_mem = WC()->session->get( 'gecx_merged' );
@@ -96,7 +96,7 @@ class Cart_Binding {
             }
         } elseif ( '' !== $guest_key ) {
             $guest_row = self::read_session_row( $guest_key );
-            if ( array_key_exists( 'gecx_merged', $guest_row ) ) {
+            if ( isset( $guest_row['gecx_merged'] ) ) {
                 $migrated_ledger = self::extract_merged_ledger( $guest_row['gecx_merged'] );
             }
         }
@@ -115,8 +115,12 @@ class Cart_Binding {
         self::update_user_merged_ledger( $uid, $combined );
 
         if ( null !== $migrated_ledger ) {
-            if ( function_exists( 'WC' ) && null !== WC()->session && is_object( WC()->session ) && method_exists( WC()->session, 'get_customer_id' ) && (string) WC()->session->get_customer_id() === $user_key && method_exists( WC()->session, 'set' ) ) {
-                WC()->session->set( 'gecx_merged', empty( $combined ) ? null : $combined );
+            if ( function_exists( 'WC' ) && null !== WC()->session && is_object( WC()->session ) && method_exists( WC()->session, 'get_customer_id' ) && (string) WC()->session->get_customer_id() === $user_key ) {
+                if ( empty( $combined ) ) {
+                    self::unset_in_memory_session_ledger( WC()->session );
+                } elseif ( method_exists( WC()->session, 'set' ) ) {
+                    WC()->session->set( 'gecx_merged', $combined );
+                }
             }
             if ( ! empty( $user_row ) ) {
                 self::set_session_row_ledger( $user_key, $combined );
@@ -148,15 +152,28 @@ class Cart_Binding {
         }
 
         if ( function_exists( 'WC' ) && null !== WC()->session && is_object( WC()->session ) ) {
-            if ( method_exists( WC()->session, 'set' ) ) {
-                WC()->session->set( 'gecx_merged', null );
-            }
+            self::unset_in_memory_session_ledger( WC()->session );
             $customer_id = method_exists( WC()->session, 'get_customer_id' ) ? (string) WC()->session->get_customer_id() : '';
             if ( '' !== $customer_id && self::is_table_backed( WC()->session ) ) {
                 if ( $clear_meta || 0 === strpos( $customer_id, 't_' ) ) {
                     self::set_session_row_ledger( $customer_id, [] );
                 }
             }
+        }
+    }
+
+    /**
+     * Unsets `gecx_merged` on an active `WC()->session` via `__unset()` so
+     * `WC_Session::save_data()` removes the key rather than persisting a `null`
+     * entry.
+     *
+     * @param object $session WC()->session instance.
+     */
+    private static function unset_in_memory_session_ledger( $session ): void {
+        if ( method_exists( $session, '__unset' ) ) {
+            $session->__unset( 'gecx_merged' );
+        } elseif ( method_exists( $session, 'set' ) ) {
+            $session->set( 'gecx_merged', null );
         }
     }
 
@@ -760,7 +777,7 @@ class Cart_Binding {
 
         $meta_ledger     = self::read_user_merged_ledger( $user_id );
         $fallback_ledger = null;
-        if ( array_key_exists( 'gecx_merged', $row ) ) {
+        if ( isset( $row['gecx_merged'] ) ) {
             $fallback_ledger = self::extract_merged_ledger( $row['gecx_merged'] );
         } elseif ( null !== WC()->session && (string) WC()->session->get_customer_id() === $user_key && method_exists( WC()->session, 'get' ) ) {
             $mem_ledger = WC()->session->get( 'gecx_merged' );
