@@ -546,13 +546,23 @@ class Cart_Binding {
                 return self::with_merge_lock(
                     $user_key,
                     static function () use ( $user_id, $agent_key ) {
+                        $session_ledger   = self::extract_merged_ledger( WC()->session->get( 'gecx_merged' ) );
+                        $user_meta_ledger = self::read_user_merged_ledger( $user_id );
+                        if ( ! empty( $user_meta_ledger ) ) {
+                            $combined_ledger = array_replace( $session_ledger, $user_meta_ledger );
+                            if ( count( $combined_ledger ) > 16 ) {
+                                $combined_ledger = array_slice( $combined_ledger, -16, 16, true );
+                            }
+                            WC()->session->set( 'gecx_merged', $combined_ledger );
+                        }
                         $response = self::sync_agent_into_browser_session( WC()->session, $agent_key, false );
                         if ( is_wp_error( $response ) ) {
                             return $response;
                         }
                         $merged_cart   = self::extract_cart_lines( WC()->session->get( 'cart' ) );
                         $merged_ledger = self::extract_merged_ledger( WC()->session->get( 'gecx_merged' ) );
-                        self::update_persistent_user_cart( $user_id, $merged_cart, $merged_ledger );
+                        self::update_persistent_user_cart( $user_id, $merged_cart );
+                        self::update_user_merged_ledger( $user_id, $merged_ledger );
                         return $response;
                     }
                 );
@@ -584,13 +594,17 @@ class Cart_Binding {
                 $ledger = self::record_synced_agent_entry( $ledger, $agent_key, $diff['synced'] );
 
                 if ( ! $diff['changed'] && $ledger === $before ) {
+                    if ( $ledger !== $user_state['meta_ledger'] ) {
+                        self::update_user_merged_ledger( $user_id, $ledger );
+                    }
                     return self::respond( 'existing' );
                 }
 
                 if ( ! self::write_session_row_cart( $user_key, $diff['cart'], $gecx_session_id, $ledger ) ) {
                     return new \WP_Error( 'cart_merge_failed', __( 'Could not persist merged cart.', 'gemini-enterprise-for-cx' ), [ 'status' => 500 ] );
                 }
-                self::update_persistent_user_cart( $user_id, $diff['cart'], $ledger );
+                self::update_persistent_user_cart( $user_id, $diff['cart'] );
+                self::update_user_merged_ledger( $user_id, $ledger );
                 if ( null !== WC()->session && (string) WC()->session->get_customer_id() === $user_key && method_exists( WC()->session, 'set' ) ) {
                     WC()->session->set( 'cart', $diff['cart'] );
                     WC()->session->set( 'gecx_merged', $ledger );
@@ -608,10 +622,14 @@ class Cart_Binding {
 
     /**
      * Reads a logged-in user's existing cart lines and `gecx_merged` ledger
-     * without initializing WC()->session, preferring the fresh database row.
+     * without initializing WC()->session, preferring dedicated user meta
+     * (`_gecx_merged_{blog_id}`) for the ledger so WooCommerce's login cookie
+     * migration (`WC_Session_Handler::init_session_cookie()`) and logout/login
+     * persistent-cart rebuilds (`WC_Cart_Session::persistent_cart_update()`)
+     * never wipe merged history.
      *
      * @param int $user_id WordPress user ID.
-     * @return array `['cart' => array, 'ledger' => array]`
+     * @return array `['cart' => array, 'ledger' => array, 'meta_ledger' => array]`
      */
     private static function read_user_cart_state( int $user_id ): array {
         $user_key   = (string) $user_id;
@@ -633,41 +651,85 @@ class Cart_Binding {
             $cart = self::extract_cart_lines( $saved_meta['cart'] );
         }
 
-        $ledger = null;
+        $meta_ledger     = self::read_user_merged_ledger( $user_id );
+        $fallback_ledger = null;
         if ( array_key_exists( 'gecx_merged', $row ) ) {
-            $ledger = self::extract_merged_ledger( $row['gecx_merged'] );
+            $fallback_ledger = self::extract_merged_ledger( $row['gecx_merged'] );
         } elseif ( null !== WC()->session && (string) WC()->session->get_customer_id() === $user_key && method_exists( WC()->session, 'get' ) ) {
             $mem_ledger = WC()->session->get( 'gecx_merged' );
             if ( null !== $mem_ledger ) {
-                $ledger = self::extract_merged_ledger( $mem_ledger );
+                $fallback_ledger = self::extract_merged_ledger( $mem_ledger );
             }
         }
-        if ( null === $ledger && is_array( $saved_meta ) && isset( $saved_meta['gecx_merged'] ) ) {
-            $ledger = self::extract_merged_ledger( $saved_meta['gecx_merged'] );
+        if ( null === $fallback_ledger && is_array( $saved_meta ) && isset( $saved_meta['gecx_merged'] ) ) {
+            $fallback_ledger = self::extract_merged_ledger( $saved_meta['gecx_merged'] );
+        }
+
+        $ledger = is_array( $fallback_ledger )
+            ? array_replace( $fallback_ledger, $meta_ledger )
+            : $meta_ledger;
+        if ( count( $ledger ) > 16 ) {
+            $ledger = array_slice( $ledger, -16, 16, true );
         }
 
         return [
-            'cart'   => is_array( $cart ) ? $cart : [],
-            'ledger' => is_array( $ledger ) ? $ledger : [],
+            'cart'        => is_array( $cart ) ? $cart : [],
+            'ledger'      => $ledger,
+            'meta_ledger' => $meta_ledger,
         ];
     }
 
     /**
-     * Updates a logged-in user's persistent cart user meta alongside its
-     * `gecx_merged` ledger.
+     * User-meta key storing a logged-in shopper's `gecx_merged` ledger for the
+     * current site, kept separate from `_woocommerce_persistent_cart_{blog_id}`
+     * which WooCommerce rewrites without custom keys.
+     *
+     * @return string
+     */
+    private static function get_user_merged_ledger_meta_key(): string {
+        $blog_id = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 1;
+        return '_gecx_merged_' . $blog_id;
+    }
+
+    /**
+     * Reads a logged-in user's dedicated `_gecx_merged_{blog_id}` ledger.
+     *
+     * @param int $user_id WordPress user ID.
+     * @return array
+     */
+    private static function read_user_merged_ledger( int $user_id ): array {
+        if ( $user_id <= 0 || ! function_exists( 'get_user_meta' ) ) {
+            return [];
+        }
+        return self::extract_merged_ledger( get_user_meta( $user_id, self::get_user_merged_ledger_meta_key(), true ) );
+    }
+
+    /**
+     * Persists a logged-in user's dedicated `_gecx_merged_{blog_id}` ledger.
+     *
+     * @param int   $user_id WordPress user ID.
+     * @param array $ledger  Per-agent merged line ledger.
+     */
+    private static function update_user_merged_ledger( int $user_id, array $ledger ): void {
+        if ( $user_id > 0 && function_exists( 'update_user_meta' ) ) {
+            update_user_meta( $user_id, self::get_user_merged_ledger_meta_key(), $ledger );
+        }
+    }
+
+    /**
+     * Updates a logged-in user's persistent cart user meta in WooCommerce's
+     * native `['cart' => ...]` format.
      *
      * @param int   $user_id    WordPress user ID.
      * @param array $cart_lines Session cart lines.
-     * @param array $ledger     Per-agent merged line ledger.
      */
-    private static function update_persistent_user_cart( int $user_id, array $cart_lines, array $ledger = [] ): void {
+    private static function update_persistent_user_cart( int $user_id, array $cart_lines ): void {
         if ( function_exists( 'update_user_meta' ) && function_exists( 'get_current_blog_id' ) ) {
             update_user_meta(
                 $user_id,
                 '_woocommerce_persistent_cart_' . get_current_blog_id(),
                 [
-                    'cart'        => $cart_lines,
-                    'gecx_merged' => $ledger,
+                    'cart' => $cart_lines,
                 ]
             );
         }
@@ -811,39 +873,53 @@ class Cart_Binding {
             }
         }
 
-        // First apply quantity reductions and full removals from previously synced lines.
+        // First apply quantity reductions and full removals from previously synced lines,
+        // subtracting at most the quantity actually applied to the target cart.
         foreach ( $prev_synced as $track_id => $prev_entry ) {
             if ( ! is_array( $prev_entry ) ) {
                 continue;
             }
-            $prev_qty = isset( $prev_entry['quantity'] ) ? (float) $prev_entry['quantity'] : 0.0;
-            if ( $prev_qty <= 0 ) {
+            $prev_applied = isset( $prev_entry['quantity'] ) ? max( 0.0, (float) $prev_entry['quantity'] ) : 0.0;
+            $prev_agent   = isset( $prev_entry['agent_qty'] ) ? max( 0.0, (float) $prev_entry['agent_qty'] ) : $prev_applied;
+            if ( $prev_agent <= 0 && $prev_applied <= 0 ) {
                 continue;
             }
             $curr_qty = isset( $current_agent[ $track_id ] ) ? (float) $current_agent[ $track_id ]['quantity'] : 0.0;
-            if ( $curr_qty >= $prev_qty ) {
+            if ( $curr_qty >= $prev_agent ) {
                 continue;
             }
 
-            $remove_qty = $prev_qty - $curr_qty;
-            $match_key  = self::find_synced_target_key( $merged, $signature_map, $prev_entry );
+            $desired_applied = min( $prev_applied, $curr_qty );
+            $remove_qty      = $prev_applied - $desired_applied;
+            $match_key       = self::find_synced_target_key( $merged, $signature_map, $prev_entry );
+            $remaining_line  = 0.0;
+
             if ( null !== $match_key ) {
-                $existing_qty   = isset( $merged[ $match_key ]['quantity'] ) ? (float) $merged[ $match_key ]['quantity'] : 0.0;
-                $new_target_qty = $existing_qty - $remove_qty;
-                if ( $new_target_qty <= 0 ) {
-                    unset( $merged[ $match_key ] );
-                    $signature_map = self::build_signature_map( $merged );
+                $existing_qty = isset( $merged[ $match_key ]['quantity'] ) ? (float) $merged[ $match_key ]['quantity'] : 0.0;
+                if ( $remove_qty > 0 && $existing_qty > 0 ) {
+                    $actual_removed = min( $existing_qty, $remove_qty );
+                    $new_target_qty = $existing_qty - $actual_removed;
+                    if ( $new_target_qty <= 0 ) {
+                        unset( $merged[ $match_key ] );
+                        $signature_map  = self::build_signature_map( $merged );
+                        $remaining_line = 0.0;
+                    } else {
+                        $merged[ $match_key ]['quantity'] = self::normalize_qty( $new_target_qty );
+                        self::strip_cached_line_totals( $merged[ $match_key ] );
+                        $remaining_line = $new_target_qty;
+                    }
+                    $changed = true;
                 } else {
-                    $merged[ $match_key ]['quantity'] = self::normalize_qty( $new_target_qty );
-                    self::strip_cached_line_totals( $merged[ $match_key ] );
+                    $remaining_line = $existing_qty;
                 }
-                $changed = true;
             }
 
             if ( $curr_qty > 0 ) {
+                $new_applied              = ( null !== $match_key ) ? min( $remaining_line, $desired_applied ) : 0.0;
                 $next_synced[ $track_id ] = [
-                    'quantity'   => self::normalize_qty( $curr_qty ),
-                    'target_key' => null !== $match_key ? $match_key : (string) ( $prev_entry['target_key'] ?? '' ),
+                    'quantity'   => self::normalize_qty( $new_applied ),
+                    'agent_qty'  => self::normalize_qty( $curr_qty ),
+                    'target_key' => ( null !== $match_key && isset( $merged[ $match_key ] ) ) ? $match_key : '',
                     'source_key' => (string) ( $current_agent[ $track_id ]['source_key'] ?? ( $prev_entry['source_key'] ?? '' ) ),
                     'sig'        => (string) ( $current_agent[ $track_id ]['sig'] ?? ( $prev_entry['sig'] ?? '' ) ),
                     'line'       => self::minimal_line_identity( $current_agent[ $track_id ]['line'] ),
@@ -851,21 +927,23 @@ class Cart_Binding {
             }
         }
 
-        // Next apply unchanged entries and positive deltas (new lines and quantity increases).
+        // Next apply unchanged entries and positive deltas (new lines and quantity increases),
+        // recording only the quantity actually applied alongside the seen agent quantity.
         foreach ( $current_agent as $track_id => $item ) {
-            $curr_qty   = (float) $item['quantity'];
-            $prev_entry = isset( $prev_synced[ $track_id ] ) && is_array( $prev_synced[ $track_id ] ) ? $prev_synced[ $track_id ] : null;
-            $prev_qty   = null !== $prev_entry && isset( $prev_entry['quantity'] ) ? (float) $prev_entry['quantity'] : 0.0;
+            $curr_qty     = (float) $item['quantity'];
+            $prev_entry   = isset( $prev_synced[ $track_id ] ) && is_array( $prev_synced[ $track_id ] ) ? $prev_synced[ $track_id ] : null;
+            $prev_applied = null !== $prev_entry && isset( $prev_entry['quantity'] ) ? max( 0.0, (float) $prev_entry['quantity'] ) : 0.0;
+            $prev_agent   = null !== $prev_entry && isset( $prev_entry['agent_qty'] ) ? max( 0.0, (float) $prev_entry['agent_qty'] ) : $prev_applied;
 
-            if ( $curr_qty < $prev_qty ) {
+            if ( $curr_qty < $prev_agent ) {
                 continue;
             }
-            if ( $curr_qty === $prev_qty && null !== $prev_entry ) {
+            if ( $curr_qty === $prev_agent && null !== $prev_entry ) {
                 $next_synced[ $track_id ] = $prev_entry;
                 continue;
             }
 
-            $delta_qty    = $curr_qty - $prev_qty;
+            $delta_qty    = $curr_qty - $prev_agent;
             $line         = $item['line'];
             $source_key   = $item['source_key'];
             $is_composite = $item['is_composite'];
@@ -880,8 +958,9 @@ class Cart_Binding {
                 if ( $product instanceof \WC_Product ) {
                     if ( 'trash' === $product->get_status() ) {
                         $next_synced[ $track_id ] = [
-                            'quantity'   => self::normalize_qty( $curr_qty ),
-                            'target_key' => '',
+                            'quantity'   => self::normalize_qty( $prev_applied ),
+                            'agent_qty'  => self::normalize_qty( $curr_qty ),
+                            'target_key' => null !== $prev_entry ? (string) ( $prev_entry['target_key'] ?? '' ) : '',
                             'source_key' => $source_key,
                             'sig'        => $sig,
                             'line'       => self::minimal_line_identity( $line ),
@@ -915,12 +994,15 @@ class Cart_Binding {
             if ( null !== $target_key ) {
                 $before_qty = isset( $merged[ $target_key ]['quantity'] ) ? (float) $merged[ $target_key ]['quantity'] : 0.0;
                 self::combine_into_existing_cart_line( $merged, $target_key, $delta_qty, $sold_individually, $stock_cap );
-                $after_qty = isset( $merged[ $target_key ]['quantity'] ) ? (float) $merged[ $target_key ]['quantity'] : 0.0;
-                if ( $after_qty !== $before_qty ) {
+                $after_qty      = isset( $merged[ $target_key ]['quantity'] ) ? (float) $merged[ $target_key ]['quantity'] : 0.0;
+                $actually_added = max( 0.0, $after_qty - $before_qty );
+                if ( $actually_added > 0 ) {
                     $changed = true;
                 }
+                $new_applied              = min( $after_qty, $prev_applied + $actually_added );
                 $next_synced[ $track_id ] = [
-                    'quantity'   => self::normalize_qty( $curr_qty ),
+                    'quantity'   => self::normalize_qty( $new_applied ),
+                    'agent_qty'  => self::normalize_qty( $curr_qty ),
                     'target_key' => $target_key,
                     'source_key' => $source_key,
                     'sig'        => $sig,
@@ -936,7 +1018,8 @@ class Cart_Binding {
             if ( null !== $stock_cap ) {
                 if ( $stock_cap <= 0 ) {
                     $next_synced[ $track_id ] = [
-                        'quantity'   => self::normalize_qty( $curr_qty ),
+                        'quantity'   => 0,
+                        'agent_qty'  => self::normalize_qty( $curr_qty ),
                         'target_key' => '',
                         'source_key' => $source_key,
                         'sig'        => $sig,
@@ -965,7 +1048,8 @@ class Cart_Binding {
             }
             $changed                  = true;
             $next_synced[ $track_id ] = [
-                'quantity'   => self::normalize_qty( $curr_qty ),
+                'quantity'   => self::normalize_qty( $add_qty ),
+                'agent_qty'  => self::normalize_qty( $curr_qty ),
                 'target_key' => $dest_key,
                 'source_key' => $source_key,
                 'sig'        => $sig,

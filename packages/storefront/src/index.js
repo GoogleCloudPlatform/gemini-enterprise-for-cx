@@ -1301,14 +1301,17 @@ function gecxRefreshCartSurfaces(cartToken, directCart, eventCount, ready, allow
 
   ready
       .then(function(binding) {
-        // When /cart-session merged into the browser's own session ('merged') or
-        // left the browser on its own separate session ('existing' when not
-        // bound in gecxBoundAgentSessions), omit the agent's Cart-Token so the
-        // Store API answers with the browser's cart rather than the agent's.
+        // Send the agent's Cart-Token only when /cart-session bound the browser
+        // to the agent's guest session ('agent', or remembered in
+        // gecxBoundAgentSessions). Any other outcome ('merged', 'existing',
+        // 'deferred', 'unsupported', or '' after a failed bind) leaves the
+        // browser on its own session, so reading with the agent's Cart-Token
+        // would hand the Blocks store the agent's guest cart instead of the
+        // shopper's.
         const sessionKey = cartToken ? gecxCartTokenSession(cartToken) : '';
-        const dropToken = binding === 'merged' ||
-            (binding === 'existing' && !gecxBoundAgentSessions[sessionKey]);
-        return gecxFetchCart(dropToken ? '' : cartToken);
+        const sendToken = binding === 'agent' ||
+            (sessionKey !== '' && !!gecxBoundAgentSessions[sessionKey]);
+        return gecxFetchCart(sendToken ? cartToken : '');
       })
       .then(finish, function(err) {
         gecxReportError('cart refresh', err);

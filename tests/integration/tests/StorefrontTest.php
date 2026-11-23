@@ -1118,6 +1118,7 @@ const on = (target) => (name, cb) => { (listeners[target][name] = listeners[targ
 
 let cartResponses = scenario.cartResponses.slice();
 let bindings = Array.isArray(scenario.bindings) ? scenario.bindings.slice() : null;
+let bindingStatuses = Array.isArray(scenario.bindingStatuses) ? scenario.bindingStatuses.slice() : null;
 let inFlightCartSession = 0;
 function fakeFetch(url, init) {
   log.fetches.push({ url: url, method: (init && init.method) || 'GET', headers: (init && init.headers) || {} });
@@ -1131,15 +1132,16 @@ function fakeFetch(url, init) {
     if (inFlightCartSession > log.maxInFlightCartSession) {
       log.maxInFlightCartSession = inFlightCartSession;
     }
+    const status = bindingStatuses ? (bindingStatuses.shift() || 200) : 200;
     const binding = bindings ? (bindings.shift() || 'existing') : (scenario.binding || 'existing');
     const token = binding === 'agent' ? (scenario.boundToken || null) : null;
     const finish = () => {
       inFlightCartSession--;
       return {
-        ok: true,
-        status: 200,
+        ok: status >= 200 && status < 300,
+        status: status,
         headers: { get: (name) => String(name).toLowerCase() === 'cart-token' ? token : null },
-        json: () => Promise.resolve({ binding: binding })
+        json: () => Promise.resolve(status >= 200 && status < 300 ? { binding: binding } : { code: 'cart_merge_failed' })
       };
     };
     if (scenario.cartSessionDelayMs) {
@@ -1424,6 +1426,44 @@ JS;
         $this->assertArrayNotHasKey( 'Cart-Token', $cart_reads[0]['headers'] );
         $this->assertArrayNotHasKey( 'Cart-Token', $cart_reads[1]['headers'] );
         $this->assertSame( [ [ 'items_count' => 3 ], [ 'items_count' => 3 ] ], $log['received'] );
+
+        // Follow-up binds that answer 'deferred' (GET_LOCK timeout), 'unsupported',
+        // or HTTP 500 ('cart_merge_failed') also omit the agent's Cart-Token so the
+        // Blocks store never receives the agent's guest cart over the shopper's.
+        foreach (
+            [
+                [ 'bindings' => [ 'merged', 'deferred' ], 'statuses' => [ 200, 200 ] ],
+                [ 'bindings' => [ 'merged', 'unsupported' ], 'statuses' => [ 200, 200 ] ],
+                [ 'bindings' => [ 'merged', 'merged' ], 'statuses' => [ 200, 500 ] ],
+            ] as $case
+        ) {
+            $fallback_log = $this->run_cart_update_scenario(
+                [
+                    'store'               => [ 'itemsCount' => 1 ],
+                    'detail'              => [ 'cartId' => $token ],
+                    'secondDetail'        => [ 'cartId' => $token ],
+                    'secondUpdateAfterMs' => 15,
+                    'waitMs'              => 70,
+                    'bindings'            => $case['bindings'],
+                    'bindingStatuses'     => $case['statuses'],
+                    'cartResponses'       => [
+                        [ 'status' => 200, 'body' => [ 'items_count' => 3 ] ],
+                        [ 'status' => 200, 'body' => [ 'items_count' => 3 ] ],
+                    ],
+                ]
+            );
+            $reads = array_values(
+                array_filter(
+                    $fallback_log['fetches'],
+                    static function ( array $fetch ): bool {
+                        return false !== strpos( $fetch['url'], 'wc/store/v1/cart' );
+                    }
+                )
+            );
+            $this->assertCount( 2, $reads );
+            $this->assertArrayNotHasKey( 'Cart-Token', $reads[0]['headers'] );
+            $this->assertArrayNotHasKey( 'Cart-Token', $reads[1]['headers'] );
+        }
     }
 
     public function test_cart_update_serializes_overlapping_cart_session_binds_for_same_session(): void {
