@@ -1275,4 +1275,332 @@ class CartBindingTest extends RestTestCase {
         $this->assertArrayHasKey( 'shopper_solo', WC()->session->get( 'cart' ) );
         $this->assertSame( 1, WC()->session->get( 'cart' )['shopper_solo']['quantity'] );
     }
+
+    public function test_guest_merged_ledger_wins_over_stale_user_meta_on_relogin_migration(): void {
+        $this->ensure_user_with_id( 42, 'shopper42', 'customer', 'shopper@example.com' );
+        wp_set_current_user( 42 );
+
+        $make_product = static function ( string $name ): int {
+            $product = new \WC_Product_Simple();
+            $product->set_name( $name );
+            $product->set_regular_price( '10' );
+            $product->set_status( 'publish' );
+            return $product->save();
+        };
+
+        $prod_u = $make_product( 'User U' );
+        $prod_a = $make_product( 'Agent A' );
+        $prod_b = $make_product( 'Guest B' );
+        $prod_c = $make_product( 'Agent C' );
+
+        $ref_cart = new \WC_Cart();
+        $key_u    = $ref_cart->generate_cart_id( $prod_u, 0, [], [] );
+        $key_a    = $ref_cart->generate_cart_id( $prod_a, 0, [], [] );
+        $key_b    = $ref_cart->generate_cart_id( $prod_b, 0, [], [] );
+        $key_c    = $ref_cart->generate_cart_id( $prod_c, 0, [], [] );
+
+        $blog_id   = (int) get_current_blog_id();
+        $user_init = [
+            $key_u => [ 'key' => $key_u, 'product_id' => $prod_u, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+        ];
+        $this->given_session_with_cart( '42', $user_init );
+        update_user_meta( 42, '_woocommerce_persistent_cart_' . $blog_id, [ 'cart' => $user_init ] );
+        $this->given_session_with_cart(
+            't_agent_cart',
+            [
+                $key_a => [ 'key' => $key_a, 'product_id' => $prod_a, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+            ]
+        );
+        WC()->session = null;
+        WC()->cart    = null;
+
+        // 1. Logged in with {U}, agent {A}: bind gives {A:1, U:1}, user meta records A.
+        $agent_token = $this->generate_jwt( 't_agent_cart' );
+        $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
+
+        // 2. Log out via real destroy_session().
+        WC()->customer = new \WC_Customer( 42, true );
+        WC()->session  = new WC_Session_Handler();
+        WC()->session->init_session_cookie();
+        WC()->cart = new \WC_Cart();
+        WC()->session->destroy_session();
+        wp_set_current_user( 0 );
+        $_COOKIE       = [];
+        $this->cookies = [];
+
+        // Guest adds B; agent adds C; guest bind merges into guest row -> {A, B, C} with row ledger {A, C}.
+        $guest_key = 't_post_logout_guest';
+        $guest_b   = [
+            $key_b => [ 'key' => $key_b, 'product_id' => $prod_b, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+        ];
+        $this->given_session_with_cart( $guest_key, $guest_b );
+        $signer   = new WC_Session_Handler();
+        $point_at = \Closure::bind(
+            function ( string $key, array $data ): void {
+                $this->_customer_id = $key;
+                $this->_data        = $data;
+            },
+            $signer,
+            WC_Session_Handler::class
+        );
+        $point_at( $guest_key, [ 'cart' => maybe_serialize( $guest_b ) ] );
+        $signer->set_session_expiration();
+        $signer->set_customer_session_cookie( true );
+
+        $cookie_name             = 'wp_woocommerce_session_' . COOKIEHASH;
+        $_COOKIE[ $cookie_name ] = $this->cookies[ $cookie_name ]['value'];
+        $this->cookies           = [];
+        WC()->session            = new WC_Session_Handler();
+        WC()->session->init_session_cookie();
+        WC()->cart = null;
+
+        $this->given_session_with_cart(
+            't_agent_cart',
+            [
+                $key_a => [ 'key' => $key_a, 'product_id' => $prod_a, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+                $key_c => [ 'key' => $key_c, 'product_id' => $prod_c, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+            ]
+        );
+        $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
+
+        // 3. Log back in: init_session_cookie() + get_cart_from_session() give {A, B, C, U}.
+        wp_set_current_user( 42 );
+        update_user_meta( 42, '_woocommerce_load_saved_cart_after_login', 1 );
+        WC()->customer = new \WC_Customer( 42, true );
+        WC()->session  = new WC_Session_Handler();
+        WC()->session->init_session_cookie();
+        if ( isset( $this->cookies[ $cookie_name ]['value'] ) ) {
+            $_COOKIE[ $cookie_name ] = $this->cookies[ $cookie_name ]['value'];
+        }
+        WC()->cart = new \WC_Cart();
+        WC()->cart->get_cart_from_session();
+        WC()->session->save_data();
+
+        // Next bind answers 'existing' with 1 of each (C is not double-added).
+        WC()->session = null;
+        WC()->cart    = null;
+        $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
+
+        $final_cart = maybe_unserialize( $this->get_wc_session( '42' )['cart'] ?? '' );
+        $this->assertCount( 4, $final_cart );
+        $this->assertSame( 1, $final_cart[ $key_a ]['quantity'] );
+        $this->assertSame( 1, $final_cart[ $key_b ]['quantity'] );
+        $this->assertSame( 1, $final_cart[ $key_c ]['quantity'] );
+        $this->assertSame( 1, $final_cart[ $key_u ]['quantity'] );
+    }
+
+    public function test_login_migrating_agent_own_session_never_removes_agent_lines_or_later_additions(): void {
+        $this->ensure_user_with_id( 42, 'shopper42', 'customer', 'shopper@example.com' );
+        wp_set_current_user( 42 );
+
+        $make_product = static function ( string $name ): int {
+            $product = new \WC_Product_Simple();
+            $product->set_name( $name );
+            $product->set_regular_price( '10' );
+            $product->set_status( 'publish' );
+            return $product->save();
+        };
+
+        $prod_u = $make_product( 'User U' );
+        $prod_a = $make_product( 'Agent A' );
+        $prod_c = $make_product( 'Agent C' );
+        $prod_d = $make_product( 'Agent D' );
+
+        $ref_cart    = new \WC_Cart();
+        $key_u       = $ref_cart->generate_cart_id( $prod_u, 0, [], [] );
+        $key_a       = $ref_cart->generate_cart_id( $prod_a, 0, [], [] );
+        $key_c       = $ref_cart->generate_cart_id( $prod_c, 0, [], [] );
+        $key_d       = $ref_cart->generate_cart_id( $prod_d, 0, [], [] );
+        $blog_id     = (int) get_current_blog_id();
+        $cookie_name = 'wp_woocommerce_session_' . COOKIEHASH;
+
+        // Sequence 1: Logged in {U}, agent {A} -> bind {A:1, U:1} -> logout ->
+        // open chat ('agent') -> log in (migrates and deletes t_agent) -> bind keeps {A:1, U:1}.
+        $user_init = [
+            $key_u => [ 'key' => $key_u, 'product_id' => $prod_u, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+        ];
+        $this->given_session_with_cart( '42', $user_init );
+        update_user_meta( 42, '_woocommerce_persistent_cart_' . $blog_id, [ 'cart' => $user_init ] );
+        $this->given_session_with_cart(
+            't_agent_direct',
+            [
+                $key_a => [ 'key' => $key_a, 'product_id' => $prod_a, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+            ]
+        );
+        WC()->session = null;
+        WC()->cart    = null;
+
+        $direct_token = $this->generate_jwt( 't_agent_direct' );
+        $this->assertSame( self::MERGED, $this->bind( $direct_token ) );
+
+        WC()->customer = new \WC_Customer( 42, true );
+        WC()->session  = new WC_Session_Handler();
+        WC()->session->init_session_cookie();
+        WC()->cart = new \WC_Cart();
+        WC()->session->destroy_session();
+        wp_set_current_user( 0 );
+        $_COOKIE       = [];
+        $this->cookies = [];
+        WC()->session  = null;
+        WC()->cart     = null;
+
+        // Logged-out shopper opens chat: empty browser cart binds straight to t_agent_direct ('agent').
+        $this->assertSame( 'agent', $this->bind( $direct_token )['binding'] );
+        $_COOKIE[ $cookie_name ] = $this->cookies[ $cookie_name ]['value'];
+        $this->cookies           = [];
+
+        // Login migrates t_agent_direct into row 42 and deletes row t_agent_direct.
+        wp_set_current_user( 42 );
+        update_user_meta( 42, '_woocommerce_load_saved_cart_after_login', 1 );
+        WC()->customer = new \WC_Customer( 42, true );
+        WC()->session  = new WC_Session_Handler();
+        WC()->session->init_session_cookie();
+        WC()->cart = new \WC_Cart();
+        WC()->cart->get_cart_from_session();
+        WC()->session->save_data();
+        $this->assertNull( $this->get_wc_session( 't_agent_direct' ) );
+
+        WC()->session = null;
+        WC()->cart    = null;
+        $this->assertSame( self::EXISTING, $this->bind( $direct_token ) );
+
+        $row_cart = maybe_unserialize( $this->get_wc_session( '42' )['cart'] ?? '' );
+        $this->assertCount( 2, $row_cart );
+        $this->assertSame( 1, $row_cart[ $key_a ]['quantity'] );
+        $this->assertSame( 1, $row_cart[ $key_u ]['quantity'] );
+        $meta_cart = get_user_meta( 42, '_woocommerce_persistent_cart_' . $blog_id, true )['cart'] ?? [];
+        $this->assertCount( 2, $meta_cart );
+        $this->assertSame( 1, $meta_cart[ $key_a ]['quantity'] );
+
+        // Variant: agent adds C before login, then after login adds D (recreating its row).
+        // Neither A nor C is subtracted when D merges.
+        WC()->customer = new \WC_Customer( 42, true );
+        WC()->session  = new WC_Session_Handler();
+        WC()->session->init_session_cookie();
+        WC()->cart = new \WC_Cart();
+        WC()->session->destroy_session();
+        wp_set_current_user( 0 );
+        $_COOKIE       = [];
+        $this->cookies = [];
+        WC()->session  = null;
+        WC()->cart     = null;
+
+        $variant_token = $this->generate_jwt( 't_agent_variant' );
+        $this->given_session_with_cart(
+            't_agent_variant',
+            [
+                $key_a => [ 'key' => $key_a, 'product_id' => $prod_a, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+            ]
+        );
+        wp_set_current_user( 42 );
+        $this->given_session_with_cart( '42', $user_init );
+        update_user_meta( 42, '_woocommerce_persistent_cart_' . $blog_id, [ 'cart' => $user_init ] );
+        delete_user_meta( 42, '_gecx_merged_' . $blog_id );
+        $this->assertSame( self::MERGED, $this->bind( $variant_token ) );
+
+        WC()->customer = new \WC_Customer( 42, true );
+        WC()->session  = new WC_Session_Handler();
+        WC()->session->init_session_cookie();
+        WC()->cart = new \WC_Cart();
+        WC()->session->destroy_session();
+        wp_set_current_user( 0 );
+        $_COOKIE       = [];
+        $this->cookies = [];
+        WC()->session  = null;
+        WC()->cart     = null;
+
+        $this->assertSame( 'agent', $this->bind( $variant_token )['binding'] );
+        $_COOKIE[ $cookie_name ] = $this->cookies[ $cookie_name ]['value'];
+        $this->cookies           = [];
+
+        // Agent adds C before login.
+        $this->given_session_with_cart(
+            't_agent_variant',
+            [
+                $key_a => [ 'key' => $key_a, 'product_id' => $prod_a, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+                $key_c => [ 'key' => $key_c, 'product_id' => $prod_c, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+            ]
+        );
+
+        wp_set_current_user( 42 );
+        update_user_meta( 42, '_woocommerce_load_saved_cart_after_login', 1 );
+        WC()->customer = new \WC_Customer( 42, true );
+        WC()->session  = new WC_Session_Handler();
+        WC()->session->init_session_cookie();
+        WC()->cart = new \WC_Cart();
+        WC()->cart->get_cart_from_session();
+        WC()->session->save_data();
+        $this->assertNull( $this->get_wc_session( 't_agent_variant' ) );
+
+        WC()->session = null;
+        WC()->cart    = null;
+        $this->assertSame( self::EXISTING, $this->bind( $variant_token ) );
+
+        // Agent adds D, recreating t_agent_variant with {D:1} alone.
+        $this->given_session_with_cart(
+            't_agent_variant',
+            [
+                $key_d => [ 'key' => $key_d, 'product_id' => $prod_d, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+            ]
+        );
+        $this->assertSame( self::MERGED, $this->bind( $variant_token ) );
+
+        $variant_cart = maybe_unserialize( $this->get_wc_session( '42' )['cart'] ?? '' );
+        $this->assertCount( 4, $variant_cart );
+        $this->assertSame( 1, $variant_cart[ $key_a ]['quantity'] );
+        $this->assertSame( 1, $variant_cart[ $key_c ]['quantity'] );
+        $this->assertSame( 1, $variant_cart[ $key_d ]['quantity'] );
+        $this->assertSame( 1, $variant_cart[ $key_u ]['quantity'] );
+    }
+
+    public function test_cart_emptied_clears_ledger_so_later_agent_drop_preserves_shopper_item(): void {
+        $this->ensure_user_with_id( 42, 'shopper42', 'customer', 'shopper@example.com' );
+        wp_set_current_user( 42 );
+
+        $prod_a = new \WC_Product_Simple();
+        $prod_a->set_name( 'Re-Purchased Item A' );
+        $prod_a->set_regular_price( '15' );
+        $prod_a->set_status( 'publish' );
+        $prod_a_id = $prod_a->save();
+
+        $ref_cart = new \WC_Cart();
+        $key_a    = $ref_cart->generate_cart_id( $prod_a_id, 0, [], [] );
+        $blog_id  = (int) get_current_blog_id();
+
+        $line_a = [
+            $key_a => [ 'key' => $key_a, 'product_id' => $prod_a_id, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
+        ];
+        $this->given_session_with_cart( '42', [] );
+        $this->given_session_with_cart( 't_agent_cart', $line_a );
+        WC()->session = null;
+        WC()->cart    = null;
+
+        $agent_token = $this->generate_jwt( 't_agent_cart' );
+        $this->assertSame( self::MERGED, $this->bind( $agent_token ) );
+        $this->assertNotEmpty( get_user_meta( 42, '_gecx_merged_' . $blog_id, true ) );
+
+        // Checkout / order placement empties the shopper's cart via WC_Cart::empty_cart().
+        WC()->customer = new \WC_Customer( 42, true );
+        WC()->session  = new WC_Session_Handler();
+        WC()->session->init_session_cookie();
+        WC()->cart = new \WC_Cart();
+        WC()->cart->get_cart_from_session();
+        WC()->cart->empty_cart();
+        WC()->session->save_data();
+
+        $this->assertSame( '', get_user_meta( 42, '_gecx_merged_' . $blog_id, true ) );
+        $this->assertArrayNotHasKey( 'gecx_merged', $this->get_wc_session( '42' ) ?? [] );
+
+        // Shopper later adds A themselves; agent's cart drops A; bind answers 'existing' and keeps A.
+        $this->given_session_with_cart( '42', $line_a );
+        update_user_meta( 42, '_woocommerce_persistent_cart_' . $blog_id, [ 'cart' => $line_a ] );
+        $this->given_session_with_cart( 't_agent_cart', [] );
+        WC()->session = null;
+        WC()->cart    = null;
+
+        $this->assertSame( self::EXISTING, $this->bind( $agent_token ) );
+        $after_cart = maybe_unserialize( $this->get_wc_session( '42' )['cart'] ?? '' );
+        $this->assertCount( 1, $after_cart );
+        $this->assertSame( 1, $after_cart[ $key_a ]['quantity'] );
+    }
 }
