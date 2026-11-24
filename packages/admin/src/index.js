@@ -213,6 +213,31 @@ $(function() {
         });
   });
 
+  // Review prompt buttons. The server stores the answer and decides whether
+  // the prompt shows again; this only hides the notice once it has.
+  $(document).on('click', '#gecx-review-prompt [data-gecx-review-action]', function() {
+    const $button = $(this);
+    const $prompt = $button.closest('#gecx-review-prompt');
+    const $buttons = $prompt.find('[data-gecx-review-action]');
+
+    // A "Leave a review" link opens WordPress.org in a new tab and keeps
+    // working when the request fails, so the click is never cancelled.
+    $buttons.prop('disabled', true).attr('aria-disabled', 'true');
+    wp.apiFetch({
+      path: '/gecx/v1/review-prompt',
+      method: 'POST',
+      data: {
+        action: $button.data('gecx-review-action'),
+      },
+    }).then(function() {
+      $prompt.remove();
+    }).catch(function(err) {
+      console.error('Error saving review prompt answer:', err);
+      $buttons.prop('disabled', false).removeAttr('aria-disabled');
+      showNotice('error', gecx_admin_params.errorReviewPrompt);
+    });
+  });
+
   // Dismiss activation notice
   $(document).on(
       'click', '.gecx-activation-notice .notice-dismiss', function() {

@@ -18,6 +18,7 @@ namespace Google\Gemini_Enterprise_For_CX\REST;
 
 use Google\Gemini_Enterprise_For_CX\Admin;
 use Google\Gemini_Enterprise_For_CX\Admin\Console_Sync;
+use Google\Gemini_Enterprise_For_CX\Admin\Review_Prompt;
 use Google\Gemini_Enterprise_For_CX\Auth;
 use Google\Gemini_Enterprise_For_CX\Backend_Webhooks;
 
@@ -153,7 +154,9 @@ class Console_API {
             return new \WP_Error( 'gecx_invalid_token_broker', __( 'Malformed token_broker_name.', 'gemini-enterprise-for-cx' ), [ 'status' => 400 ] );
         }
 
+        $previous_agent = (string) get_option( 'gecx_agent_name', '' );
         update_option( 'gecx_agent_name', $agent_name );
+        Review_Prompt::record_linked( $previous_agent, $agent_name );
         update_option( 'gecx_auth_complete', 1, 'no' );
         if ( '' !== $token_broker ) {
             update_option( 'gecx_token_broker_name', $token_broker );

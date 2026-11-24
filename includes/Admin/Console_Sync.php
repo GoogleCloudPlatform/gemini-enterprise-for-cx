@@ -677,6 +677,7 @@ class Console_Sync {
             }
 
             update_option( 'gecx_agent_name', $actual );
+            Review_Prompt::record_linked( $current_agent, $actual );
 
             // The backend holds the link, so it is serving this store's
             // catalog again whether or not the widget is on.

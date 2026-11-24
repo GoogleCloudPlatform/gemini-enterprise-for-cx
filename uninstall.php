@@ -301,9 +301,14 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         delete_option( 'gecx_plugin_version' );
         delete_option( 'gecx_version_sync_user_id' );
         delete_option( 'gecx_pending_sync_notices' );
+        // Review prompt: when the agent was linked, the first order from a
+        // shopper with a chat session, and the "no such order" lookup result.
+        delete_option( 'gecx_linked_at' );
+        delete_option( 'gecx_first_attributed_order_at' );
 
         if ( function_exists( 'delete_transient' ) ) {
             delete_transient( 'gecx_admin_notice_error' );
+            delete_transient( 'gecx_attributed_order_checked' );
             delete_transient( class_exists( Auth::class ) && defined( Auth::class . '::GUEST_JWT_CACHE_TRANSIENT' ) ? Auth::GUEST_JWT_CACHE_TRANSIENT : 'gecx_guest_jwt_cache' );
         }
 
@@ -406,3 +411,10 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         }
     }
 }
+
+// 5. Clear plugin user meta.
+//
+// Each administrator's answer to the review prompt. User meta lives in the
+// network-wide usermeta table under one unprefixed key, so one call after the
+// per-site loop reaches every user on every site.
+delete_metadata( 'user', 0, 'gecx_review_prompt', '', true );
