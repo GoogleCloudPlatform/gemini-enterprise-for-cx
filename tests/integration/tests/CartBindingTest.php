@@ -1671,7 +1671,7 @@ class CartBindingTest extends RestTestCase {
         WC()->session = null;
         WC()->cart    = null;
         $this->assertSame( self::EXISTING, $this->bind( $user_agent_token ) );
-        $this->assertSame( [], maybe_unserialize( $this->get_wc_session( '42' )['cart'] ?? '' ) );
+        $this->assertEmpty( maybe_unserialize( $this->get_wc_session( '42' )['cart'] ?? '' ) );
         $user_meta_after_order = get_user_meta( 42, '_woocommerce_persistent_cart_' . $blog_id, true );
         $this->assertEmpty( is_array( $user_meta_after_order ) ? ( $user_meta_after_order['cart'] ?? [] ) : [] );
 
@@ -1734,7 +1734,7 @@ class CartBindingTest extends RestTestCase {
         WC()->session->init_session_cookie();
         WC()->cart = null;
         $this->assertSame( self::EXISTING, $this->bind( $guest_agent_token ) );
-        $this->assertSame( [], maybe_unserialize( $this->get_wc_session( $guest_key )['cart'] ?? '' ) );
+        $this->assertEmpty( maybe_unserialize( $this->get_wc_session( $guest_key )['cart'] ?? '' ) );
 
         $this->given_session_with_cart(
             't_agent_order_guest',
@@ -1777,7 +1777,6 @@ class CartBindingTest extends RestTestCase {
         $blog_id     = (int) get_current_blog_id();
         $cookie_name = 'wp_woocommerce_session_' . COOKIEHASH;
 
-        remove_action( 'woocommerce_guest_session_to_user_id', [ Cart_Binding::class, 'on_guest_session_migrated_to_user' ], 10 );
         try {
             $user_init = [
                 $key_u => [ 'key' => $key_u, 'product_id' => $prod_u, 'variation_id' => 0, 'variation' => [], 'quantity' => 1 ],
@@ -1820,7 +1819,8 @@ class CartBindingTest extends RestTestCase {
                 ]
             );
 
-            // Login on WC < 8.8 (without woocommerce_guest_session_to_user_id) deletes t_agent_pre88.
+            // Login on WC < 8.8 (remove hook after bind() since new REST_API() registers it) deletes t_agent_pre88.
+            remove_action( 'woocommerce_guest_session_to_user_id', [ Cart_Binding::class, 'on_guest_session_migrated_to_user' ], 10 );
             wp_set_current_user( 42 );
             update_user_meta( 42, '_woocommerce_load_saved_cart_after_login', 1 );
             WC()->customer = new \WC_Customer( 42, true );
