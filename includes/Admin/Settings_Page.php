@@ -47,14 +47,21 @@ class Settings_Page {
     private Console_Sync $console_sync;
 
     /**
+     * The WordPress.org review prompt shown on this page.
+     */
+    private Review_Prompt $review_prompt;
+
+    /**
      * Constructor.
      *
-     * @param string       $plugin_file  Main plugin file.
-     * @param Console_Sync $console_sync Syncs agent state when the page loads.
+     * @param string        $plugin_file   Main plugin file.
+     * @param Console_Sync  $console_sync  Syncs agent state when the page loads.
+     * @param Review_Prompt $review_prompt Review prompt shown on this page.
      */
-    public function __construct( string $plugin_file, Console_Sync $console_sync ) {
-        $this->plugin_file  = $plugin_file;
-        $this->console_sync = $console_sync;
+    public function __construct( string $plugin_file, Console_Sync $console_sync, Review_Prompt $review_prompt ) {
+        $this->plugin_file   = $plugin_file;
+        $this->console_sync  = $console_sync;
+        $this->review_prompt = $review_prompt;
     }
 
     /**
@@ -68,6 +75,10 @@ class Settings_Page {
         add_action( 'admin_init', [ $this, 'redirect_on_activation' ] );
         add_action( 'admin_notices', [ $this, 'show_activation_notice' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
+
+        // After WooCommerce's own footer filter (priority 1), which only acts
+        // on WooCommerce screens and not on this one.
+        add_filter( 'admin_footer_text', [ $this, 'filter_admin_footer_text' ], 20 );
 
         // Register plugin action link next to Deactivate.
         add_filter( 'plugin_action_links_' . plugin_basename( $this->plugin_file ), [ $this, 'add_plugin_action_links' ] );
@@ -120,6 +131,11 @@ class Settings_Page {
             . ' .gecx-firewall-banner__rules-label { margin-top: 6px; }'
             . ' .gecx-firewall-banner__paths { margin: 4px 0 0 18px; list-style: disc; }'
             . ' .gecx-firewall-banner__paths li { margin: 2px 0; }'
+            . ' .gecx-review-prompt { margin: 20px 0 0; }'
+            . ' .gecx-review-prompt__actions { display: flex; align-items: center; justify-content: flex-start; gap: 8px; flex-wrap: wrap; }'
+            . ' .gecx-review-prompt__actions > * { flex: 0 0 auto; margin: 0; }'
+            . ' .gecx-review-prompt__actions .button-link { padding: 0 4px; }'
+            . ' .gecx-review-prompt__help { color: #50575e; font-size: 12px; }'
         );
 
         $admin_asset_file = dirname( $this->plugin_file ) . '/build/scripts/admin/index.min.asset.php';
@@ -154,6 +170,7 @@ class Settings_Page {
             'disconnectLabel'      => __( 'Disconnect Agent', 'gemini-enterprise-for-cx' ),
             'errorDisconnect'      => __( 'Failed to disconnect agent. Please try again.', 'gemini-enterprise-for-cx' ),
             'errorDisconnectAjax'  => __( 'Error disconnecting agent.', 'gemini-enterprise-for-cx' ),
+            'errorReviewPrompt'    => __( 'Failed to save your answer. Please try again.', 'gemini-enterprise-for-cx' ),
         ] );
     }
 
@@ -334,6 +351,12 @@ class Settings_Page {
         // Reload agent in case the sync adopted or cleared the binding.
         $current_agent = (string) get_option( 'gecx_agent_name', '' );
 
+        // A store linked before the link time was recorded starts its wait for
+        // the review prompt now.
+        if ( '' !== $current_agent ) {
+            Review_Prompt::ensure_linked_at();
+        }
+
         $token_broker          = (string) get_option( 'gecx_token_broker_name', '' );
         $embed_enabled         = (bool) get_option( 'gecx_agent_enabled', 0 );
         $pdp_prompts_enabled   = (bool) get_option( 'gecx_pdp_prompts_enabled', 1 );
@@ -354,7 +377,7 @@ class Settings_Page {
         // SyncState can report that Google can no longer use this store's
         // credentials. Treat that as unauthorized so the merchant is offered
         // the authorize step again instead of a dead end.
-        $is_authorized  = (bool) get_option( Admin::AUTH_COMPLETE_OPTION, false ) && ! get_option( Admin::STORE_AUTH_INVALID_OPTION, false );
+        $is_authorized  = Admin::is_store_authorized();
         $rest_api_ready = Admin::is_standard_rest_api_enabled();
         // The wc-auth callback_url receives the consumer key and secret, so the
         // authorize and connect buttons stay disabled unless the console base
@@ -565,6 +588,7 @@ class Settings_Page {
                     </div>
                 <?php endif; ?>
             <?php else : ?>
+                <?php $this->review_prompt->render_notice(); ?>
                 <div class="card" style="margin-top: 20px; padding: 28px 32px;">
                     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
                         <h2 style="margin: 0; display: flex; align-items: center; gap: 8px;">
@@ -815,6 +839,32 @@ class Settings_Page {
             <?php endif; ?>
         </div>
         <?php
+    }
+
+    /**
+     * Whether the current screen is this plugin's settings page.
+     */
+    private function is_settings_screen(): bool {
+        if ( '' === $this->settings_page_hook || ! function_exists( 'get_current_screen' ) ) {
+            return false;
+        }
+
+        $screen = get_current_screen();
+        return $screen && $screen->id === $this->settings_page_hook;
+    }
+
+    /**
+     * Ask for a review in the footer of this plugin's settings page only.
+     *
+     * @param mixed $footer_text Footer text before this filter.
+     * @return string Footer text.
+     */
+    public function filter_admin_footer_text( $footer_text ): string {
+        if ( ! $this->is_settings_screen() ) {
+            return (string) $footer_text;
+        }
+
+        return $this->review_prompt->filter_footer_text( $footer_text );
     }
 
     /**

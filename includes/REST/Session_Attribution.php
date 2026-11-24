@@ -16,6 +16,7 @@ declare(strict_types=1);
 
 namespace Google\Gemini_Enterprise_For_CX\REST;
 
+use Google\Gemini_Enterprise_For_CX\Admin\Review_Prompt;
 use Google\Gemini_Enterprise_For_CX\Auth;
 use Google\Gemini_Enterprise_For_CX\Storefront;
 
@@ -511,6 +512,7 @@ class Session_Attribution {
         $session_id = self::get_gecx_session_id_safely();
         if ( ! empty( $session_id ) ) {
             $order->update_meta_data( '_gecx_session_id', $session_id );
+            Review_Prompt::record_attributed_order();
         }
     }
 
@@ -555,6 +557,7 @@ class Session_Attribution {
         }
         if ( ! empty( $session_id ) ) {
             $order->update_meta_data( '_gecx_session_id', $session_id );
+            Review_Prompt::record_attributed_order();
         }
     }
 

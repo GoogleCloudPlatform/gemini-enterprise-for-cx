@@ -19,6 +19,7 @@ namespace Google\Gemini_Enterprise_For_CX;
 use Google\Gemini_Enterprise_For_CX\Admin\Connection;
 use Google\Gemini_Enterprise_For_CX\Admin\Console_Sync;
 use Google\Gemini_Enterprise_For_CX\Admin\Product_Prompts;
+use Google\Gemini_Enterprise_For_CX\Admin\Review_Prompt;
 use Google\Gemini_Enterprise_For_CX\Admin\Settings_Page;
 use Google\Gemini_Enterprise_For_CX\REST\Order_Webhook;
 
@@ -119,13 +120,17 @@ class Admin {
     /** The product editor's prompt override field. */
     public Product_Prompts $product_prompts;
 
+    /** The WordPress.org review prompt. */
+    public Review_Prompt $review_prompt;
+
     /**
      * Creates the admin components and registers their hooks.
      */
     public function __construct( string $plugin_file ) {
         $this->console_sync    = new Console_Sync();
         $this->connection      = new Connection();
-        $this->settings_page   = new Settings_Page( $plugin_file, $this->console_sync );
+        $this->review_prompt   = new Review_Prompt( $plugin_file );
+        $this->settings_page   = new Settings_Page( $plugin_file, $this->console_sync, $this->review_prompt );
         $this->product_prompts = new Product_Prompts();
 
         // In this order so callbacks sharing a hook (admin_init,
@@ -134,6 +139,7 @@ class Admin {
         $this->connection->register_hooks();
         $this->console_sync->register_hooks();
         $this->product_prompts->register_hooks();
+        $this->review_prompt->register_hooks();
     }
 
     /**
@@ -218,6 +224,16 @@ class Admin {
      */
     public static function is_merchant_unlinked(): bool {
         return (bool) get_option( self::MERCHANT_UNLINKED_OPTION, false );
+    }
+
+    /**
+     * Whether the store's authorization is complete and still usable.
+     *
+     * SyncState can report that Google can no longer use this store's
+     * credentials, which the settings page treats as unauthorized.
+     */
+    public static function is_store_authorized(): bool {
+        return (bool) get_option( self::AUTH_COMPLETE_OPTION, false ) && ! get_option( self::STORE_AUTH_INVALID_OPTION, false );
     }
 
     /**
