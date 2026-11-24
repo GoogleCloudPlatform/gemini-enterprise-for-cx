@@ -129,14 +129,16 @@ class Cart_Binding {
     }
 
     /**
-     * Clears `gecx_merged` ledger state when the shopper's cart is emptied
-     * (such as on checkout order placement or explicit cart clear) so stale
-     * synced-line entries never subtract items the shopper later adds manually.
+     * Marks synced `gecx_merged` entries as unapplied (`quantity => 0`,
+     * `target_key => ''`) while keeping `agent_qty` intact when the shopper's
+     * cart is emptied (such as on checkout order placement or explicit cart
+     * clear).
      *
-     * When WooCommerce empties only the in-memory session on logout
-     * (`WC_Session_Handler::forget_session()` -> `wc_empty_cart( false )`),
-     * `$clear_persistent_cart` is `false` and `_woocommerce_persistent_cart_{blog_id}`
-     * is retained, so `_gecx_merged_{blog_id}` is retained alongside it.
+     * Because the agent's `t_...` session cart is not drained, keeping
+     * `agent_qty` ensures already-seen agent lines are not re-added on the next
+     * chat open after an order, while `quantity => 0` ensures a later agent
+     * removal subtracts `min(0, ...) = 0` and never drops an item the shopper
+     * manually re-adds.
      *
      * @param mixed $clear_persistent_cart Whether WooCommerce also cleared the persistent cart.
      */
@@ -145,21 +147,93 @@ class Cart_Binding {
             ? (bool) $clear_persistent_cart
             : ( 0 === did_action( 'wp_logout' ) );
 
-        $user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
-        if ( $clear_meta && $user_id > 0 ) {
-            self::update_user_merged_ledger( $user_id, [] );
-            self::set_session_row_ledger( (string) $user_id, [] );
-        }
+        $session     = ( function_exists( 'WC' ) && null !== WC()->session && is_object( WC()->session ) ) ? WC()->session : null;
+        $customer_id = ( null !== $session && method_exists( $session, 'get_customer_id' ) ) ? (string) $session->get_customer_id() : '';
+        $user_id     = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
 
-        if ( function_exists( 'WC' ) && null !== WC()->session && is_object( WC()->session ) ) {
-            self::unset_in_memory_session_ledger( WC()->session );
-            $customer_id = method_exists( WC()->session, 'get_customer_id' ) ? (string) WC()->session->get_customer_id() : '';
-            if ( '' !== $customer_id && self::is_table_backed( WC()->session ) ) {
-                if ( $clear_meta || 0 === strpos( $customer_id, 't_' ) ) {
-                    self::set_session_row_ledger( $customer_id, [] );
+        if ( $clear_meta && $user_id > 0 && null !== $session && ( self::is_table_backed( $session ) || self::can_persist_external_session( $session ) ) && $customer_id === (string) $user_id ) {
+            $user_key    = (string) $user_id;
+            $meta_ledger = self::read_user_merged_ledger( $user_id );
+            $user_row    = self::is_table_backed( $session ) ? self::read_session_row( $user_key ) : [];
+            $row_ledger  = isset( $user_row['gecx_merged'] ) ? self::extract_merged_ledger( $user_row['gecx_merged'] ) : null;
+            $mem_raw     = method_exists( $session, 'get' ) ? $session->get( 'gecx_merged' ) : null;
+            $mem_ledger  = null !== $mem_raw ? self::extract_merged_ledger( $mem_raw ) : null;
+
+            $combined = $meta_ledger;
+            if ( is_array( $row_ledger ) ) {
+                $combined = array_replace( $combined, $row_ledger );
+            }
+            if ( is_array( $mem_ledger ) ) {
+                $combined = array_replace( $combined, $mem_ledger );
+            }
+            if ( ! empty( $combined ) ) {
+                $unapplied = self::mark_ledger_unapplied( $combined );
+                self::update_user_merged_ledger( $user_id, $unapplied );
+                if ( method_exists( $session, 'set' ) ) {
+                    $session->set( 'gecx_merged', $unapplied );
+                }
+                if ( self::is_table_backed( $session ) ) {
+                    self::set_session_row_ledger( $user_key, $unapplied );
                 }
             }
+            return;
         }
+
+        if ( null === $session ) {
+            return;
+        }
+
+        $table_backed = self::is_table_backed( $session );
+        $row          = ( '' !== $customer_id && $table_backed ) ? self::read_session_row( $customer_id ) : [];
+        $row_ledger   = isset( $row['gecx_merged'] ) ? self::extract_merged_ledger( $row['gecx_merged'] ) : null;
+        $mem_raw      = method_exists( $session, 'get' ) ? $session->get( 'gecx_merged' ) : null;
+        $mem_ledger   = null !== $mem_raw ? self::extract_merged_ledger( $mem_raw ) : null;
+
+        $combined = [];
+        if ( is_array( $row_ledger ) ) {
+            $combined = array_replace( $combined, $row_ledger );
+        }
+        if ( is_array( $mem_ledger ) ) {
+            $combined = array_replace( $combined, $mem_ledger );
+        }
+        if ( ! empty( $combined ) ) {
+            $unapplied = self::mark_ledger_unapplied( $combined );
+            if ( method_exists( $session, 'set' ) ) {
+                $session->set( 'gecx_merged', $unapplied );
+            }
+            if ( '' !== $customer_id && $table_backed ) {
+                self::set_session_row_ledger( $customer_id, $unapplied );
+            }
+        }
+    }
+
+    /**
+     * Marks every synced line in `$ledger` as no longer applied to the target
+     * cart (`quantity => 0`, `target_key => ''`) while keeping `agent_qty`
+     * unchanged.
+     *
+     * @param array $ledger Existing `gecx_merged` ledger.
+     * @return array
+     */
+    private static function mark_ledger_unapplied( array $ledger ): array {
+        foreach ( $ledger as $agent_key => $synced_lines ) {
+            if ( ! is_array( $synced_lines ) ) {
+                continue;
+            }
+            foreach ( $synced_lines as $track_id => $entry ) {
+                if ( ! is_array( $entry ) ) {
+                    continue;
+                }
+                if ( ! isset( $entry['agent_qty'] ) && isset( $entry['quantity'] ) ) {
+                    $entry['agent_qty'] = self::normalize_qty( max( 0.0, (float) $entry['quantity'] ) );
+                }
+                $entry['quantity']         = 0;
+                $entry['target_key']       = '';
+                $synced_lines[ $track_id ] = $entry;
+            }
+            $ledger[ $agent_key ] = $synced_lines;
+        }
+        return $ledger;
     }
 
     /**
@@ -311,8 +385,10 @@ class Cart_Binding {
         $has_merged_history = '' !== $agent_key && self::browser_has_merged_history( $session, $agent_key );
         if ( self::browser_cart_has_items( $session ) || $has_merged_history ) {
             // A missing agent row ([] === $agent_row, such as after login migration
-            // or session expiry) carries no information rather than an emptied cart.
-            if ( '' === $agent_key || [] === $agent_row || ( empty( $agent_lines ) && ! self::browser_has_non_empty_merged_lines( $session, $agent_key ) ) ) {
+            // or session expiry) carries no information rather than an emptied cart;
+            // when $has_merged_history is true, sync_agent_into_browser_session()
+            // drops its stale ledger entry under the per-session lock.
+            if ( '' === $agent_key || ( [] === $agent_row && ! $has_merged_history ) || ( [] !== $agent_row && empty( $agent_lines ) && ! self::browser_has_non_empty_merged_lines( $session, $agent_key ) ) ) {
                 return self::respond( 'existing' );
             }
             if ( ! self::is_table_backed( $session ) && ! self::can_persist_external_session( $session ) ) {
@@ -652,13 +728,17 @@ class Cart_Binding {
         }
         $agent_row = self::read_session_row( $agent_key );
         if ( [] === $agent_row ) {
-            return self::respond( 'existing' );
-        }
-        $agent_lines = self::extract_cart_lines( $agent_row['cart'] ?? null );
-        if ( empty( $agent_lines ) ) {
             $initial_state = self::read_user_cart_state( $user_id );
-            if ( empty( $initial_state['ledger'][ $agent_key ] ) ) {
+            if ( ! array_key_exists( $agent_key, $initial_state['ledger'] ) && ! array_key_exists( $agent_key, $initial_state['meta_ledger'] ) ) {
                 return self::respond( 'existing' );
+            }
+        } else {
+            $agent_lines = self::extract_cart_lines( $agent_row['cart'] ?? null );
+            if ( empty( $agent_lines ) ) {
+                $initial_state = self::read_user_cart_state( $user_id );
+                if ( empty( $initial_state['ledger'][ $agent_key ] ) ) {
+                    return self::respond( 'existing' );
+                }
             }
         }
 
@@ -681,9 +761,11 @@ class Cart_Binding {
                         if ( is_wp_error( $response ) ) {
                             return $response;
                         }
-                        $merged_cart   = self::extract_cart_lines( WC()->session->get( 'cart' ) );
                         $merged_ledger = self::extract_merged_ledger( WC()->session->get( 'gecx_merged' ) );
-                        self::update_persistent_user_cart( $user_id, $merged_cart );
+                        if ( 'merged' === ( $response->get_data()['binding'] ?? '' ) ) {
+                            $merged_cart = self::extract_cart_lines( WC()->session->get( 'cart' ) );
+                            self::update_persistent_user_cart( $user_id, $merged_cart );
+                        }
                         self::update_user_merged_ledger( $user_id, $merged_ledger );
                         return $response;
                     }
@@ -700,6 +782,7 @@ class Cart_Binding {
             static function () use ( $user_id, $user_key, $agent_key ) {
                 $fresh_agent = self::read_session_row( $agent_key );
                 if ( [] === $fresh_agent ) {
+                    self::drop_agent_from_user_ledgers( $user_id, $user_key, $agent_key );
                     return self::respond( 'existing' );
                 }
                 $fresh_lines     = self::extract_cart_lines( $fresh_agent['cart'] ?? null );
@@ -882,6 +965,7 @@ class Cart_Binding {
     private static function sync_agent_into_browser_session( $session, string $agent_key, bool $set_cookie_if_missing ) {
         $fresh_agent = self::read_session_row( $agent_key );
         if ( [] === $fresh_agent ) {
+            self::drop_agent_from_browser_ledger( $session, $agent_key );
             return self::respond( $set_cookie_if_missing ? 'deferred' : 'existing' );
         }
         $agent_lines = self::extract_cart_lines( $fresh_agent['cart'] ?? null );
@@ -942,6 +1026,101 @@ class Cart_Binding {
         }
 
         return self::respond( $diff['changed'] ? 'merged' : 'existing' );
+    }
+
+    /**
+     * Removes a deleted `$agent_key` session from a logged-in shopper's user
+     * meta, table-backed session row, and active `WC()->session` ledger so a
+     * later recreated row for `$agent_key` starts fresh (including on
+     * WooCommerce < 8.8 where `woocommerce_guest_session_to_user_id` does not
+     * exist).
+     *
+     * @param int    $user_id   WordPress user ID.
+     * @param string $user_key  String user session key.
+     * @param string $agent_key Deleted guest session key (`t_...`).
+     */
+    private static function drop_agent_from_user_ledgers( int $user_id, string $user_key, string $agent_key ): void {
+        global $wpdb;
+        if ( isset( $wpdb ) && '' !== $wpdb->last_error ) {
+            return;
+        }
+        $meta_ledger = self::read_user_merged_ledger( $user_id );
+        if ( array_key_exists( $agent_key, $meta_ledger ) ) {
+            unset( $meta_ledger[ $agent_key ] );
+            self::update_user_merged_ledger( $user_id, $meta_ledger );
+        }
+
+        $user_row = self::read_session_row( $user_key );
+        if ( isset( $user_row['gecx_merged'] ) ) {
+            $row_ledger = self::extract_merged_ledger( $user_row['gecx_merged'] );
+            if ( array_key_exists( $agent_key, $row_ledger ) ) {
+                unset( $row_ledger[ $agent_key ] );
+                self::set_session_row_ledger( $user_key, $row_ledger );
+            }
+        }
+
+        if ( null !== WC()->session && is_object( WC()->session ) && method_exists( WC()->session, 'get_customer_id' ) && (string) WC()->session->get_customer_id() === $user_key && method_exists( WC()->session, 'get' ) ) {
+            $mem_raw = WC()->session->get( 'gecx_merged' );
+            if ( null !== $mem_raw ) {
+                $mem_ledger = self::extract_merged_ledger( $mem_raw );
+                if ( array_key_exists( $agent_key, $mem_ledger ) ) {
+                    unset( $mem_ledger[ $agent_key ] );
+                    if ( empty( $mem_ledger ) ) {
+                        self::unset_in_memory_session_ledger( WC()->session );
+                    } elseif ( method_exists( WC()->session, 'set' ) ) {
+                        WC()->session->set( 'gecx_merged', $mem_ledger );
+                    }
+                    if ( method_exists( WC()->session, 'save_data' ) ) {
+                        WC()->session->save_data();
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Removes a deleted `$agent_key` session from a browser session's
+     * in-memory and persisted `gecx_merged` ledger.
+     *
+     * @param object $session   WC()->session.
+     * @param string $agent_key Deleted guest session key (`t_...`).
+     */
+    private static function drop_agent_from_browser_ledger( $session, string $agent_key ): void {
+        global $wpdb;
+        if ( isset( $wpdb ) && '' !== $wpdb->last_error ) {
+            return;
+        }
+        $customer_id  = method_exists( $session, 'get_customer_id' ) ? (string) $session->get_customer_id() : '';
+        $table_backed = self::is_table_backed( $session );
+
+        if ( '' !== $customer_id && $table_backed ) {
+            $row = self::read_session_row( $customer_id );
+            if ( isset( $row['gecx_merged'] ) ) {
+                $row_ledger = self::extract_merged_ledger( $row['gecx_merged'] );
+                if ( array_key_exists( $agent_key, $row_ledger ) ) {
+                    unset( $row_ledger[ $agent_key ] );
+                    self::set_session_row_ledger( $customer_id, $row_ledger );
+                }
+            }
+        }
+
+        if ( method_exists( $session, 'get' ) ) {
+            $mem_raw = $session->get( 'gecx_merged' );
+            if ( null !== $mem_raw ) {
+                $mem_ledger = self::extract_merged_ledger( $mem_raw );
+                if ( array_key_exists( $agent_key, $mem_ledger ) ) {
+                    unset( $mem_ledger[ $agent_key ] );
+                    if ( empty( $mem_ledger ) ) {
+                        self::unset_in_memory_session_ledger( $session );
+                    } elseif ( method_exists( $session, 'set' ) ) {
+                        $session->set( 'gecx_merged', $mem_ledger );
+                    }
+                    if ( ! $table_backed && method_exists( $session, 'save_data' ) ) {
+                        $session->save_data();
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -1056,7 +1235,7 @@ class Cart_Binding {
                 $next_synced[ $track_id ] = [
                     'quantity'   => self::normalize_qty( $new_applied ),
                     'agent_qty'  => self::normalize_qty( $curr_qty ),
-                    'target_key' => ( null !== $match_key && isset( $merged[ $match_key ] ) ) ? $match_key : '',
+                    'target_key' => ( $new_applied > 0 && null !== $match_key && isset( $merged[ $match_key ] ) ) ? $match_key : '',
                     'source_key' => (string) ( $current_agent[ $track_id ]['source_key'] ?? ( $prev_entry['source_key'] ?? '' ) ),
                     'sig'        => (string) ( $current_agent[ $track_id ]['sig'] ?? ( $prev_entry['sig'] ?? '' ) ),
                     'line'       => self::minimal_line_identity( $current_agent[ $track_id ]['line'] ),
