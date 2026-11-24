@@ -399,7 +399,7 @@ class Review_Prompt {
                 <button type="button" class="button" data-gecx-review-action="snooze">
                     <?php esc_html_e( 'Maybe later', 'gemini-enterprise-for-cx' ); ?>
                 </button>
-                <button type="button" class="button button-link" data-gecx-review-action="dismiss">
+                <button type="button" class="button-link" data-gecx-review-action="dismiss">
                     <?php esc_html_e( "Don't ask again", 'gemini-enterprise-for-cx' ); ?>
                 </button>
             </p>

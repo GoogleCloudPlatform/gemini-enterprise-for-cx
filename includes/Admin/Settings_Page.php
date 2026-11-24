@@ -132,7 +132,9 @@ class Settings_Page {
             . ' .gecx-firewall-banner__paths { margin: 4px 0 0 18px; list-style: disc; }'
             . ' .gecx-firewall-banner__paths li { margin: 2px 0; }'
             . ' .gecx-review-prompt { margin: 20px 0 0; }'
-            . ' .gecx-review-prompt__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }'
+            . ' .gecx-review-prompt__actions { display: flex; align-items: center; justify-content: flex-start; gap: 8px; flex-wrap: wrap; }'
+            . ' .gecx-review-prompt__actions > * { flex: 0 0 auto; margin: 0; }'
+            . ' .gecx-review-prompt__actions .button-link { padding: 0 4px; }'
             . ' .gecx-review-prompt__help { color: #50575e; font-size: 12px; }'
         );
 

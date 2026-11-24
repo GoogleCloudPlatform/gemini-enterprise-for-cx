@@ -547,6 +547,10 @@ class ReviewPromptTest extends RestTestCase {
         );
         $this->assertStringNotContainsString( 'rate=', $html );
         $this->assertStringNotContainsString( 'filter=', $html );
+
+        // "Don't ask again" is a text link. Carrying the .button class as well
+        // draws it as a bordered box on WordPress 7.0.
+        $this->assertMatchesRegularExpression( '#<button type="button" class="button-link" data-gecx-review-action="dismiss">#', $html );
         $this->assertStringContainsString( 'https://wordpress.org/support/plugin/gemini-enterprise-for-cx/"', $html );
     }
 
