@@ -37,6 +37,19 @@ class UninstallTest extends TestCase {
 		set_transient( 'gecx_admin_notice_error', 'temporary error', 300 );
 		set_transient( 'gecx_guest_jwt_cache', 'cached jwt', 300 );
 
+		// Seed per-site _gecx_merged_{blog_id} user meta and session row gecx_merged ledger.
+		$user_id = self::factory()->user->create();
+		$blog_id = (int) get_current_blog_id();
+		update_user_meta( $user_id, '_gecx_merged_' . $blog_id, [ 't_agent' => [ 's:1' => [ 'quantity' => 1 ] ] ] );
+		update_user_meta( $user_id, '_gecx_merged_999', [ 't_orphan' => [ 's:2' => [ 'quantity' => 1 ] ] ] );
+		$this->set_wc_session(
+			't_session_with_ledger',
+			[
+				'cart'        => serialize( [] ),
+				'gecx_merged' => serialize( [ 't_agent' => [] ] ),
+			]
+		);
+
 		// Seed webhook
 		$webhook = new WC_Webhook();
 		$webhook->set_name( 'GECX Agent Order Created' );
@@ -83,5 +96,12 @@ class UninstallTest extends TestCase {
 			'limit'  => 50,
 		] );
 		$this->assertEmpty( $webhook_ids, 'GECX Webhook was not deleted by uninstall.' );
+
+		// Verify _gecx_merged_* user meta and session row gecx_merged entries are removed.
+		$this->assertSame( '', get_user_meta( $user_id, '_gecx_merged_' . $blog_id, true ) );
+		$this->assertSame( '', get_user_meta( $user_id, '_gecx_merged_999', true ) );
+		$cleaned_session = $this->get_wc_session( 't_session_with_ledger' );
+		$this->assertIsArray( $cleaned_session );
+		$this->assertArrayNotHasKey( 'gecx_merged', $cleaned_session );
 	}
 }

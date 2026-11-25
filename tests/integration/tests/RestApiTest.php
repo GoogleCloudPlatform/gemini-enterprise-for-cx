@@ -2332,7 +2332,10 @@ class RestApiTest extends RestTestCase {
 		$this->assertIsArray( $verified_cookie );
 		$this->assertSame( 't_guest_shopper_999', $verified_cookie[0] );
 		$this->assertLessThan( (int) $verified_cookie[1], time() );
-		$this->assertNotNull( $this->get_wc_session( 't_guest_shopper_999' ) );
+		// Read-only Cart-Token GET bridges the cookie without writing cart data to DB, user meta, or WC()->session.
+		$this->assertNull( $this->get_wc_session( 't_guest_shopper_999' ) );
+		$this->assertSame( 0, WC()->cart->persistent_cart_updates );
+		$this->assertSame( 0, WC()->session->save_data_calls );
 	}
 
 	public function test_sync_cart_session_bridges_through_the_browser_session_handler_when_it_already_names_the_session(): void {
@@ -2411,6 +2414,7 @@ class RestApiTest extends RestTestCase {
 	public function test_sync_cart_session_does_not_carry_the_browser_session_id_into_a_cart_token_session_from_outside_the_store( string $method, string $route ): void {
 		WC()->cart                   = new WC_Cart_Mock();
 		WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 1 ] ];
+		$this->set_wc_session( 't_sibling_cart_777', [ 'cart' => serialize( WC()->cart->cart_for_session ) ] );
 		$_COOKIE['gecx_session_id']  = 'projects/123/locations/global/commerceSessions/shopper-sess';
 
 		$request = new WP_REST_Request( $method, $route );
@@ -2494,6 +2498,7 @@ class RestApiTest extends RestTestCase {
 	public function test_sync_cart_session_carries_the_browser_session_id_into_a_cart_token_session_read_from_the_store(): void {
 		WC()->cart                   = new WC_Cart_Mock();
 		WC()->cart->cart_for_session = [ 'item1' => [ 'product_id' => 42, 'quantity' => 1 ] ];
+		$this->set_wc_session( 't_agent_cart_555', [ 'cart' => serialize( WC()->cart->cart_for_session ) ] );
 		$_COOKIE['gecx_session_id']  = 'projects/123/locations/global/commerceSessions/shopper-sess';
 
 		// storefront.js reading the agent's cart from one of the store's own pages.
@@ -2507,6 +2512,81 @@ class RestApiTest extends RestTestCase {
 		$row = $this->get_wc_session( 't_agent_cart_555' );
 		$this->assertIsArray( $row );
 		$this->assertSame( 'projects/123/locations/global/commerceSessions/shopper-sess', $row['gecx_session_id'] ?? null );
+	}
+
+	public function test_sync_cart_session_cart_token_get_does_not_overwrite_newer_cart_or_resurrect_deleted_session(): void {
+		// Simulate an in-flight GET /wc/store/v1/cart that loaded a stale 1-item cart
+		// before a concurrent POST added a second item (and Variation attributes) to DB.
+		WC()->cart                   = new WC_Cart_Mock();
+		WC()->cart->cart_for_session = [ 'stale_item' => [ 'product_id' => 10, 'quantity' => 1 ] ];
+
+		$newer_cart = [
+			'stale_item' => [ 'product_id' => 10, 'quantity' => 1 ],
+			'var_item'   => [
+				'product_id'   => 99,
+				'variation_id' => 105,
+				'variation'    => [ 'attribute_pa_size' => 'large' ],
+				'quantity'     => 2,
+			],
+		];
+		$this->set_wc_session( 't_concurrent_cart_111', [ 'cart' => $newer_cart ] );
+		$_COOKIE['gecx_session_id'] = 'projects/123/locations/global/commerceSessions/shopper-sess';
+
+		$request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+		$this->send_cart_token( $request, $this->generate_jwt( 't_concurrent_cart_111' ) );
+		$request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$request->set_header( 'Referer', 'https://example.org/shop/' );
+
+		( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $request );
+
+		$row = $this->get_wc_session( 't_concurrent_cart_111' );
+		$this->assertIsArray( $row );
+		$this->assertSame( $newer_cart, maybe_unserialize( $row['cart'] ) );
+		$this->assertSame( 'projects/123/locations/global/commerceSessions/shopper-sess', $row['gecx_session_id'] ?? null );
+		$this->assertSame( 0, WC()->cart->persistent_cart_updates );
+		$this->assertSame( 0, WC()->session->save_data_calls );
+		$this->assertArrayNotHasKey( 'cart', WC()->session->get_session_data_for_test() );
+
+		// Also verify an in-flight GET for an agent guest session already merged & deleted
+		// by /gecx/v1/cart-session does NOT resurrect the deleted row in woocommerce_sessions.
+		$merged_request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+		$this->send_cart_token( $merged_request, $this->generate_jwt( 't_already_merged_222' ) );
+		$merged_request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$merged_request->set_header( 'Referer', 'https://example.org/shop/' );
+
+		( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $merged_request );
+
+		$this->assertNull( $this->get_wc_session( 't_already_merged_222' ) );
+
+		// Custom non-SQL WC_Session handlers (Redis/Memcached) also do NOT call
+		// save_data() or write back stale request-start cart snapshots on read-only
+		// Cart-Token GETs, while still persisting both cart and gecx_session_id on
+		// mutations.
+		$custom_session = $this->create_store_api_session_mock( 't_redis_guest_333' );
+		$custom_session->set( 'cart', [ 'stale_item' => [ 'product_id' => 10, 'quantity' => 1 ] ] );
+		WC()->session = $custom_session;
+
+		$redis_request = new WP_REST_Request( 'GET', '/wc/store/v1/cart' );
+		$this->send_cart_token( $redis_request, $this->generate_jwt( 't_redis_guest_333' ) );
+		$redis_request->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$redis_request->set_header( 'Referer', 'https://example.org/shop/' );
+
+		( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $redis_request );
+
+		$this->assertSame( 0, $custom_session->save_data_calls );
+		$this->assertNull( $custom_session->get( 'gecx_session_id' ) );
+
+		WC()->cart->cart_for_session = $newer_cart;
+		$redis_mutation              = new WP_REST_Request( 'POST', '/wc/store/v1/cart/add-item' );
+		$this->send_cart_token( $redis_mutation, $this->generate_jwt( 't_redis_guest_333' ) );
+		$redis_mutation->set_header( 'Sec-Fetch-Site', 'same-origin' );
+		$redis_mutation->set_header( 'Referer', 'https://example.org/shop/' );
+
+		( new REST_API() )->cart_session->sync_cart_session_after_dispatch( new WP_REST_Response( [ 'items' => [] ], 200 ), null, $redis_mutation );
+
+		$this->assertSame( 1, $custom_session->save_data_calls );
+		$this->assertSame( $newer_cart, $custom_session->get( 'cart' ) );
+		$this->assertSame( 'projects/123/locations/global/commerceSessions/shopper-sess', $custom_session->get( 'gecx_session_id' ) );
 	}
 
 	public function test_sync_cart_session_does_not_set_cookie_on_empty_cart_read(): void {
@@ -3075,10 +3155,14 @@ class RestApiTest extends RestTestCase {
 	 */
 	private function create_store_api_session_mock( string $customer_id ): \WC_Session {
 		return new class( $customer_id ) extends \WC_Session {
+			public int $save_data_calls = 0;
+
 			public function __construct( string $customer_id ) {
 				$this->_customer_id = $customer_id;
 			}
-			public function save_data(): void {}
+			public function save_data(): void {
+				$this->save_data_calls++;
+			}
 		};
 	}
 

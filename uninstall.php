@@ -350,20 +350,22 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                 $gecx_sessions_exists = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $gecx_escaped_sessions_table ) ) === $gecx_sessions_table );
             }
             if ( $gecx_sessions_exists ) {
-                $gecx_sessions_like = '%' . ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( 'gecx_session_id' ) : 'gecx_session_id' ) . '%';
-                $gecx_batch_limit   = 500;
-                $gecx_max_batches   = 100;
-                $gecx_batch_count   = 0;
-                $gecx_last_key      = '';
+                $gecx_sessions_like        = '%' . ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( 'gecx_session_id' ) : 'gecx_session_id' ) . '%';
+                $gecx_merged_sessions_like = '%' . ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( 'gecx_merged' ) : 'gecx_merged' ) . '%';
+                $gecx_batch_limit          = 500;
+                $gecx_max_batches          = 100;
+                $gecx_batch_count          = 0;
+                $gecx_last_key             = '';
                 do {
                     ++$gecx_batch_count;
                     // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
                     $gecx_session_rows = $wpdb->get_results(
                         $wpdb->prepare(
-                            'SELECT session_key, session_value FROM %i WHERE session_key > %s AND session_value LIKE %s ORDER BY session_key ASC LIMIT %d',
+                            'SELECT session_key, session_value FROM %i WHERE session_key > %s AND (session_value LIKE %s OR session_value LIKE %s) ORDER BY session_key ASC LIMIT %d',
                             $gecx_sessions_table,
                             $gecx_last_key,
                             $gecx_sessions_like,
+                            $gecx_merged_sessions_like,
                             $gecx_batch_limit
                         )
                     );
@@ -379,8 +381,8 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
                             continue;
                         }
                         $gecx_session_data = maybe_unserialize( $gecx_row->session_value );
-                        if ( is_array( $gecx_session_data ) && array_key_exists( 'gecx_session_id', $gecx_session_data ) ) {
-                            unset( $gecx_session_data['gecx_session_id'] );
+                        if ( is_array( $gecx_session_data ) && ( array_key_exists( 'gecx_session_id', $gecx_session_data ) || array_key_exists( 'gecx_merged', $gecx_session_data ) ) ) {
+                            unset( $gecx_session_data['gecx_session_id'], $gecx_session_data['gecx_merged'] );
                             $gecx_serialized = maybe_serialize( $gecx_session_data );
                             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
                             $wpdb->update(
@@ -397,7 +399,7 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
             }
         }
 
-        // 4. Clear plugin post meta.
+        // 4. Clear plugin post meta and per-site user meta.
         //
         // Order meta is deliberately left in place. _gecx_session_id records
         // which agent session an order came from, and an order is a financial
@@ -405,6 +407,9 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
         // _gecx_suggested_prompts_override is plugin configuration attached to
         // a product and has no meaning once the plugin is gone.
         delete_post_meta_by_key( '_gecx_suggested_prompts_override' );
+        if ( function_exists( 'delete_metadata' ) && function_exists( 'get_current_blog_id' ) ) {
+            delete_metadata( 'user', 0, '_gecx_merged_' . (int) get_current_blog_id(), '', true );
+        }
     } finally {
         if ( null !== $gecx_site_id ) {
             restore_current_blog();
@@ -418,3 +423,22 @@ foreach ( $gecx_site_ids as $gecx_site_id ) {
 // network-wide usermeta table under one unprefixed key, so one call after the
 // per-site loop reaches every user on every site.
 delete_metadata( 'user', 0, 'gecx_review_prompt', '', true );
+
+// Sweep any remaining _gecx_merged_% user-meta rows (for example from previously
+// deleted multisite blogs whose IDs are no longer returned by get_sites()).
+if ( isset( $wpdb ) && is_object( $wpdb ) && isset( $wpdb->usermeta ) && method_exists( $wpdb, 'query' ) && method_exists( $wpdb, 'prepare' ) ) {
+    $gecx_merged_meta_like = ( method_exists( $wpdb, 'esc_like' ) ? $wpdb->esc_like( '_gecx_merged_' ) : '_gecx_merged_' ) . '%';
+    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+    $wpdb->query(
+        $wpdb->prepare(
+            'DELETE FROM %i WHERE meta_key LIKE %s',
+            $wpdb->usermeta,
+            $gecx_merged_meta_like
+        )
+    );
+    if ( function_exists( 'wp_cache_supports' ) && wp_cache_supports( 'flush_group' ) && function_exists( 'wp_cache_flush_group' ) ) {
+        wp_cache_flush_group( 'user_meta' );
+    } elseif ( function_exists( 'wp_cache_flush' ) ) {
+        wp_cache_flush();
+    }
+}
